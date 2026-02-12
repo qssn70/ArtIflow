@@ -1,5 +1,6 @@
 package com.studysuit.aiqa.data
 
+import android.util.Base64
 import com.studysuit.aiqa.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -35,6 +36,25 @@ class OpenSpeechAsrClient(
     return transcribeByAudioUrl(audioUrl = audioUrl, uid = uid)
   }
 
+  suspend fun transcribeByAudioData(audioBytes: ByteArray, uid: String = defaultUid()): Result<String> {
+    if (!isConfigured()) {
+      return Result.failure(IllegalStateException("请先在 local.properties 配置 OpenSpeech 参数"))
+    }
+
+    if (audioBytes.isEmpty()) {
+      return Result.failure(IllegalArgumentException("音频数据为空"))
+    }
+
+    return withContext(Dispatchers.IO) {
+      runCatching {
+        val requestId = UUID.randomUUID().toString()
+        val audioBase64 = Base64.encodeToString(audioBytes, Base64.NO_WRAP)
+        submitTaskByAudioData(requestId = requestId, audioBase64 = audioBase64, uid = uid)
+        awaitTranscript(requestId)
+      }
+    }
+  }
+
   suspend fun transcribeByAudioUrl(audioUrl: String, uid: String): Result<String> {
     if (!isConfigured()) {
       return Result.failure(IllegalStateException("请先在 local.properties 配置 OpenSpeech 参数"))
@@ -48,37 +68,40 @@ class OpenSpeechAsrClient(
       runCatching {
         val requestId = UUID.randomUUID().toString()
         submitTask(requestId = requestId, audioUrl = audioUrl, uid = uid)
-
-        val pollAttempts = 24
-        repeat(pollAttempts) { attempt ->
-          val queryResult = queryTask(requestId)
-          when (queryResult.statusCode) {
-            STATUS_SUCCESS -> {
-              val transcript = queryResult.transcript
-              if (transcript.isBlank()) {
-                throw IllegalStateException("语音识别结果为空")
-              }
-              return@runCatching transcript
-            }
-
-            STATUS_PROCESSING,
-            STATUS_QUEUEING -> {
-              if (attempt == pollAttempts - 1) {
-                throw IllegalStateException("语音识别超时，请稍后重试")
-              }
-              delay(1500)
-            }
-
-            else -> {
-              val err = queryResult.message.ifBlank { "状态码 ${queryResult.statusCode}" }
-              throw IllegalStateException("语音识别失败: $err")
-            }
-          }
-        }
-
-        throw IllegalStateException("语音识别失败：未知状态")
+        awaitTranscript(requestId)
       }
     }
+  }
+
+  private suspend fun awaitTranscript(requestId: String): String {
+    val pollAttempts = 24
+    repeat(pollAttempts) { attempt ->
+      val queryResult = queryTask(requestId)
+      when (queryResult.statusCode) {
+        STATUS_SUCCESS -> {
+          val transcript = queryResult.transcript
+          if (transcript.isBlank()) {
+            throw IllegalStateException("语音识别结果为空")
+          }
+          return transcript
+        }
+
+        STATUS_PROCESSING,
+        STATUS_QUEUEING -> {
+          if (attempt == pollAttempts - 1) {
+            throw IllegalStateException("语音识别超时，请稍后重试")
+          }
+          delay(1500)
+        }
+
+        else -> {
+          val err = queryResult.message.ifBlank { "状态码 ${queryResult.statusCode}" }
+          throw IllegalStateException("语音识别失败: $err")
+        }
+      }
+    }
+
+    throw IllegalStateException("语音识别失败：未知状态")
   }
 
   private fun submitTask(requestId: String, audioUrl: String, uid: String) {
@@ -130,6 +153,61 @@ class OpenSpeechAsrClient(
         throw IllegalStateException("提交语音识别任务失败: ${message.ifBlank { "状态码 $statusCode" }}")
       }
     }
+  }
+
+  private fun submitTaskByAudioData(requestId: String, audioBase64: String, uid: String) {
+    val bodyJson = JSONObject()
+      .put("user", JSONObject().put("uid", uid))
+      .put(
+        "audio",
+        JSONObject()
+          .put("data", audioBase64)
+          .put("format", "wav")
+          .put("codec", "raw")
+          .put("rate", 16000)
+          .put("bits", 16)
+          .put("channel", 1)
+      )
+      .put(
+        "request",
+        JSONObject()
+          .put("model_name", "bigmodel")
+          .put("enable_itn", true)
+          .put("enable_punc", false)
+          .put("enable_ddc", false)
+          .put("enable_speaker_info", false)
+          .put("enable_channel_split", false)
+          .put("show_utterances", false)
+          .put("vad_segment", false)
+          .put("sensitive_words_filter", "")
+      )
+
+    val request = Request.Builder()
+      .url(BuildConfig.OPENSPEECH_SUBMIT_URL)
+      .header("Content-Type", "application/json")
+      .header("x-api-key", BuildConfig.OPENSPEECH_API_KEY)
+      .header("X-Api-Resource-Id", BuildConfig.OPENSPEECH_RESOURCE_ID)
+      .header("X-Api-Request-Id", requestId)
+      .header("X-Api-Sequence", "-1")
+      .post(bodyJson.toString().toRequestBody(JSON_MEDIA_TYPE))
+      .build()
+
+    httpClient.newCall(request).execute().use { response ->
+      val statusCode = response.header("X-Api-Status-Code").orEmpty()
+      val message = response.header("X-Api-Message").orEmpty()
+
+      if (!response.isSuccessful) {
+        throw IllegalStateException("提交语音识别任务失败(${response.code}): ${message.ifBlank { "HTTP 错误" }}")
+      }
+
+      if (statusCode.isNotBlank() && statusCode != STATUS_SUCCESS && statusCode != STATUS_PROCESSING && statusCode != STATUS_QUEUEING) {
+        throw IllegalStateException("提交语音识别任务失败: ${message.ifBlank { "状态码 $statusCode" }}")
+      }
+    }
+  }
+
+  private fun defaultUid(): String {
+    return BuildConfig.OPENSPEECH_UID.trim().ifEmpty { "study-suit-user" }
   }
 
   private fun queryTask(requestId: String): QueryResult {
