@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.AlertDialog
@@ -90,6 +92,7 @@ import com.studysuit.aiqa.data.OpenSpeechAsrClient
 import com.studysuit.aiqa.data.OpenSpeechRuntimeConfig
 import com.studysuit.aiqa.data.PcmWavRecorder
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -99,8 +102,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.Date
 import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
 
 @Composable
 fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
@@ -188,6 +194,10 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
       )
     }
+  }
+
+  LaunchedEffect(Unit) {
+    viewModel.ensureStorage(context)
   }
 
   LaunchedEffect(uiState.toastMessage) {
@@ -334,7 +344,8 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       ) {
         HeaderBar(
           onNewChat = viewModel::startNewChat,
-          onOpenSettings = viewModel::openSettings
+          onOpenSettings = viewModel::openSettings,
+          onOpenSessions = viewModel::openSessions
         )
 
         LazyColumn(
@@ -394,10 +405,24 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       onSettingsChanged = viewModel::setSettingsDraft
     )
   }
+
+  if (uiState.isSessionsOpen) {
+    SessionListDialog(
+      sessions = uiState.sessionSummaries,
+      activeSessionId = uiState.activeSessionId,
+      onDismiss = viewModel::closeSessions,
+      onSelect = viewModel::switchSession,
+      onDelete = viewModel::deleteSession
+    )
+  }
 }
 
 @Composable
-private fun HeaderBar(onNewChat: () -> Unit, onOpenSettings: () -> Unit) {
+private fun HeaderBar(
+  onNewChat: () -> Unit,
+  onOpenSettings: () -> Unit,
+  onOpenSessions: () -> Unit
+) {
   Row(
     modifier = Modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.SpaceBetween,
@@ -413,6 +438,14 @@ private fun HeaderBar(onNewChat: () -> Unit, onOpenSettings: () -> Unit) {
     }
 
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+      IconButton(onClick = onOpenSessions) {
+        Icon(
+          imageVector = Icons.Rounded.History,
+          contentDescription = "会话",
+          tint = Color(0xFF2C6756)
+        )
+      }
+
       IconButton(onClick = onOpenSettings) {
         Icon(
           imageVector = Icons.Rounded.Settings,
@@ -556,6 +589,88 @@ private fun SettingsTextField(
     maxLines = if (minLines == 1) 1 else 8,
     shape = RoundedCornerShape(10.dp),
     textStyle = MaterialTheme.typography.bodySmall
+  )
+}
+
+@Composable
+private fun SessionListDialog(
+  sessions: List<SessionSummary>,
+  activeSessionId: String,
+  onDismiss: () -> Unit,
+  onSelect: (String) -> Unit,
+  onDelete: (String) -> Unit
+) {
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    containerColor = Color(0xFFF6FBF7),
+    shape = RoundedCornerShape(18.dp),
+    title = {
+      Text(
+        text = "历史会话",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF255E4D)
+      )
+    },
+    text = {
+      if (sessions.isEmpty()) {
+        Text(text = "暂无历史会话", color = Color(0xFF5D7069))
+      } else {
+        LazyColumn(
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 360.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          items(sessions, key = { it.id }) { session ->
+            val isActive = session.id == activeSessionId
+            Surface(
+              color = if (isActive) Color(0xFFE8F5EF) else Color(0xFFFBFEFC),
+              shape = RoundedCornerShape(10.dp),
+              modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(10.dp))
+            ) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                  Text(
+                    text = session.title,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF2F433C),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                  )
+                  Text(
+                    text = "${formatSessionTime(session.updatedAt)} · ${session.messageCount}条",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF668078)
+                  )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                  TextButton(onClick = { onSelect(session.id) }) {
+                    Text(text = if (isActive) "当前" else "打开")
+                  }
+                  TextButton(onClick = { onDelete(session.id) }) {
+                    Text(text = "删除", color = Color(0xFF8E4D4D))
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = onDismiss) {
+        Text(text = "关闭", color = Color(0xFF2D6F5D))
+      }
+    }
   )
 }
 
@@ -983,10 +1098,14 @@ class StudyChatViewModel : ViewModel() {
   private var messageSeed = 0
   private var spanSeed = 0
   private var detailSeed = 0
+  private var sessionSeed = 0
   private var conversationToken = 0L
   private var inFlightRequests = 0
   private val arkApiClient = ArkApiClient()
   private val openSpeechAsrClient = OpenSpeechAsrClient()
+  private var sessionStorage: SessionStorage? = null
+  private val sessionsById = linkedMapOf<String, StoredSession>()
+  private val sessionOrder = mutableListOf<String>()
 
   private val _uiState = MutableStateFlow(ChatUiState())
   val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -995,8 +1114,17 @@ class StudyChatViewModel : ViewModel() {
     resetConversation()
   }
 
+  fun ensureStorage(context: Context) {
+    if (sessionStorage != null) {
+      return
+    }
+
+    sessionStorage = SessionStorage(context.applicationContext)
+    restoreSessionsFromStorage()
+  }
+
   fun onInputChanged(value: String) {
-    _uiState.update { current ->
+    updateUiState(persistSession = true) { current ->
       current.copy(input = value)
     }
   }
@@ -1076,12 +1204,81 @@ class StudyChatViewModel : ViewModel() {
   }
 
   fun startNewChat() {
-    resetConversation()
-    postToast("已开始新对话")
+    resetConversation(showIntroToast = true)
+  }
+
+  fun openSessions() {
+    updateUiState { current ->
+      current.copy(isSessionsOpen = true)
+    }
+  }
+
+  fun closeSessions() {
+    updateUiState { current ->
+      current.copy(isSessionsOpen = false)
+    }
+  }
+
+  fun switchSession(sessionId: String) {
+    val target = sessionsById[sessionId] ?: return
+    val now = System.currentTimeMillis()
+    sessionsById[sessionId] = target.copy(updatedAt = now)
+    touchSession(sessionId)
+    val latestTarget = sessionsById[sessionId] ?: target
+    val settings = _uiState.value.settings
+
+    conversationToken += 1
+    inFlightRequests = 0
+
+    _uiState.value = ChatUiState(
+      messages = latestTarget.messages,
+      histories = latestTarget.histories,
+      profile = latestTarget.profile,
+      input = latestTarget.input,
+      selectedSpanId = null,
+      activeSessionId = latestTarget.id,
+      sessionSummaries = currentSessionSummaries(),
+      isSessionsOpen = false,
+      toastMessage = "已切换到历史会话",
+      isLoading = false,
+      isSettingsOpen = false,
+      settings = settings,
+      settingsDraft = settings
+    )
+    persistSessionsAsync()
+  }
+
+  fun deleteSession(sessionId: String) {
+    val activeId = _uiState.value.activeSessionId
+    val isActive = sessionId == activeId
+
+    sessionsById.remove(sessionId)
+    sessionOrder.remove(sessionId)
+
+    if (sessionsById.isEmpty()) {
+      resetConversation(showIntroToast = false)
+      postToast("会话已删除")
+      return
+    }
+
+    if (!isActive) {
+      updateUiState {
+        it.copy(
+          sessionSummaries = currentSessionSummaries(),
+          toastMessage = "会话已删除"
+        )
+      }
+      persistSessionsAsync()
+      return
+    }
+
+    val fallbackId = sessionOrder.firstOrNull() ?: sessionsById.keys.first()
+    switchSession(fallbackId)
+    postToast("会话已删除")
   }
 
   fun openSettings() {
-    _uiState.update { current ->
+    updateUiState { current ->
       current.copy(
         isSettingsOpen = true,
         settingsDraft = current.settings
@@ -1090,25 +1287,25 @@ class StudyChatViewModel : ViewModel() {
   }
 
   fun closeSettings() {
-    _uiState.update { current ->
+    updateUiState { current ->
       current.copy(isSettingsOpen = false)
     }
   }
 
   fun setSettingsDraft(newSettings: RuntimeSettings) {
-    _uiState.update { current ->
+    updateUiState { current ->
       current.copy(settingsDraft = newSettings)
     }
   }
 
   fun resetSettingsDraft() {
-    _uiState.update { current ->
+    updateUiState { current ->
       current.copy(settingsDraft = RuntimeSettings.defaults())
     }
   }
 
   fun saveSettings() {
-    _uiState.update { current ->
+    updateUiState(persistSession = true) { current ->
       current.copy(
         settings = current.settingsDraft,
         isSettingsOpen = false,
@@ -1175,13 +1372,13 @@ class StudyChatViewModel : ViewModel() {
   }
 
   fun openDetails(spanId: String) {
-    _uiState.update { current ->
+    updateUiState { current ->
       current.copy(selectedSpanId = spanId)
     }
   }
 
   fun closeDetails() {
-    _uiState.update { current ->
+    updateUiState { current ->
       current.copy(selectedSpanId = null)
     }
   }
@@ -1223,7 +1420,7 @@ class StudyChatViewModel : ViewModel() {
   }
 
   fun consumeToast() {
-    _uiState.update { current ->
+    updateUiState { current ->
       current.copy(toastMessage = null)
     }
   }
@@ -1453,12 +1650,13 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
-  private fun resetConversation() {
+  private fun resetConversation(showIntroToast: Boolean = false) {
     conversationToken += 1
     inFlightRequests = 0
     messageSeed = 0
     spanSeed = 0
     detailSeed = 0
+    sessionSeed += 1
 
     val intro = listOf(
       "你好，我是你的学习搭子。这个界面看起来是普通 AI Chat，但每一段都能左滑右滑交互。",
@@ -1467,18 +1665,43 @@ class StudyChatViewModel : ViewModel() {
       "右滑可拉出详解弹窗，回看该段追问与回答；追问内容不会追加到底部聊天。"
     ).joinToString(separator = "\n\n")
 
-    _uiState.value = ChatUiState(
+    val sessionId = "session-${System.currentTimeMillis()}-$sessionSeed"
+    val settings = _uiState.value.settings
+    val settingsDraft = _uiState.value.settingsDraft
+
+    val initialState = ChatUiState(
       messages = listOf(createAssistantMessage(intro, "初始化引导")),
       histories = emptyMap(),
       profile = ProfileState(level = "高二 · 进阶冲刺"),
       input = "",
       selectedSpanId = null,
-      toastMessage = null,
+      activeSessionId = sessionId,
+      sessionSummaries = emptyList(),
+      isSessionsOpen = false,
+      toastMessage = if (showIntroToast) "已开始新对话" else null,
       isLoading = false,
       isSettingsOpen = false,
-      settings = _uiState.value.settings,
-      settingsDraft = _uiState.value.settings
+      settings = settings,
+      settingsDraft = settingsDraft
     )
+
+    sessionsById[sessionId] = StoredSession(
+      id = sessionId,
+      title = "新会话",
+      createdAt = System.currentTimeMillis(),
+      updatedAt = System.currentTimeMillis(),
+      messages = initialState.messages,
+      histories = initialState.histories,
+      profile = initialState.profile,
+      input = initialState.input
+    )
+    sessionOrder.remove(sessionId)
+    sessionOrder.add(0, sessionId)
+
+    _uiState.value = initialState.copy(
+      sessionSummaries = currentSessionSummaries()
+    )
+    persistSessionsAsync()
   }
 
   private fun startRequest(
@@ -1487,7 +1710,7 @@ class StudyChatViewModel : ViewModel() {
     transform: (ChatUiState) -> ChatUiState = { state -> state }
   ) {
     inFlightRequests += 1
-    _uiState.update { current ->
+    updateUiState(persistSession = true) { current ->
       val base = transform(current)
       base.copy(
         isLoading = inFlightRequests > 0,
@@ -1502,9 +1725,167 @@ class StudyChatViewModel : ViewModel() {
 
   private fun finishRequest(transform: (ChatUiState) -> ChatUiState = { state -> state }) {
     inFlightRequests = (inFlightRequests - 1).coerceAtLeast(0)
-    _uiState.update { current ->
+    updateUiState(persistSession = true) { current ->
       val base = transform(current)
       base.copy(isLoading = inFlightRequests > 0)
+    }
+  }
+
+  private fun updateUiState(
+    persistSession: Boolean = false,
+    transform: (ChatUiState) -> ChatUiState
+  ) {
+    var latest: ChatUiState? = null
+    _uiState.update { current ->
+      val updated = transform(current)
+      latest = updated
+      updated
+    }
+
+    if (persistSession) {
+      latest?.let { state ->
+        syncActiveSessionSnapshot(state)
+        persistSessionsAsync()
+      }
+    }
+  }
+
+  private fun syncActiveSessionSnapshot(state: ChatUiState) {
+    val sessionId = state.activeSessionId.ifBlank { return }
+    val now = System.currentTimeMillis()
+    val title = buildSessionTitle(state.messages)
+
+    val updated = StoredSession(
+      id = sessionId,
+      title = title,
+      createdAt = sessionsById[sessionId]?.createdAt ?: now,
+      updatedAt = now,
+      messages = state.messages,
+      histories = state.histories,
+      profile = state.profile,
+      input = state.input
+    )
+
+    sessionsById[sessionId] = updated
+    touchSession(sessionId)
+
+    _uiState.update { current ->
+      current.copy(sessionSummaries = currentSessionSummaries())
+    }
+  }
+
+  private fun touchSession(sessionId: String) {
+    sessionOrder.remove(sessionId)
+    sessionOrder.add(0, sessionId)
+  }
+
+  private fun currentSessionSummaries(): List<SessionSummary> {
+    return sessionOrder.mapNotNull { id ->
+      val item = sessionsById[id] ?: return@mapNotNull null
+      SessionSummary(
+        id = item.id,
+        title = item.title,
+        updatedAt = item.updatedAt,
+        messageCount = item.messages.size
+      )
+    }.sortedByDescending { it.updatedAt }
+  }
+
+  private fun buildSessionTitle(messages: List<ChatMessage>): String {
+    val firstUserText = messages.asSequence()
+      .filterIsInstance<ChatMessage.User>()
+      .map { user -> user.text.trim() }
+      .firstOrNull { text -> text.isNotBlank() }
+
+    if (!firstUserText.isNullOrBlank()) {
+      return firstUserText.take(18)
+    }
+
+    return "新会话 ${currentTime()}"
+  }
+
+  private fun restoreSessionsFromStorage() {
+    val store = sessionStorage ?: return
+    val restored = store.load()
+    if (restored == null || restored.sessions.isEmpty()) {
+      sessionsById.clear()
+      sessionOrder.clear()
+      resetConversation()
+      return
+    }
+
+    sessionsById.clear()
+    sessionOrder.clear()
+
+    restored.sessions.forEach { session ->
+      sessionsById[session.id] = session
+      sessionOrder += session.id
+    }
+
+    val activeId = restored.activeSessionId.takeIf { id -> sessionsById.containsKey(id) }
+      ?: sessionOrder.first()
+    val active = sessionsById[activeId] ?: run {
+      sessionsById.clear()
+      sessionOrder.clear()
+      resetConversation()
+      return
+    }
+
+    val settings = restored.settings
+    hydrateSeeds(active)
+
+    conversationToken += 1
+    inFlightRequests = 0
+
+    _uiState.value = ChatUiState(
+      messages = active.messages,
+      histories = active.histories,
+      profile = active.profile,
+      input = active.input,
+      selectedSpanId = null,
+      activeSessionId = active.id,
+      sessionSummaries = currentSessionSummaries(),
+      isSessionsOpen = false,
+      toastMessage = null,
+      isLoading = false,
+      isSettingsOpen = false,
+      settings = settings,
+      settingsDraft = settings
+    )
+  }
+
+  private fun hydrateSeeds(active: StoredSession) {
+    messageSeed = active.messages.mapNotNull { message ->
+      message.id.removePrefix("msg-").toIntOrNull()
+    }.maxOrNull() ?: 0
+
+    spanSeed = active.messages
+      .filterIsInstance<ChatMessage.Assistant>()
+      .flatMap { assistant -> assistant.spans }
+      .mapNotNull { span -> span.id.removePrefix("span-").toIntOrNull() }
+      .maxOrNull() ?: 0
+
+    detailSeed = active.histories.values
+      .flatten()
+      .mapNotNull { detail -> detail.id.removePrefix("detail-").toIntOrNull() }
+      .maxOrNull() ?: 0
+  }
+
+  private fun persistSessionsAsync() {
+    val store = sessionStorage ?: return
+    val state = _uiState.value
+    val activeId = state.activeSessionId.ifBlank { return }
+    val settings = state.settings
+    val sessionsSnapshot = sessionOrder.mapNotNull { id -> sessionsById[id] }
+
+    viewModelScope.launch(Dispatchers.IO) {
+      store.save(
+        PersistedSessions(
+          activeSessionId = activeId,
+          settings = settings,
+          sessions = sessionsSnapshot
+        )
+      )
     }
   }
 
@@ -1565,7 +1946,7 @@ class StudyChatViewModel : ViewModel() {
   }
 
   private fun postToast(message: String) {
-    _uiState.update { current ->
+    updateUiState { current ->
       current.copy(toastMessage = message)
     }
   }
@@ -1737,11 +2118,21 @@ data class ChatUiState(
   val profile: ProfileState = ProfileState(level = "高二 · 进阶冲刺"),
   val input: String = "",
   val selectedSpanId: String? = null,
+  val activeSessionId: String = "",
+  val sessionSummaries: List<SessionSummary> = emptyList(),
+  val isSessionsOpen: Boolean = false,
   val toastMessage: String? = null,
   val isLoading: Boolean = false,
   val isSettingsOpen: Boolean = false,
   val settings: RuntimeSettings = RuntimeSettings.defaults(),
   val settingsDraft: RuntimeSettings = RuntimeSettings.defaults()
+)
+
+data class SessionSummary(
+  val id: String,
+  val title: String,
+  val updatedAt: Long,
+  val messageCount: Int
 )
 
 data class ProfileState(
@@ -1782,3 +2173,308 @@ data class SpanDetail(
   val question: String? = null,
   val answer: String
 )
+
+private data class StoredSession(
+  val id: String,
+  val title: String,
+  val createdAt: Long,
+  val updatedAt: Long,
+  val messages: List<ChatMessage>,
+  val histories: Map<String, List<SpanDetail>>,
+  val profile: ProfileState,
+  val input: String
+)
+
+private data class PersistedSessions(
+  val activeSessionId: String,
+  val settings: RuntimeSettings,
+  val sessions: List<StoredSession>
+)
+
+private class SessionStorage(private val context: Context) {
+  private val storageFile = File(context.filesDir, "study_suit_sessions_v1.json")
+
+  fun save(payload: PersistedSessions) {
+    runCatching {
+      val root = JSONObject()
+        .put("version", 1)
+        .put("activeSessionId", payload.activeSessionId)
+        .put("settings", payload.settings.toJson())
+        .put("sessions", JSONArray().apply {
+          payload.sessions.forEach { session ->
+            put(session.toJson())
+          }
+        })
+
+      storageFile.parentFile?.mkdirs()
+      storageFile.writeText(root.toString(), Charsets.UTF_8)
+    }
+  }
+
+  fun load(): PersistedSessions? {
+    if (!storageFile.exists()) {
+      return null
+    }
+
+    return runCatching {
+      val root = JSONObject(storageFile.readText(Charsets.UTF_8))
+      val activeSessionId = root.optString("activeSessionId").trim()
+      val settings = root.optJSONObject("settings")?.toRuntimeSettings() ?: RuntimeSettings.defaults()
+      val sessions = root.optJSONArray("sessions")
+        ?.let { array ->
+          buildList {
+            for (index in 0 until array.length()) {
+              val item = array.optJSONObject(index) ?: continue
+              item.toStoredSession()?.let { session -> add(session) }
+            }
+          }
+        }
+        .orEmpty()
+
+      if (sessions.isEmpty()) {
+        null
+      } else {
+        PersistedSessions(
+          activeSessionId = activeSessionId,
+          settings = settings,
+          sessions = sessions
+        )
+      }
+    }.getOrNull()
+  }
+}
+
+private fun RuntimeSettings.toJson(): JSONObject {
+  return JSONObject()
+    .put("arkApiKey", arkApiKey)
+    .put("arkModel", arkModel)
+    .put("arkBaseUrl", arkBaseUrl)
+    .put("arkEndpoint", arkEndpoint)
+    .put("arkSystemPrompt", arkSystemPrompt)
+    .put("imagePrompt", imagePrompt)
+    .put("openSpeechApiKey", openSpeechApiKey)
+    .put("openSpeechResourceId", openSpeechResourceId)
+    .put("openSpeechSubmitUrl", openSpeechSubmitUrl)
+    .put("openSpeechQueryUrl", openSpeechQueryUrl)
+    .put("openSpeechUid", openSpeechUid)
+}
+
+private fun JSONObject.toRuntimeSettings(): RuntimeSettings {
+  val defaults = RuntimeSettings.defaults()
+  return RuntimeSettings(
+    arkApiKey = optString("arkApiKey", defaults.arkApiKey),
+    arkModel = optString("arkModel", defaults.arkModel),
+    arkBaseUrl = optString("arkBaseUrl", defaults.arkBaseUrl),
+    arkEndpoint = optString("arkEndpoint", defaults.arkEndpoint),
+    arkSystemPrompt = optString("arkSystemPrompt", defaults.arkSystemPrompt),
+    imagePrompt = optString("imagePrompt", defaults.imagePrompt),
+    openSpeechApiKey = optString("openSpeechApiKey", defaults.openSpeechApiKey),
+    openSpeechResourceId = optString("openSpeechResourceId", defaults.openSpeechResourceId),
+    openSpeechSubmitUrl = optString("openSpeechSubmitUrl", defaults.openSpeechSubmitUrl),
+    openSpeechQueryUrl = optString("openSpeechQueryUrl", defaults.openSpeechQueryUrl),
+    openSpeechUid = optString("openSpeechUid", defaults.openSpeechUid)
+  )
+}
+
+private fun StoredSession.toJson(): JSONObject {
+  return JSONObject()
+    .put("id", id)
+    .put("title", title)
+    .put("createdAt", createdAt)
+    .put("updatedAt", updatedAt)
+    .put("input", input)
+    .put("profile", profile.toJson())
+    .put("messages", JSONArray().apply {
+      messages.forEach { message -> put(message.toJson()) }
+    })
+    .put("histories", histories.toJson())
+}
+
+private fun JSONObject.toStoredSession(): StoredSession? {
+  val id = optString("id").trim()
+  if (id.isBlank()) {
+    return null
+  }
+
+  val title = optString("title").ifBlank { "历史会话" }
+  val createdAt = optLong("createdAt", System.currentTimeMillis())
+  val updatedAt = optLong("updatedAt", createdAt)
+  val input = optString("input")
+
+  val profile = optJSONObject("profile")?.toProfileState() ?: ProfileState(level = "高二 · 进阶冲刺")
+  val messages = optJSONArray("messages")?.toChatMessages().orEmpty()
+  val histories = optJSONObject("histories")?.toHistories().orEmpty()
+
+  return StoredSession(
+    id = id,
+    title = title,
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+    messages = messages,
+    histories = histories,
+    profile = profile,
+    input = input
+  )
+}
+
+private fun ProfileState.toJson(): JSONObject {
+  return JSONObject()
+    .put("level", level)
+    .put("followups", followups)
+    .put("voiceFollowups", voiceFollowups)
+    .put(
+      "topicHits",
+      JSONObject().apply {
+        topicHits.forEach { (topic, count) ->
+          put(topic, count)
+        }
+      }
+    )
+}
+
+private fun JSONObject.toProfileState(): ProfileState {
+  val topicHitsObj = optJSONObject("topicHits")
+  val topicHits = mutableMapOf<String, Int>()
+  topicHitsObj?.keys()?.let { iterator ->
+    while (iterator.hasNext()) {
+      val key = iterator.next()
+      topicHits[key] = topicHitsObj.optInt(key)
+    }
+  }
+
+  return ProfileState(
+    level = optString("level", "高二 · 进阶冲刺"),
+    topicHits = topicHits,
+    followups = optInt("followups", 0),
+    voiceFollowups = optInt("voiceFollowups", 0)
+  )
+}
+
+private fun ChatMessage.toJson(): JSONObject {
+  return when (this) {
+    is ChatMessage.User -> JSONObject()
+      .put("type", "user")
+      .put("id", id)
+      .put("time", time)
+      .put("text", text)
+      .put("image", imagePreviewBytes?.let { bytes -> Base64.encodeToString(bytes, Base64.NO_WRAP) } ?: JSONObject.NULL)
+
+    is ChatMessage.Assistant -> JSONObject()
+      .put("type", "assistant")
+      .put("id", id)
+      .put("time", time)
+      .put("spans", JSONArray().apply {
+        spans.forEach { span ->
+          put(
+            JSONObject()
+              .put("id", span.id)
+              .put("content", span.content)
+              .put("sourceQuestion", span.sourceQuestion)
+          )
+        }
+      })
+  }
+}
+
+private fun JSONArray.toChatMessages(): List<ChatMessage> {
+  return buildList {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      when (item.optString("type")) {
+        "user" -> {
+          val encodedImage = item.optString("image")
+          val imageBytes = if (encodedImage.isBlank() || encodedImage == "null") {
+            null
+          } else {
+            runCatching { Base64.decode(encodedImage, Base64.DEFAULT) }.getOrNull()
+          }
+          add(
+            ChatMessage.User(
+              id = item.optString("id"),
+              time = item.optString("time"),
+              text = item.optString("text"),
+              imagePreviewBytes = imageBytes
+            )
+          )
+        }
+
+        "assistant" -> {
+          val spans = item.optJSONArray("spans")?.let { array ->
+            buildList {
+              for (spanIndex in 0 until array.length()) {
+                val spanObj = array.optJSONObject(spanIndex) ?: continue
+                add(
+                  SpanData(
+                    id = spanObj.optString("id"),
+                    content = spanObj.optString("content"),
+                    sourceQuestion = spanObj.optString("sourceQuestion")
+                  )
+                )
+              }
+            }
+          }.orEmpty()
+
+          add(
+            ChatMessage.Assistant(
+              id = item.optString("id"),
+              time = item.optString("time"),
+              spans = spans
+            )
+          )
+        }
+      }
+    }
+  }
+}
+
+private fun Map<String, List<SpanDetail>>.toJson(): JSONObject {
+  return JSONObject().apply {
+    forEach { (spanId, details) ->
+      put(
+        spanId,
+        JSONArray().apply {
+          details.forEach { detail ->
+            put(
+              JSONObject()
+                .put("id", detail.id)
+                .put("mode", detail.mode)
+                .put("time", detail.time)
+                .put("question", detail.question ?: JSONObject.NULL)
+                .put("answer", detail.answer)
+            )
+          }
+        }
+      )
+    }
+  }
+}
+
+private fun JSONObject.toHistories(): Map<String, List<SpanDetail>> {
+  val histories = mutableMapOf<String, List<SpanDetail>>()
+  val iterator = keys()
+  while (iterator.hasNext()) {
+    val spanId = iterator.next()
+    val detailsArray = optJSONArray(spanId) ?: continue
+    val details = buildList {
+      for (index in 0 until detailsArray.length()) {
+        val detailObj = detailsArray.optJSONObject(index) ?: continue
+        add(
+          SpanDetail(
+            id = detailObj.optString("id"),
+            mode = detailObj.optString("mode"),
+            time = detailObj.optString("time"),
+            question = detailObj.optString("question").takeIf { it.isNotBlank() && it != "null" },
+            answer = detailObj.optString("answer")
+          )
+        )
+      }
+    }
+    histories[spanId] = details
+  }
+  return histories
+}
+
+private fun formatSessionTime(updatedAt: Long): String {
+  val formatter = SimpleDateFormat("MM-dd HH:mm", Locale.SIMPLIFIED_CHINESE)
+  return formatter.format(Date(updatedAt))
+}
