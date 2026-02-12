@@ -17,30 +17,41 @@ data class ArkRequestMessage(
   val text: String
 )
 
+data class ArkRuntimeConfig(
+  val apiKey: String = BuildConfig.ARK_API_KEY,
+  val model: String = BuildConfig.ARK_MODEL,
+  val baseUrl: String = BuildConfig.ARK_BASE_URL,
+  val endpoint: String = BuildConfig.ARK_ENDPOINT,
+  val systemPrompt: String = BuildConfig.ARK_SYSTEM_PROMPT
+)
+
 class ArkApiClient(
   private val httpClient: OkHttpClient = defaultHttpClient()
 ) {
-  fun isConfigured(): Boolean {
-    return BuildConfig.ARK_API_KEY.isNotBlank()
+  fun isConfigured(config: ArkRuntimeConfig = ArkRuntimeConfig()): Boolean {
+    return config.apiKey.isNotBlank()
   }
 
-  suspend fun generateReply(messages: List<ArkRequestMessage>): Result<String> {
+  suspend fun generateReply(
+    messages: List<ArkRequestMessage>,
+    config: ArkRuntimeConfig = ArkRuntimeConfig()
+  ): Result<String> {
     if (messages.isEmpty()) {
       return Result.failure(IllegalArgumentException("消息列表为空"))
     }
 
-    if (!isConfigured()) {
+    if (!isConfigured(config)) {
       return Result.failure(IllegalStateException("请先在 local.properties 配置 ARK_API_KEY"))
     }
 
     return withContext(Dispatchers.IO) {
       runCatching {
-        val endpoint = normalizedEndpoint()
-        val requestBody = buildRequestBody(endpoint = endpoint, messages = messages)
+        val endpoint = normalizedEndpoint(config)
+        val requestBody = buildRequestBody(endpoint = endpoint, messages = messages, config = config)
         val request = Request.Builder()
-          .url(endpointUrl(endpoint))
+          .url(endpointUrl(endpoint, config))
           .post(requestBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
-          .header("Authorization", "Bearer ${BuildConfig.ARK_API_KEY}")
+          .header("Authorization", "Bearer ${config.apiKey}")
           .header("Content-Type", "application/json")
           .build()
 
@@ -65,7 +76,8 @@ class ArkApiClient(
   suspend fun generateReplyWithImage(
     prompt: String,
     imageBytes: ByteArray,
-    mimeType: String = "image/jpeg"
+    mimeType: String = "image/jpeg",
+    config: ArkRuntimeConfig = ArkRuntimeConfig()
   ): Result<String> {
     val normalizedPrompt = prompt.trim()
     if (normalizedPrompt.isBlank()) {
@@ -76,24 +88,25 @@ class ArkApiClient(
       return Result.failure(IllegalArgumentException("图片数据为空"))
     }
 
-    if (!isConfigured()) {
+    if (!isConfigured(config)) {
       return Result.failure(IllegalStateException("请先在 local.properties 配置 ARK_API_KEY"))
     }
 
     return withContext(Dispatchers.IO) {
       runCatching {
-        val endpoint = normalizedEndpoint()
+        val endpoint = normalizedEndpoint(config)
         val requestBody = buildImageRequestBody(
           endpoint = endpoint,
           prompt = normalizedPrompt,
           imageBytes = imageBytes,
-          mimeType = mimeType
+          mimeType = mimeType,
+          config = config
         )
 
         val request = Request.Builder()
-          .url(endpointUrl(endpoint))
+          .url(endpointUrl(endpoint, config))
           .post(requestBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
-          .header("Authorization", "Bearer ${BuildConfig.ARK_API_KEY}")
+          .header("Authorization", "Bearer ${config.apiKey}")
           .header("Content-Type", "application/json")
           .build()
 
@@ -115,7 +128,11 @@ class ArkApiClient(
     }
   }
 
-  private fun buildRequestBody(endpoint: String, messages: List<ArkRequestMessage>): String {
+  private fun buildRequestBody(
+    endpoint: String,
+    messages: List<ArkRequestMessage>,
+    config: ArkRuntimeConfig
+  ): String {
     val normalized = messages
       .mapNotNull { message ->
         val role = message.role.trim().lowercase()
@@ -127,7 +144,7 @@ class ArkApiClient(
         }
       }
 
-    val prompt = BuildConfig.ARK_SYSTEM_PROMPT.trim()
+    val prompt = config.systemPrompt.trim()
     val finalMessages = buildList {
       if (prompt.isNotBlank()) {
         add(ArkRequestMessage(role = "system", text = prompt))
@@ -153,7 +170,7 @@ class ArkApiClient(
       }
 
       JSONObject()
-        .put("model", BuildConfig.ARK_MODEL)
+        .put("model", config.model)
         .put("input", inputArray)
         .put("temperature", 0.7)
         .toString()
@@ -168,7 +185,7 @@ class ArkApiClient(
       }
 
       JSONObject()
-        .put("model", BuildConfig.ARK_MODEL)
+        .put("model", config.model)
         .put("messages", chatMessages)
         .put("temperature", 0.7)
         .toString()
@@ -179,12 +196,31 @@ class ArkApiClient(
     endpoint: String,
     prompt: String,
     imageBytes: ByteArray,
-    mimeType: String
+    mimeType: String,
+    config: ArkRuntimeConfig
   ): String {
     val dataUrl = "data:$mimeType;base64,${Base64.encodeToString(imageBytes, Base64.NO_WRAP)}"
+    val systemPrompt = config.systemPrompt.trim()
 
     return if (endpoint == RESPONSES_ENDPOINT) {
-      val content = JSONArray()
+      val input = JSONArray()
+
+      if (systemPrompt.isNotBlank()) {
+        input.put(
+          JSONObject()
+            .put("role", "system")
+            .put(
+              "content",
+              JSONArray().put(
+                JSONObject()
+                  .put("type", "input_text")
+                  .put("text", systemPrompt)
+              )
+            )
+        )
+      }
+
+      val userContent = JSONArray()
         .put(
           JSONObject()
             .put("type", "input_text")
@@ -196,19 +232,28 @@ class ArkApiClient(
             .put("image_url", dataUrl)
         )
 
+      input.put(
+        JSONObject()
+          .put("role", "user")
+          .put("content", userContent)
+      )
+
       JSONObject()
-        .put("model", BuildConfig.ARK_MODEL)
-        .put(
-          "input",
-          JSONArray().put(
-            JSONObject()
-              .put("role", "user")
-              .put("content", content)
-          )
-        )
+        .put("model", config.model)
+        .put("input", input)
         .put("temperature", 0.7)
         .toString()
     } else {
+      val messages = JSONArray()
+
+      if (systemPrompt.isNotBlank()) {
+        messages.put(
+          JSONObject()
+            .put("role", "system")
+            .put("content", systemPrompt)
+        )
+      }
+
       val content = JSONArray()
         .put(
           JSONObject()
@@ -221,16 +266,15 @@ class ArkApiClient(
             .put("image_url", JSONObject().put("url", dataUrl))
         )
 
+      messages.put(
+        JSONObject()
+          .put("role", "user")
+          .put("content", content)
+      )
+
       JSONObject()
-        .put("model", BuildConfig.ARK_MODEL)
-        .put(
-          "messages",
-          JSONArray().put(
-            JSONObject()
-              .put("role", "user")
-              .put("content", content)
-          )
-        )
+        .put("model", config.model)
+        .put("messages", messages)
         .put("temperature", 0.7)
         .toString()
     }
@@ -323,13 +367,13 @@ class ArkApiClient(
     }
   }
 
-  private fun normalizedEndpoint(): String {
-    val value = BuildConfig.ARK_ENDPOINT.trim().lowercase()
+  private fun normalizedEndpoint(config: ArkRuntimeConfig): String {
+    val value = config.endpoint.trim().lowercase()
     return if (value.contains("chat/completions")) CHAT_COMPLETIONS_ENDPOINT else RESPONSES_ENDPOINT
   }
 
-  private fun endpointUrl(endpoint: String): String {
-    return BuildConfig.ARK_BASE_URL.trimEnd('/') + "/" + endpoint
+  private fun endpointUrl(endpoint: String, config: ArkRuntimeConfig): String {
+    return config.baseUrl.trimEnd('/') + "/" + endpoint
   }
 
   companion object {

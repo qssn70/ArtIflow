@@ -13,31 +13,26 @@ import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
+data class OpenSpeechRuntimeConfig(
+  val apiKey: String = BuildConfig.OPENSPEECH_API_KEY,
+  val resourceId: String = BuildConfig.OPENSPEECH_RESOURCE_ID,
+  val submitUrl: String = BuildConfig.OPENSPEECH_SUBMIT_URL,
+  val queryUrl: String = BuildConfig.OPENSPEECH_QUERY_URL,
+  val uid: String = BuildConfig.OPENSPEECH_UID
+)
+
 class OpenSpeechAsrClient(
   private val httpClient: OkHttpClient = defaultHttpClient()
 ) {
-  fun isConfigured(): Boolean {
-    return BuildConfig.OPENSPEECH_API_KEY.isNotBlank() &&
-      BuildConfig.OPENSPEECH_RESOURCE_ID.isNotBlank()
+  fun isConfigured(config: OpenSpeechRuntimeConfig = OpenSpeechRuntimeConfig()): Boolean {
+    return config.apiKey.isNotBlank() && config.resourceId.isNotBlank()
   }
 
-  fun isDemoAudioConfigured(): Boolean {
-    val audioUrl = BuildConfig.OPENSPEECH_AUDIO_URL.trim()
-    return audioUrl.isBlank() || audioUrl == DEMO_AUDIO_URL
-  }
-
-  suspend fun transcribeConfiguredAudio(): Result<String> {
-    val audioUrl = BuildConfig.OPENSPEECH_AUDIO_URL.trim()
-    if (audioUrl.isBlank()) {
-      return Result.failure(IllegalStateException("未配置 OPENSPEECH_AUDIO_URL"))
-    }
-
-    val uid = BuildConfig.OPENSPEECH_UID.trim().ifEmpty { "study-suit-user" }
-    return transcribeByAudioUrl(audioUrl = audioUrl, uid = uid)
-  }
-
-  suspend fun transcribeByAudioData(audioBytes: ByteArray, uid: String = defaultUid()): Result<String> {
-    if (!isConfigured()) {
+  suspend fun transcribeByAudioData(
+    audioBytes: ByteArray,
+    config: OpenSpeechRuntimeConfig = OpenSpeechRuntimeConfig()
+  ): Result<String> {
+    if (!isConfigured(config)) {
       return Result.failure(IllegalStateException("请先在 local.properties 配置 OpenSpeech 参数"))
     }
 
@@ -49,34 +44,16 @@ class OpenSpeechAsrClient(
       runCatching {
         val requestId = UUID.randomUUID().toString()
         val audioBase64 = Base64.encodeToString(audioBytes, Base64.NO_WRAP)
-        submitTaskByAudioData(requestId = requestId, audioBase64 = audioBase64, uid = uid)
-        awaitTranscript(requestId)
+        submitTaskByAudioData(requestId = requestId, audioBase64 = audioBase64, uid = defaultUid(config), config = config)
+        awaitTranscript(requestId, config)
       }
     }
   }
 
-  suspend fun transcribeByAudioUrl(audioUrl: String, uid: String): Result<String> {
-    if (!isConfigured()) {
-      return Result.failure(IllegalStateException("请先在 local.properties 配置 OpenSpeech 参数"))
-    }
-
-    if (audioUrl.isBlank()) {
-      return Result.failure(IllegalArgumentException("音频 URL 为空"))
-    }
-
-    return withContext(Dispatchers.IO) {
-      runCatching {
-        val requestId = UUID.randomUUID().toString()
-        submitTask(requestId = requestId, audioUrl = audioUrl, uid = uid)
-        awaitTranscript(requestId)
-      }
-    }
-  }
-
-  private suspend fun awaitTranscript(requestId: String): String {
+  private suspend fun awaitTranscript(requestId: String, config: OpenSpeechRuntimeConfig): String {
     val pollAttempts = 24
     repeat(pollAttempts) { attempt ->
-      val queryResult = queryTask(requestId)
+      val queryResult = queryTask(requestId, config)
       when (queryResult.statusCode) {
         STATUS_SUCCESS -> {
           val transcript = queryResult.transcript
@@ -104,58 +81,12 @@ class OpenSpeechAsrClient(
     throw IllegalStateException("语音识别失败：未知状态")
   }
 
-  private fun submitTask(requestId: String, audioUrl: String, uid: String) {
-    val bodyJson = JSONObject()
-      .put("user", JSONObject().put("uid", uid))
-      .put(
-        "audio",
-        JSONObject()
-          .put("url", audioUrl)
-          .put("format", "mp3")
-          .put("codec", "raw")
-          .put("rate", 16000)
-          .put("bits", 16)
-          .put("channel", 1)
-      )
-      .put(
-        "request",
-        JSONObject()
-          .put("model_name", "bigmodel")
-          .put("enable_itn", true)
-          .put("enable_punc", false)
-          .put("enable_ddc", false)
-          .put("enable_speaker_info", false)
-          .put("enable_channel_split", false)
-          .put("show_utterances", false)
-          .put("vad_segment", false)
-          .put("sensitive_words_filter", "")
-      )
-
-    val request = Request.Builder()
-      .url(BuildConfig.OPENSPEECH_SUBMIT_URL)
-      .header("Content-Type", "application/json")
-      .header("x-api-key", BuildConfig.OPENSPEECH_API_KEY)
-      .header("X-Api-Resource-Id", BuildConfig.OPENSPEECH_RESOURCE_ID)
-      .header("X-Api-Request-Id", requestId)
-      .header("X-Api-Sequence", "-1")
-      .post(bodyJson.toString().toRequestBody(JSON_MEDIA_TYPE))
-      .build()
-
-    httpClient.newCall(request).execute().use { response ->
-      val statusCode = response.header("X-Api-Status-Code").orEmpty()
-      val message = response.header("X-Api-Message").orEmpty()
-
-      if (!response.isSuccessful) {
-        throw IllegalStateException("提交语音识别任务失败(${response.code}): ${message.ifBlank { "HTTP 错误" }}")
-      }
-
-      if (statusCode.isNotBlank() && statusCode != STATUS_SUCCESS && statusCode != STATUS_PROCESSING && statusCode != STATUS_QUEUEING) {
-        throw IllegalStateException("提交语音识别任务失败: ${message.ifBlank { "状态码 $statusCode" }}")
-      }
-    }
-  }
-
-  private fun submitTaskByAudioData(requestId: String, audioBase64: String, uid: String) {
+  private fun submitTaskByAudioData(
+    requestId: String,
+    audioBase64: String,
+    uid: String,
+    config: OpenSpeechRuntimeConfig
+  ) {
     val bodyJson = JSONObject()
       .put("user", JSONObject().put("uid", uid))
       .put(
@@ -183,10 +114,10 @@ class OpenSpeechAsrClient(
       )
 
     val request = Request.Builder()
-      .url(BuildConfig.OPENSPEECH_SUBMIT_URL)
+      .url(config.submitUrl)
       .header("Content-Type", "application/json")
-      .header("x-api-key", BuildConfig.OPENSPEECH_API_KEY)
-      .header("X-Api-Resource-Id", BuildConfig.OPENSPEECH_RESOURCE_ID)
+      .header("x-api-key", config.apiKey)
+      .header("X-Api-Resource-Id", config.resourceId)
       .header("X-Api-Request-Id", requestId)
       .header("X-Api-Sequence", "-1")
       .post(bodyJson.toString().toRequestBody(JSON_MEDIA_TYPE))
@@ -206,16 +137,16 @@ class OpenSpeechAsrClient(
     }
   }
 
-  private fun defaultUid(): String {
-    return BuildConfig.OPENSPEECH_UID.trim().ifEmpty { "study-suit-user" }
+  private fun defaultUid(config: OpenSpeechRuntimeConfig): String {
+    return config.uid.trim().ifEmpty { "study-suit-user" }
   }
 
-  private fun queryTask(requestId: String): QueryResult {
+  private fun queryTask(requestId: String, config: OpenSpeechRuntimeConfig): QueryResult {
     val request = Request.Builder()
-      .url(BuildConfig.OPENSPEECH_QUERY_URL)
+      .url(config.queryUrl)
       .header("Content-Type", "application/json")
-      .header("x-api-key", BuildConfig.OPENSPEECH_API_KEY)
-      .header("X-Api-Resource-Id", BuildConfig.OPENSPEECH_RESOURCE_ID)
+      .header("x-api-key", config.apiKey)
+      .header("X-Api-Resource-Id", config.resourceId)
       .header("X-Api-Request-Id", requestId)
       .post("{}".toRequestBody(JSON_MEDIA_TYPE))
       .build()
@@ -286,7 +217,6 @@ class OpenSpeechAsrClient(
     private const val STATUS_SUCCESS = "20000000"
     private const val STATUS_PROCESSING = "20000001"
     private const val STATUS_QUEUEING = "20000002"
-    private const val DEMO_AUDIO_URL = "https://lf3-static.bytednsdoc.com/obj/eden-cn/lm_hz_ihsph/ljhwZthlaukjlkulzlp/console/bigtts/zh_female_cancan_mars_bigtts.mp3"
 
     private fun defaultHttpClient(): OkHttpClient {
       return OkHttpClient.Builder()
