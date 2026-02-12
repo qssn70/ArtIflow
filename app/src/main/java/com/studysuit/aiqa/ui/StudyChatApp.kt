@@ -1,12 +1,7 @@
 package com.studysuit.aiqa.ui
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -47,7 +42,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -73,6 +67,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.studysuit.aiqa.data.ArkApiClient
 import com.studysuit.aiqa.data.ArkRequestMessage
 import com.studysuit.aiqa.data.OpenSpeechAsrClient
+import com.studysuit.aiqa.data.PcmWavRecorder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -89,21 +84,12 @@ import java.util.Locale
 fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val snackbarHostState = remember { SnackbarHostState() }
+  val appScope = rememberCoroutineScope()
   val context = LocalContext.current
-  val speechRecognizer = remember(context) {
-    if (SpeechRecognizer.isRecognitionAvailable(context)) {
-      SpeechRecognizer.createSpeechRecognizer(context)
-    } else {
-      null
-    }
-  }
+  val wavRecorder = remember(context) { PcmWavRecorder(context.cacheDir) }
   var activeVoiceSpanId by remember { mutableStateOf<String?>(null) }
+  var activeVoiceSession by remember { mutableStateOf<PcmWavRecorder.Session?>(null) }
   var pendingPermissionSpanId by remember { mutableStateOf<String?>(null) }
-  var cancelRequested by remember { mutableStateOf(false) }
-  var recognizerReady by remember { mutableStateOf(false) }
-  var latestTranscript by remember { mutableStateOf("") }
-  var voiceCaptureStartMs by remember { mutableStateOf(0L) }
-  var pendingStopSpanId by remember { mutableStateOf<String?>(null) }
 
   LaunchedEffect(uiState.toastMessage) {
     val message = uiState.toastMessage ?: return@LaunchedEffect
@@ -124,33 +110,17 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   }
 
   val beginVoiceCapture: (String) -> Unit = { spanId ->
-    if (speechRecognizer == null) {
-      viewModel.showSpeechRecognizerUnavailable()
+    if (activeVoiceSession != null) {
+      viewModel.showRecordingBusy()
     } else {
-      cancelRequested = false
-      recognizerReady = false
-      latestTranscript = ""
-      voiceCaptureStartMs = System.currentTimeMillis()
-      pendingStopSpanId = null
-      activeVoiceSpanId = spanId
-      viewModel.showRecordingHint()
-
-      val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.SIMPLIFIED_CHINESE.toLanguageTag())
-        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-      }
-
-      runCatching {
-        speechRecognizer.cancel()
-        speechRecognizer.startListening(intent)
-      }.onFailure {
-        recognizerReady = false
-        latestTranscript = ""
-        pendingStopSpanId = null
-        activeVoiceSpanId = null
-        viewModel.showSpeechRecognizerUnavailable()
+      val startResult = wavRecorder.start()
+      startResult.onSuccess { session ->
+        activeVoiceSpanId = spanId
+        activeVoiceSession = session
+        viewModel.showRecordingHint()
+      }.onFailure { throwable ->
+        val message = throwable.message?.take(80).orEmpty().ifBlank { "初始化失败" }
+        viewModel.showRecordingStartFailed(message)
       }
     }
   }
@@ -168,100 +138,6 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       beginVoiceCapture(spanId)
     } else {
       viewModel.showMicrophonePermissionDenied()
-    }
-  }
-
-  DisposableEffect(speechRecognizer) {
-    if (speechRecognizer == null) {
-      onDispose { }
-    } else {
-      val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {
-          recognizerReady = true
-          val activeSpanId = activeVoiceSpanId
-          if (activeSpanId != null && pendingStopSpanId == activeSpanId) {
-            pendingStopSpanId = null
-            runCatching {
-              speechRecognizer.stopListening()
-            }.onFailure {
-              val fallbackTranscript = latestTranscript.trim().ifBlank { null }
-              recognizerReady = false
-              latestTranscript = ""
-              activeVoiceSpanId = null
-              viewModel.submitVoiceFollowup(spanId = activeSpanId, transcript = fallbackTranscript)
-            }
-          }
-        }
-
-        override fun onBeginningOfSpeech() = Unit
-        override fun onRmsChanged(rmsdB: Float) = Unit
-        override fun onBufferReceived(buffer: ByteArray?) = Unit
-        override fun onEndOfSpeech() = Unit
-
-        override fun onPartialResults(partialResults: Bundle?) {
-          val transcript = partialResults
-            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            ?.firstOrNull()
-            ?.trim()
-            .orEmpty()
-
-          if (transcript.isNotBlank()) {
-            latestTranscript = transcript
-          }
-        }
-
-        override fun onEvent(eventType: Int, params: Bundle?) = Unit
-
-        override fun onResults(results: Bundle?) {
-          val spanId = activeVoiceSpanId ?: return
-          recognizerReady = false
-          activeVoiceSpanId = null
-          pendingStopSpanId = null
-          cancelRequested = false
-
-          val transcript = results
-            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            ?.firstOrNull()
-            ?.trim()
-            .takeUnless { text -> text.isNullOrBlank() }
-            ?: latestTranscript.trim()
-
-          latestTranscript = ""
-
-          viewModel.submitVoiceFollowup(
-            spanId = spanId,
-            transcript = transcript.ifBlank { null }
-          )
-        }
-
-        override fun onError(error: Int) {
-          val spanId = activeVoiceSpanId
-          val fallbackTranscript = latestTranscript.trim()
-          recognizerReady = false
-          latestTranscript = ""
-          pendingStopSpanId = null
-          activeVoiceSpanId = null
-
-          if (cancelRequested) {
-            cancelRequested = false
-            return
-          }
-
-          if (spanId != null) {
-            if (fallbackTranscript.isNotBlank()) {
-              viewModel.submitVoiceFollowup(spanId = spanId, transcript = fallbackTranscript)
-            } else {
-              viewModel.showSpeechRecognitionFailed(error)
-              viewModel.submitVoiceFollowup(spanId = spanId, transcript = null)
-            }
-          }
-        }
-      }
-
-      speechRecognizer.setRecognitionListener(listener)
-      onDispose {
-        speechRecognizer.destroy()
-      }
     }
   }
 
@@ -285,12 +161,16 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     }
 
     if (activeVoiceSpanId == spanId) {
-      cancelRequested = true
-      recognizerReady = false
-      latestTranscript = ""
-      pendingStopSpanId = null
+      val session = activeVoiceSession
       activeVoiceSpanId = null
-      speechRecognizer?.cancel()
+      activeVoiceSession = null
+      if (session != null) {
+        appScope.launch {
+          runCatching {
+            session.stop(discard = true)
+          }
+        }
+      }
     }
 
     viewModel.showRecordingCanceled()
@@ -299,26 +179,33 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val onVoiceCaptureSubmit: (String) -> Unit = { spanId ->
     when {
       pendingPermissionSpanId == spanId -> Unit
-      activeVoiceSpanId == spanId && speechRecognizer != null -> {
-        val elapsedMs = System.currentTimeMillis() - voiceCaptureStartMs
-        if (!recognizerReady && elapsedMs < 700L) {
-          pendingStopSpanId = spanId
+      activeVoiceSpanId == spanId && activeVoiceSession != null -> {
+        val session = activeVoiceSession
+        activeVoiceSpanId = null
+        activeVoiceSession = null
+
+        if (session == null) {
+          viewModel.showVoiceCaptureInvalid("未处于录音状态")
         } else {
-          runCatching {
-            speechRecognizer.stopListening()
-          }.onFailure {
-            val fallbackTranscript = latestTranscript.trim().ifBlank { null }
-            recognizerReady = false
-            latestTranscript = ""
-            pendingStopSpanId = null
-            activeVoiceSpanId = null
-            viewModel.submitVoiceFollowup(spanId = spanId, transcript = fallbackTranscript)
+          appScope.launch {
+            val audioResult = runCatching {
+              session.stop(discard = false)
+            }.getOrElse { throwable ->
+              Result.failure(throwable)
+            }
+
+            audioResult.onSuccess { audioBytes ->
+              viewModel.submitVoiceFollowupAudio(spanId = spanId, audioBytes = audioBytes)
+            }.onFailure { throwable ->
+              val message = throwable.message?.take(80).orEmpty().ifBlank { "未采集到有效录音" }
+              viewModel.showVoiceCaptureInvalid(message)
+            }
           }
         }
       }
 
       else -> {
-        viewModel.submitVoiceFollowup(spanId = spanId, transcript = null)
+        viewModel.showVoiceCaptureInvalid("未处于录音状态")
       }
     }
   }
@@ -347,7 +234,9 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
           .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
       ) {
-        HeaderBar(onNewChat = viewModel::startNewChat)
+        HeaderBar(
+          onNewChat = viewModel::startNewChat
+        )
         ProfileCard(profile = uiState.profile)
 
         LazyColumn(
@@ -872,31 +761,20 @@ class StudyChatViewModel : ViewModel() {
           throw throwable
         }
 
-        val fallback = buildSpanExplanation(span.content)
         val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
 
         finishRequest { current ->
-          val updatedHistory = current.histories.toMutableMap()
-          val detail = SpanDetail(
-            id = nextDetailId(),
-            mode = "自动讲解",
-            time = currentDateTime(),
-            answer = fallback
-          )
-          updatedHistory[spanId] = listOf(detail) + current.histories[spanId].orEmpty()
-
           current.copy(
-            histories = updatedHistory,
-            toastMessage = "已保存本地讲解：$errorHint"
+            toastMessage = "自动讲解失败：$errorHint"
           )
         }
       }
     }
   }
 
-  fun submitVoiceFollowup(spanId: String, transcript: String? = null) {
+  fun submitVoiceFollowupAudio(spanId: String, audioBytes: ByteArray) {
     val span = findSpanById(_uiState.value.messages, spanId) ?: return
-    runVoiceFollowupWithAsr(span = span, transcript = transcript)
+    runVoiceFollowupByOpenSpeech(span = span, audioBytes = audioBytes)
   }
 
   fun openDetails(spanId: String) {
@@ -919,23 +797,20 @@ class StudyChatViewModel : ViewModel() {
     postToast("已取消语音追问")
   }
 
+  fun showRecordingBusy() {
+    postToast("已有录音任务进行中")
+  }
+
+  fun showRecordingStartFailed(reason: String) {
+    postToast("录音启动失败：$reason")
+  }
+
+  fun showVoiceCaptureInvalid(reason: String) {
+    postToast("录音无效：$reason")
+  }
+
   fun showMicrophonePermissionDenied() {
     postToast("麦克风权限被拒绝，无法语音追问")
-  }
-
-  fun showSpeechRecognizerUnavailable() {
-    postToast("设备语音识别不可用，将使用默认追问")
-  }
-
-  fun showSpeechRecognitionFailed(errorCode: Int) {
-    val reason = when (errorCode) {
-      SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "语音输入超时"
-      SpeechRecognizer.ERROR_NO_MATCH -> "未识别到有效语音"
-      SpeechRecognizer.ERROR_NETWORK,
-      SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "语音服务网络异常"
-      else -> "错误码 $errorCode"
-    }
-    postToast("语音识别失败：$reason")
   }
 
   fun consumeToast() {
@@ -944,53 +819,46 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
-  private fun runVoiceFollowupWithAsr(span: SpanData, transcript: String?) {
-    val fallbackQuestion = "这段“${shorten(span.content, 24)}”我没懂，能换个角度讲吗？"
-    val voiceQuestion = transcript?.trim().orEmpty()
-
-    if (voiceQuestion.isNotBlank()) {
-      enqueueSpanFollowupAndFetch(
-        span = span,
-        followupQuestion = voiceQuestion,
-        isVoice = true,
-        mode = "语音追问"
-      )
+  private fun runVoiceFollowupByOpenSpeech(span: SpanData, audioBytes: ByteArray) {
+    if (audioBytes.isEmpty()) {
+      postToast("录音数据为空，未提交追问")
       return
     }
 
-    if (!openSpeechAsrClient.isConfigured() || openSpeechAsrClient.isDemoAudioConfigured()) {
-      postToast("未识别到录音内容，请按住说话后再松手")
+    if (!openSpeechAsrClient.isConfigured()) {
+      postToast("未配置豆包语音识别，未提交追问")
       return
     }
 
     val requestConversationToken = conversationToken
-    startRequest(toastMessage = "语音识别中...")
+    startRequest(toastMessage = "豆包语音识别中...")
 
     viewModelScope.launch {
-      val asrResult = openSpeechAsrClient.transcribeConfiguredAudio()
+      val asrResult = openSpeechAsrClient.transcribeByAudioData(audioBytes = audioBytes)
       if (requestConversationToken != conversationToken) {
         finishRequest()
         return@launch
       }
 
-      val asrQuestion = asrResult.getOrNull()
-        ?.takeIf { transcript -> transcript.isNotBlank() }
-        ?.trim()
-        ?: fallbackQuestion
-
       finishRequest()
 
-      enqueueSpanFollowupAndFetch(
-        span = span,
-        followupQuestion = asrQuestion,
-        isVoice = true,
-        mode = "语音追问"
-      )
-
-      if (asrResult.isFailure) {
-        val message = asrResult.exceptionOrNull()?.message?.take(60).orEmpty()
-        postToast("语音识别失败，已使用默认追问${if (message.isBlank()) "" else ": $message"}")
+      val transcript = asrResult.getOrNull()?.trim().orEmpty()
+      if (asrResult.isSuccess && transcript.isNotBlank()) {
+        enqueueSpanFollowupAndFetch(
+          span = span,
+          followupQuestion = transcript,
+          isVoice = true,
+          mode = "语音追问"
+        )
+        return@launch
       }
+
+      val errorHint = if (asrResult.isFailure) {
+        asrResult.exceptionOrNull()?.message?.take(80).orEmpty().ifBlank { "识别失败" }
+      } else {
+        "识别结果为空"
+      }
+      postToast("豆包语音识别失败：$errorHint，未提交追问")
     }
   }
 
@@ -1054,23 +922,11 @@ class StudyChatViewModel : ViewModel() {
           throw throwable
         }
 
-        val fallback = buildFallbackReply(normalizedQuestion)
         val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
 
         finishRequest { current ->
-          val updatedHistory = current.histories.toMutableMap()
-          val detail = SpanDetail(
-            id = nextDetailId(),
-            mode = mode,
-            time = currentDateTime(),
-            question = normalizedQuestion,
-            answer = fallback
-          )
-          updatedHistory[span.id] = listOf(detail) + current.histories[span.id].orEmpty()
-
           current.copy(
-            histories = updatedHistory,
-            toastMessage = "追问已保存（本地回答）：$errorHint"
+            toastMessage = "追问失败：$errorHint"
           )
         }
       }
@@ -1119,14 +975,11 @@ class StudyChatViewModel : ViewModel() {
           throw throwable
         }
 
-        val fallback = buildFallbackReply(question)
-        val assistantMessage = createAssistantMessage(fallback, question)
         val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
 
         finishRequest { current ->
           current.copy(
-            messages = current.messages + assistantMessage,
-            toastMessage = "已切换本地回答：$errorHint"
+            toastMessage = "回答失败：$errorHint"
           )
         }
       }
@@ -1283,19 +1136,6 @@ class StudyChatViewModel : ViewModel() {
     return chunks
   }
 
-  private fun buildFallbackReply(question: String): String {
-    val topics = detectTopics(question)
-    val focus = topics.firstOrNull() ?: "这个知识点"
-    val extension = topics.getOrNull(1)?.let { "并且串联 $it" } ?: "并且避免审题漏条件"
-
-    return listOf(
-      "当前网络波动，先给你本地讲解：",
-      "先给你结论：$focus 题最稳的做法，是把题干翻译成“已知 -> 目标 -> 校验”三步，再下手计算。",
-      "做题时先写一个 20 秒框架：先列已知量和限制，再写要证什么，最后检查单位或区间，$extension。",
-      "如果某段看不懂，左滑该段：松手自动讲解；左滑不松手进入语音追问；右滑呼出该段详解历史。"
-    ).joinToString(separator = "\n\n")
-  }
-
   private fun buildAutoExplainPrompt(spanContent: String): String {
     return buildString {
       append("请只针对下面这一段内容做讲解。")
@@ -1304,20 +1144,6 @@ class StudyChatViewModel : ViewModel() {
       append("\n\n段落内容：")
       append(spanContent)
     }
-  }
-
-  private fun buildSpanExplanation(content: String): String {
-    val clean = content.trim().trimEnd('。', '！', '？', '!', '?')
-    return "把这句拆成两步就容易了：先确认题目给了什么条件，再确认你要推出什么结论。$clean。做题时先写“已知/求证”两行，准确率会明显提升。"
-  }
-
-  private fun detectTopics(text: String): List<String> {
-    val normalized = text.lowercase(Locale.getDefault())
-    val matched = topicRules.filter { rule ->
-      rule.keywords.any { keyword -> normalized.contains(keyword) }
-    }.map { it.topic }
-
-    return if (matched.isEmpty()) listOf("通用方法") else matched
   }
 
   private fun postToast(message: String) {
@@ -1351,13 +1177,6 @@ class StudyChatViewModel : ViewModel() {
     return formatter.format(Date())
   }
 
-  private fun shorten(content: String, maxLength: Int): String {
-    if (content.length <= maxLength) {
-      return content
-    }
-
-    return "${content.take(maxLength)}..."
-  }
 }
 
 private fun findSpanById(messages: List<ChatMessage>, spanId: String?): SpanData? {
