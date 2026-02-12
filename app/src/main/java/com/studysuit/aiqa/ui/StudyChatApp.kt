@@ -1,8 +1,13 @@
 package com.studysuit.aiqa.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -10,6 +15,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.Orientation
@@ -18,19 +24,27 @@ import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -54,7 +68,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -77,6 +93,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
+import java.io.ByteArrayOutputStream
 import java.util.Date
 import java.util.Locale
 
@@ -90,6 +107,83 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   var activeVoiceSpanId by remember { mutableStateOf<String?>(null) }
   var activeVoiceSession by remember { mutableStateOf<PcmWavRecorder.Session?>(null) }
   var pendingPermissionSpanId by remember { mutableStateOf<String?>(null) }
+  var pendingCameraCapture by remember { mutableStateOf(false) }
+
+  val cameraImageLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.TakePicturePreview()
+  ) { bitmap ->
+    if (bitmap == null) {
+      viewModel.showImageSearchCanceled()
+    } else {
+      val imageBytes = runCatching { bitmapToJpeg(bitmap) }.getOrNull()
+      if (imageBytes == null || imageBytes.isEmpty()) {
+        viewModel.showImageReadFailed("拍照结果为空")
+      } else {
+        viewModel.submitImageQuestion(imageBytes = imageBytes, source = "拍照搜题")
+      }
+    }
+  }
+
+  val galleryImageLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.PickVisualMedia()
+  ) { uri ->
+    if (uri == null) {
+      viewModel.showImageSearchCanceled()
+    } else {
+      val imageBytes = runCatching {
+        val rawBytes = readImageBytes(context, uri)
+        transcodeImageToJpeg(rawBytes)
+      }.getOrNull()
+      if (imageBytes == null || imageBytes.isEmpty()) {
+        viewModel.showImageReadFailed("相册图片读取失败")
+      } else {
+        viewModel.submitImageQuestion(imageBytes = imageBytes, source = "相册搜题")
+      }
+    }
+  }
+
+  val cameraPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission()
+  ) { granted ->
+    if (!pendingCameraCapture) {
+      return@rememberLauncherForActivityResult
+    }
+
+    pendingCameraCapture = false
+    if (granted) {
+      cameraImageLauncher.launch(null)
+    } else {
+      viewModel.showCameraPermissionDenied()
+    }
+  }
+
+  val onCameraQuestionSearch: () -> Unit = {
+    if (activeVoiceSession != null) {
+      viewModel.showRecordingBusy()
+    } else {
+      val granted = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.CAMERA
+      ) == PackageManager.PERMISSION_GRANTED
+
+      if (granted) {
+        cameraImageLauncher.launch(null)
+      } else {
+        pendingCameraCapture = true
+        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+      }
+    }
+  }
+
+  val onGalleryQuestionSearch: () -> Unit = {
+    if (activeVoiceSession != null) {
+      viewModel.showRecordingBusy()
+    } else {
+      galleryImageLauncher.launch(
+        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+      )
+    }
+  }
 
   LaunchedEffect(uiState.toastMessage) {
     val message = uiState.toastMessage ?: return@LaunchedEffect
@@ -271,7 +365,9 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
           input = uiState.input,
           isLoading = uiState.isLoading,
           onInputChanged = viewModel::onInputChanged,
-          onSend = viewModel::sendQuestion
+          onSend = viewModel::sendQuestion,
+          onCameraSearch = onCameraQuestionSearch,
+          onGallerySearch = onGalleryQuestionSearch
         )
       }
     }
@@ -336,6 +432,12 @@ private fun ProfileCard(profile: ProfileState) {
 
 @Composable
 private fun UserBubble(message: ChatMessage.User) {
+  val previewBitmap = remember(message.imagePreviewBytes) {
+    message.imagePreviewBytes?.let { bytes ->
+      BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    }
+  }
+
   Row(
     modifier = Modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.End
@@ -346,7 +448,22 @@ private fun UserBubble(message: ChatMessage.User) {
       shape = RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomEnd = 16.dp, bottomStart = 16.dp),
       shadowElevation = 2.dp
     ) {
-      Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+      Column(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        if (previewBitmap != null) {
+          Image(
+            bitmap = previewBitmap.asImageBitmap(),
+            contentDescription = "题目图片",
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(min = 90.dp, max = 180.dp)
+              .clip(RoundedCornerShape(10.dp)),
+            contentScale = ContentScale.Crop
+          )
+        }
+
         Text(text = message.text, style = MaterialTheme.typography.bodyMedium)
         Text(
           text = message.time,
@@ -571,29 +688,64 @@ private fun ComposerBar(
   input: String,
   isLoading: Boolean,
   onInputChanged: (String) -> Unit,
-  onSend: () -> Unit
+  onSend: () -> Unit,
+  onCameraSearch: () -> Unit,
+  onGallerySearch: () -> Unit
 ) {
   Row(
     modifier = Modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.spacedBy(8.dp),
     verticalAlignment = Alignment.CenterVertically
   ) {
+    Surface(
+      color = Color(0xFFEAF6EF),
+      shape = CircleShape,
+      modifier = Modifier.size(38.dp)
+    ) {
+      IconButton(onClick = onCameraSearch) {
+        Icon(
+          imageVector = Icons.Rounded.PhotoCamera,
+          contentDescription = "拍照搜题",
+          tint = Color(0xFF2D7A63)
+        )
+      }
+    }
+
+    Surface(
+      color = Color(0xFFF2F7FB),
+      shape = CircleShape,
+      modifier = Modifier.size(38.dp)
+    ) {
+      IconButton(onClick = onGallerySearch) {
+        Icon(
+          imageVector = Icons.Rounded.Add,
+          contentDescription = "相册搜题",
+          tint = Color(0xFF3D6E93)
+        )
+      }
+    }
+
     OutlinedTextField(
       value = input,
       onValueChange = onInputChanged,
-      modifier = Modifier.weight(1f),
+      modifier = Modifier
+        .weight(1f)
+        .heightIn(min = 44.dp, max = 44.dp),
       shape = RoundedCornerShape(12.dp),
       enabled = true,
       singleLine = true,
-      placeholder = { Text(text = "输入问题，比如：二次函数顶点式怎么判断最值？") }
+      textStyle = MaterialTheme.typography.bodySmall,
+      placeholder = { Text(text = "输入问题", style = MaterialTheme.typography.bodySmall) }
     )
 
     Button(
       onClick = onSend,
       shape = RoundedCornerShape(12.dp),
-      enabled = input.isNotBlank()
+      contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+      enabled = input.isNotBlank(),
+      modifier = Modifier.heightIn(min = 40.dp, max = 40.dp)
     ) {
-      Text(text = if (isLoading) "并发中" else "发送")
+      Text(text = if (isLoading) "并发中" else "发送", style = MaterialTheme.typography.bodySmall)
     }
   }
 }
@@ -716,6 +868,64 @@ class StudyChatViewModel : ViewModel() {
     )
   }
 
+  fun submitImageQuestion(imageBytes: ByteArray, source: String) {
+    if (imageBytes.isEmpty()) {
+      postToast("图片为空，无法搜题")
+      return
+    }
+
+    val requestConversationToken = conversationToken
+    val question = "$source：请识别并讲解这道题"
+    val userMessage = ChatMessage.User(
+      id = nextMessageId(),
+      time = currentTime(),
+      text = question,
+      imagePreviewBytes = imageBytes
+    )
+
+    startRequest(toastMessage = "$source 处理中...") { current ->
+      current.copy(
+        messages = current.messages + userMessage,
+        profile = current.profile.updateWith(text = question, isFollowup = false, isVoice = false)
+      )
+    }
+
+    val prompt = buildImageQuestionPrompt()
+
+    viewModelScope.launch {
+      val result = arkApiClient.generateReplyWithImage(
+        prompt = prompt,
+        imageBytes = imageBytes,
+        mimeType = "image/jpeg"
+      )
+
+      if (requestConversationToken != conversationToken) {
+        finishRequest()
+        return@launch
+      }
+
+      result.onSuccess { reply ->
+        val assistantMessage = createAssistantMessage(reply, question)
+        finishRequest { current ->
+          current.copy(
+            messages = current.messages + assistantMessage,
+            toastMessage = "$source 已完成"
+          )
+        }
+      }.onFailure { throwable ->
+        if (throwable is CancellationException) {
+          finishRequest()
+          throw throwable
+        }
+
+        val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
+        finishRequest { current ->
+          current.copy(toastMessage = "$source 失败：$errorHint")
+        }
+      }
+    }
+  }
+
   fun startNewChat() {
     resetConversation()
     postToast("已开始新对话")
@@ -811,6 +1021,18 @@ class StudyChatViewModel : ViewModel() {
 
   fun showMicrophonePermissionDenied() {
     postToast("麦克风权限被拒绝，无法语音追问")
+  }
+
+  fun showCameraPermissionDenied() {
+    postToast("相机权限被拒绝，无法拍照搜题")
+  }
+
+  fun showImageSearchCanceled() {
+    postToast("已取消图片搜题")
+  }
+
+  fun showImageReadFailed(reason: String) {
+    postToast("图片读取失败：$reason")
   }
 
   fun consumeToast() {
@@ -1146,6 +1368,15 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
+  private fun buildImageQuestionPrompt(): String {
+    return buildString {
+      append("你是一名中学学科辅导老师。请先识别图片中的题干，再按步骤讲解并给出最终答案。")
+      append("如果图片里有多个小题，请按小题编号分别作答。")
+      append("输出格式：\n")
+      append("1) 题目识别\n2) 解题思路\n3) 详细步骤\n4) 最终答案")
+    }
+  }
+
   private fun postToast(message: String) {
     _uiState.update { current ->
       current.copy(toastMessage = message)
@@ -1227,6 +1458,31 @@ private fun detectTopicsForProfile(text: String): List<String> {
   return if (matched.isEmpty()) listOf("通用方法") else matched
 }
 
+private fun bitmapToJpeg(bitmap: Bitmap): ByteArray {
+  val stream = ByteArrayOutputStream()
+  if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, stream)) {
+    return ByteArray(0)
+  }
+  return stream.toByteArray()
+}
+
+private fun transcodeImageToJpeg(rawBytes: ByteArray): ByteArray {
+  if (rawBytes.isEmpty()) {
+    return ByteArray(0)
+  }
+
+  val bitmap = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) ?: return rawBytes
+  val jpegBytes = bitmapToJpeg(bitmap)
+  return if (jpegBytes.isEmpty()) rawBytes else jpegBytes
+}
+
+private fun readImageBytes(context: Context, uri: Uri): ByteArray {
+  val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+    input.readBytes()
+  }
+  return bytes ?: ByteArray(0)
+}
+
 private data class TopicRule(
   val topic: String,
   val keywords: List<String>
@@ -1264,7 +1520,8 @@ sealed interface ChatMessage {
   data class User(
     override val id: String,
     override val time: String,
-    val text: String
+    val text: String,
+    val imagePreviewBytes: ByteArray? = null
   ) : ChatMessage
 
   data class Assistant(

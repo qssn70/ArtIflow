@@ -1,5 +1,6 @@
 package com.studysuit.aiqa.data
 
+import android.util.Base64
 import com.studysuit.aiqa.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -54,6 +55,59 @@ class ArkApiClient(
         val text = parseAssistantText(endpoint = endpoint, body = body)
         if (text.isBlank()) {
           throw IllegalStateException("ARK 返回为空，请稍后重试")
+        }
+
+        text
+      }
+    }
+  }
+
+  suspend fun generateReplyWithImage(
+    prompt: String,
+    imageBytes: ByteArray,
+    mimeType: String = "image/jpeg"
+  ): Result<String> {
+    val normalizedPrompt = prompt.trim()
+    if (normalizedPrompt.isBlank()) {
+      return Result.failure(IllegalArgumentException("图片提问提示词为空"))
+    }
+
+    if (imageBytes.isEmpty()) {
+      return Result.failure(IllegalArgumentException("图片数据为空"))
+    }
+
+    if (!isConfigured()) {
+      return Result.failure(IllegalStateException("请先在 local.properties 配置 ARK_API_KEY"))
+    }
+
+    return withContext(Dispatchers.IO) {
+      runCatching {
+        val endpoint = normalizedEndpoint()
+        val requestBody = buildImageRequestBody(
+          endpoint = endpoint,
+          prompt = normalizedPrompt,
+          imageBytes = imageBytes,
+          mimeType = mimeType
+        )
+
+        val request = Request.Builder()
+          .url(endpointUrl(endpoint))
+          .post(requestBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
+          .header("Authorization", "Bearer ${BuildConfig.ARK_API_KEY}")
+          .header("Content-Type", "application/json")
+          .build()
+
+        val response = httpClient.newCall(request).execute()
+        val body = response.body?.string().orEmpty()
+
+        if (!response.isSuccessful) {
+          val message = extractErrorMessage(body)
+          throw IllegalStateException("ARK 图片请求失败 (${response.code}): $message")
+        }
+
+        val text = parseAssistantText(endpoint = endpoint, body = body)
+        if (text.isBlank()) {
+          throw IllegalStateException("ARK 图片识别返回为空，请稍后重试")
         }
 
         text
@@ -116,6 +170,67 @@ class ArkApiClient(
       JSONObject()
         .put("model", BuildConfig.ARK_MODEL)
         .put("messages", chatMessages)
+        .put("temperature", 0.7)
+        .toString()
+    }
+  }
+
+  private fun buildImageRequestBody(
+    endpoint: String,
+    prompt: String,
+    imageBytes: ByteArray,
+    mimeType: String
+  ): String {
+    val dataUrl = "data:$mimeType;base64,${Base64.encodeToString(imageBytes, Base64.NO_WRAP)}"
+
+    return if (endpoint == RESPONSES_ENDPOINT) {
+      val content = JSONArray()
+        .put(
+          JSONObject()
+            .put("type", "input_text")
+            .put("text", prompt)
+        )
+        .put(
+          JSONObject()
+            .put("type", "input_image")
+            .put("image_url", dataUrl)
+        )
+
+      JSONObject()
+        .put("model", BuildConfig.ARK_MODEL)
+        .put(
+          "input",
+          JSONArray().put(
+            JSONObject()
+              .put("role", "user")
+              .put("content", content)
+          )
+        )
+        .put("temperature", 0.7)
+        .toString()
+    } else {
+      val content = JSONArray()
+        .put(
+          JSONObject()
+            .put("type", "text")
+            .put("text", prompt)
+        )
+        .put(
+          JSONObject()
+            .put("type", "image_url")
+            .put("image_url", JSONObject().put("url", dataUrl))
+        )
+
+      JSONObject()
+        .put("model", BuildConfig.ARK_MODEL)
+        .put(
+          "messages",
+          JSONArray().put(
+            JSONObject()
+              .put("role", "user")
+              .put("content", content)
+          )
+        )
         .put("temperature", 0.7)
         .toString()
     }
