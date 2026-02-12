@@ -354,24 +354,33 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             .fillMaxWidth(),
           verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-          items(uiState.messages, key = { it.id }) { message ->
-            when (message) {
-              is ChatMessage.User -> UserBubble(message)
-              is ChatMessage.Assistant -> AssistantBubble(
-                message = message,
-                histories = uiState.histories,
-                onAutoExplain = viewModel::autoExplain,
-                onVoiceFollowup = onVoiceCaptureSubmit,
-                onOpenDetails = viewModel::openDetails,
-                onVoiceCaptureStart = onVoiceCaptureStart,
-                onVoiceCaptureCancel = onVoiceCaptureCancel
-              )
+          if (uiState.activePage == WorkspacePage.CHAT) {
+            items(uiState.messages, key = { it.id }) { message ->
+              when (message) {
+                is ChatMessage.User -> UserBubble(message)
+                is ChatMessage.Assistant -> AssistantBubble(
+                  message = message,
+                  histories = uiState.histories,
+                  onAutoExplain = viewModel::autoExplain,
+                  onVoiceFollowup = onVoiceCaptureSubmit,
+                  onOpenDetails = viewModel::openDetails,
+                  onVoiceCaptureStart = onVoiceCaptureStart,
+                  onVoiceCaptureCancel = onVoiceCaptureCancel
+                )
+              }
             }
-          }
 
-          if (uiState.isLoading) {
-            item(key = "assistant-loading") {
-              AssistantLoadingBubble()
+            if (uiState.isLoading) {
+              item(key = "assistant-loading") {
+                AssistantLoadingBubble()
+              }
+            }
+          } else {
+            item(key = "anki-workspace") {
+              AnkiWorkspace(
+                knowledgePoints = uiState.knowledgePoints,
+                cards = uiState.ankiCards
+              )
             }
           }
         }
@@ -383,6 +392,11 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
           onSend = viewModel::sendQuestion,
           onCameraSearch = onCameraQuestionSearch,
           onGallerySearch = onGalleryQuestionSearch
+        )
+
+        WorkspaceSwipeStrip(
+          activePage = uiState.activePage,
+          onSwitch = viewModel::switchWorkspacePage
         )
       }
     }
@@ -672,6 +686,149 @@ private fun SessionListDialog(
       }
     }
   )
+}
+
+@Composable
+private fun AnkiWorkspace(
+  knowledgePoints: Map<String, Int>,
+  cards: List<AnkiCard>
+) {
+  Column(
+    modifier = Modifier.fillMaxWidth(),
+    verticalArrangement = Arrangement.spacedBy(10.dp)
+  ) {
+    Text(
+      text = "知识点自动收集",
+      style = MaterialTheme.typography.titleSmall,
+      color = Color(0xFF2A6151)
+    )
+
+    if (knowledgePoints.isEmpty()) {
+      Text(
+        text = "还没有收集到知识点，先提问一两道题试试。",
+        style = MaterialTheme.typography.bodySmall,
+        color = Color(0xFF5D7069)
+      )
+    } else {
+      val topPoints = knowledgePoints.entries
+        .sortedByDescending { entry -> entry.value }
+        .take(16)
+
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+      ) {
+        topPoints.take(4).forEach { entry ->
+          Surface(
+            color = Color(0xFFEAF6EF),
+            shape = RoundedCornerShape(999.dp),
+            modifier = Modifier
+              .weight(1f)
+              .border(1.dp, Color(0x1A3C5D50), RoundedCornerShape(999.dp))
+          ) {
+            Text(
+              text = "${entry.key}·${entry.value}",
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF2D5B4D),
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+        }
+      }
+    }
+
+    HorizontalDivider(color = Color(0x1633564B))
+
+    Text(
+      text = "Anki 自动卡片（${cards.size}）",
+      style = MaterialTheme.typography.titleSmall,
+      color = Color(0xFF2A6151)
+    )
+
+    if (cards.isEmpty()) {
+      Text(
+        text = "还没有卡片。你每次提问并得到回答后会自动生成。",
+        style = MaterialTheme.typography.bodySmall,
+        color = Color(0xFF5D7069)
+      )
+    } else {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        cards.take(12).forEach { card ->
+          Surface(
+            color = Color(0xFFFBFEFC),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(10.dp))
+          ) {
+            Column(
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+              verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+              Text(
+                text = "Q: ${card.front}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF2F433C)
+              )
+              Text(
+                text = "A: ${card.back}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF355249),
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis
+              )
+              Text(
+                text = "${card.source} · ${formatSessionTime(card.createdAt)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF688179)
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun WorkspaceSwipeStrip(
+  activePage: WorkspacePage,
+  onSwitch: (WorkspacePage) -> Unit
+) {
+  var dragOffset by remember { mutableFloatStateOf(0f) }
+  val threshold = 68f
+
+  Surface(
+    color = Color(0xFFF2F7F3),
+    shape = RoundedCornerShape(999.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .heightIn(min = 28.dp, max = 28.dp)
+      .border(1.dp, Color(0x153A5A4F), RoundedCornerShape(999.dp))
+      .draggable(
+        orientation = Orientation.Horizontal,
+        state = rememberDraggableState { delta ->
+          dragOffset += delta
+        },
+        onDragStopped = {
+          when {
+            dragOffset <= -threshold -> onSwitch(WorkspacePage.ANKI)
+            dragOffset >= threshold -> onSwitch(WorkspacePage.CHAT)
+          }
+          dragOffset = 0f
+        }
+      )
+  ) {
+    Box(contentAlignment = Alignment.Center) {
+      Text(
+        text = if (activePage == WorkspacePage.CHAT) "在此左右滑动切换到 Anki 复习区" else "在此左右滑动返回聊天区",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF5A7169)
+      )
+    }
+  }
 }
 
 @Composable
@@ -1098,6 +1255,7 @@ class StudyChatViewModel : ViewModel() {
   private var messageSeed = 0
   private var spanSeed = 0
   private var detailSeed = 0
+  private var cardSeed = 0
   private var sessionSeed = 0
   private var conversationToken = 0L
   private var inFlightRequests = 0
@@ -1161,7 +1319,8 @@ class StudyChatViewModel : ViewModel() {
     startRequest(toastMessage = "$source 处理中...") { current ->
       current.copy(
         messages = current.messages + userMessage,
-        profile = current.profile.updateWith(text = question, isFollowup = false, isVoice = false)
+        profile = current.profile.updateWith(text = question, isFollowup = false, isVoice = false),
+        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(source))
       )
     }
 
@@ -1184,8 +1343,18 @@ class StudyChatViewModel : ViewModel() {
       result.onSuccess { reply ->
         val assistantMessage = createAssistantMessage(reply, question)
         finishRequest { current ->
+          val tags = detectKnowledgePoints(question + "\n" + reply)
+          val card = createAnkiCard(
+            front = question,
+            back = reply,
+            source = source,
+            tags = tags
+          )
+
           current.copy(
             messages = current.messages + assistantMessage,
+            knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(reply)),
+            ankiCards = prependAnkiCard(current.ankiCards, card),
             toastMessage = "$source 已完成"
           )
         }
@@ -1219,6 +1388,16 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
+  fun switchWorkspacePage(page: WorkspacePage) {
+    updateUiState(persistSession = true) { current ->
+      if (current.activePage == page) {
+        current
+      } else {
+        current.copy(activePage = page)
+      }
+    }
+  }
+
   fun switchSession(sessionId: String) {
     val target = sessionsById[sessionId] ?: return
     val now = System.currentTimeMillis()
@@ -1226,6 +1405,7 @@ class StudyChatViewModel : ViewModel() {
     touchSession(sessionId)
     val latestTarget = sessionsById[sessionId] ?: target
     val settings = _uiState.value.settings
+    hydrateSeeds(latestTarget)
 
     conversationToken += 1
     inFlightRequests = 0
@@ -1236,6 +1416,9 @@ class StudyChatViewModel : ViewModel() {
       profile = latestTarget.profile,
       input = latestTarget.input,
       selectedSpanId = null,
+      activePage = latestTarget.activePage,
+      knowledgePoints = latestTarget.knowledgePoints,
+      ankiCards = latestTarget.ankiCards,
       activeSessionId = latestTarget.id,
       sessionSummaries = currentSessionSummaries(),
       isSessionsOpen = false,
@@ -1492,7 +1675,8 @@ class StudyChatViewModel : ViewModel() {
           text = normalizedQuestion,
           isFollowup = true,
           isVoice = isVoice
-        )
+        ),
+        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(normalizedQuestion))
       )
     }
 
@@ -1521,9 +1705,17 @@ class StudyChatViewModel : ViewModel() {
             answer = reply
           )
           updatedHistory[span.id] = listOf(detail) + current.histories[span.id].orEmpty()
+          val tags = detectKnowledgePoints(normalizedQuestion + "\n" + reply)
+          val card = createAnkiCard(
+            front = normalizedQuestion,
+            back = reply,
+            source = mode,
+            tags = tags
+          )
 
           current.copy(
             histories = updatedHistory,
+            ankiCards = prependAnkiCard(current.ankiCards, card),
             toastMessage = "追问已保存，右滑查看本段详解"
           )
         }
@@ -1558,7 +1750,8 @@ class StudyChatViewModel : ViewModel() {
       current.copy(
         input = if (clearInput) "" else current.input,
         messages = current.messages + userMessage,
-        profile = current.profile.updateWith(text = question, isFollowup = isFollowup, isVoice = isVoice)
+        profile = current.profile.updateWith(text = question, isFollowup = isFollowup, isVoice = isVoice),
+        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(question))
       )
     }
 
@@ -1576,8 +1769,17 @@ class StudyChatViewModel : ViewModel() {
         val assistantMessage = createAssistantMessage(reply, question)
 
         finishRequest { current ->
+          val tags = detectKnowledgePoints(question + "\n" + reply)
+          val card = createAnkiCard(
+            front = question,
+            back = reply,
+            source = if (isFollowup) "段落追问" else "聊天问答",
+            tags = tags
+          )
+
           current.copy(
             messages = current.messages + assistantMessage,
+            ankiCards = prependAnkiCard(current.ankiCards, card),
             toastMessage = null
           )
         }
@@ -1656,6 +1858,7 @@ class StudyChatViewModel : ViewModel() {
     messageSeed = 0
     spanSeed = 0
     detailSeed = 0
+    cardSeed = 0
     sessionSeed += 1
 
     val intro = listOf(
@@ -1675,6 +1878,9 @@ class StudyChatViewModel : ViewModel() {
       profile = ProfileState(level = "高二 · 进阶冲刺"),
       input = "",
       selectedSpanId = null,
+      activePage = WorkspacePage.CHAT,
+      knowledgePoints = emptyMap(),
+      ankiCards = emptyList(),
       activeSessionId = sessionId,
       sessionSummaries = emptyList(),
       isSessionsOpen = false,
@@ -1693,7 +1899,10 @@ class StudyChatViewModel : ViewModel() {
       messages = initialState.messages,
       histories = initialState.histories,
       profile = initialState.profile,
-      input = initialState.input
+      input = initialState.input,
+      activePage = initialState.activePage,
+      knowledgePoints = initialState.knowledgePoints,
+      ankiCards = initialState.ankiCards
     )
     sessionOrder.remove(sessionId)
     sessionOrder.add(0, sessionId)
@@ -1763,7 +1972,10 @@ class StudyChatViewModel : ViewModel() {
       messages = state.messages,
       histories = state.histories,
       profile = state.profile,
-      input = state.input
+      input = state.input,
+      activePage = state.activePage,
+      knowledgePoints = state.knowledgePoints,
+      ankiCards = state.ankiCards
     )
 
     sessionsById[sessionId] = updated
@@ -1843,6 +2055,9 @@ class StudyChatViewModel : ViewModel() {
       profile = active.profile,
       input = active.input,
       selectedSpanId = null,
+      activePage = active.activePage,
+      knowledgePoints = active.knowledgePoints,
+      ankiCards = active.ankiCards,
       activeSessionId = active.id,
       sessionSummaries = currentSessionSummaries(),
       isSessionsOpen = false,
@@ -1869,6 +2084,10 @@ class StudyChatViewModel : ViewModel() {
       .flatten()
       .mapNotNull { detail -> detail.id.removePrefix("detail-").toIntOrNull() }
       .maxOrNull() ?: 0
+
+    cardSeed = active.ankiCards.mapNotNull { card ->
+      card.id.removePrefix("card-").toIntOrNull()
+    }.maxOrNull() ?: 0
   }
 
   private fun persistSessionsAsync() {
@@ -1945,6 +2164,62 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
+  private fun mergeKnowledgePoints(
+    current: Map<String, Int>,
+    texts: List<String>
+  ): Map<String, Int> {
+    val merged = current.toMutableMap()
+    val points = texts
+      .asSequence()
+      .flatMap { text -> detectKnowledgePoints(text).asSequence() }
+      .filter { point -> point.isNotBlank() }
+      .distinct()
+      .toList()
+
+    points.forEach { point ->
+      merged[point] = (merged[point] ?: 0) + 1
+    }
+
+    return merged
+  }
+
+  private fun detectKnowledgePoints(text: String): List<String> {
+    val normalized = text.lowercase(Locale.getDefault())
+    val matched = knowledgeRules
+      .filter { rule -> rule.keywords.any { keyword -> normalized.contains(keyword) } }
+      .map { rule -> rule.point }
+      .distinct()
+
+    return if (matched.isEmpty()) detectTopicsForProfile(text) else matched
+  }
+
+  private fun createAnkiCard(
+    front: String,
+    back: String,
+    source: String,
+    tags: List<String>
+  ): AnkiCard {
+    val normalizedFront = front.trim().replace(Regex("\\s+"), " ").take(160)
+    val normalizedBack = back.trim().replace(Regex("\\s+"), " ").take(280)
+    val effectiveTags = tags.map(String::trim).filter(String::isNotEmpty).distinct().take(5)
+
+    return AnkiCard(
+      id = nextCardId(),
+      front = normalizedFront,
+      back = normalizedBack,
+      tags = effectiveTags,
+      source = source,
+      createdAt = System.currentTimeMillis()
+    )
+  }
+
+  private fun prependAnkiCard(current: List<AnkiCard>, card: AnkiCard): List<AnkiCard> {
+    val deduplicated = current.filterNot { existing ->
+      existing.front == card.front && existing.back == card.back
+    }
+    return listOf(card) + deduplicated.take(199)
+  }
+
   private fun postToast(message: String) {
     updateUiState { current ->
       current.copy(toastMessage = message)
@@ -1964,6 +2239,11 @@ class StudyChatViewModel : ViewModel() {
   private fun nextDetailId(): String {
     detailSeed += 1
     return "detail-$detailSeed"
+  }
+
+  private fun nextCardId(): String {
+    cardSeed += 1
+    return "card-$cardSeed"
   }
 
   private fun currentTime(): String {
@@ -2047,12 +2327,27 @@ private data class TopicRule(
   val keywords: List<String>
 )
 
+private data class KnowledgeRule(
+  val point: String,
+  val keywords: List<String>
+)
+
 private val topicRules = listOf(
   TopicRule(topic = "函数", keywords = listOf("函数", "顶点", "最值", "导数", "单调")),
   TopicRule(topic = "几何", keywords = listOf("几何", "三角形", "圆", "向量", "角度")),
   TopicRule(topic = "概率", keywords = listOf("概率", "随机", "独立", "期望", "方差")),
   TopicRule(topic = "物理", keywords = listOf("力", "加速度", "电场", "磁场", "电流")),
   TopicRule(topic = "化学", keywords = listOf("氧化", "还原", "反应", "离子", "平衡"))
+)
+
+private val knowledgeRules = listOf(
+  KnowledgeRule(point = "函数与图像", keywords = listOf("函数", "图像", "抛物线", "导数", "单调", "最值")),
+  KnowledgeRule(point = "方程与不等式", keywords = listOf("方程", "不等式", "根", "判别式", "配方", "二次")),
+  KnowledgeRule(point = "几何证明", keywords = listOf("几何", "三角形", "圆", "向量", "相似", "全等")),
+  KnowledgeRule(point = "概率统计", keywords = listOf("概率", "随机", "期望", "方差", "排列", "组合")),
+  KnowledgeRule(point = "力学", keywords = listOf("受力", "牛顿", "加速度", "速度", "位移", "动量")),
+  KnowledgeRule(point = "电磁学", keywords = listOf("电场", "电势", "电流", "电阻", "磁场", "感应")),
+  KnowledgeRule(point = "化学反应", keywords = listOf("氧化", "还原", "离子", "平衡", "反应", "浓度"))
 )
 
 private const val DEFAULT_IMAGE_PROMPT =
@@ -2118,6 +2413,9 @@ data class ChatUiState(
   val profile: ProfileState = ProfileState(level = "高二 · 进阶冲刺"),
   val input: String = "",
   val selectedSpanId: String? = null,
+  val activePage: WorkspacePage = WorkspacePage.CHAT,
+  val knowledgePoints: Map<String, Int> = emptyMap(),
+  val ankiCards: List<AnkiCard> = emptyList(),
   val activeSessionId: String = "",
   val sessionSummaries: List<SessionSummary> = emptyList(),
   val isSessionsOpen: Boolean = false,
@@ -2174,6 +2472,20 @@ data class SpanDetail(
   val answer: String
 )
 
+enum class WorkspacePage {
+  CHAT,
+  ANKI
+}
+
+data class AnkiCard(
+  val id: String,
+  val front: String,
+  val back: String,
+  val tags: List<String>,
+  val source: String,
+  val createdAt: Long
+)
+
 private data class StoredSession(
   val id: String,
   val title: String,
@@ -2182,7 +2494,10 @@ private data class StoredSession(
   val messages: List<ChatMessage>,
   val histories: Map<String, List<SpanDetail>>,
   val profile: ProfileState,
-  val input: String
+  val input: String,
+  val activePage: WorkspacePage,
+  val knowledgePoints: Map<String, Int>,
+  val ankiCards: List<AnkiCard>
 )
 
 private data class PersistedSessions(
@@ -2283,10 +2598,13 @@ private fun StoredSession.toJson(): JSONObject {
     .put("createdAt", createdAt)
     .put("updatedAt", updatedAt)
     .put("input", input)
+    .put("activePage", activePage.name)
     .put("profile", profile.toJson())
     .put("messages", JSONArray().apply {
       messages.forEach { message -> put(message.toJson()) }
     })
+    .put("knowledgePoints", knowledgePoints.toKnowledgePointsJson())
+    .put("ankiCards", ankiCards.toJson())
     .put("histories", histories.toJson())
 }
 
@@ -2304,6 +2622,9 @@ private fun JSONObject.toStoredSession(): StoredSession? {
   val profile = optJSONObject("profile")?.toProfileState() ?: ProfileState(level = "高二 · 进阶冲刺")
   val messages = optJSONArray("messages")?.toChatMessages().orEmpty()
   val histories = optJSONObject("histories")?.toHistories().orEmpty()
+  val activePage = optString("activePage").toWorkspacePageOrDefault()
+  val knowledgePoints = optJSONObject("knowledgePoints")?.toKnowledgePoints().orEmpty()
+  val ankiCards = optJSONArray("ankiCards")?.toAnkiCards().orEmpty()
 
   return StoredSession(
     id = id,
@@ -2313,7 +2634,10 @@ private fun JSONObject.toStoredSession(): StoredSession? {
     messages = messages,
     histories = histories,
     profile = profile,
-    input = input
+    input = input,
+    activePage = activePage,
+    knowledgePoints = knowledgePoints,
+    ankiCards = ankiCards
   )
 }
 
@@ -2472,6 +2796,74 @@ private fun JSONObject.toHistories(): Map<String, List<SpanDetail>> {
     histories[spanId] = details
   }
   return histories
+}
+
+private fun Map<String, Int>.toKnowledgePointsJson(): JSONObject {
+  return JSONObject().apply {
+    forEach { (point, count) ->
+      put(point, count)
+    }
+  }
+}
+
+private fun JSONObject.toKnowledgePoints(): Map<String, Int> {
+  val points = linkedMapOf<String, Int>()
+  val iterator = keys()
+  while (iterator.hasNext()) {
+    val key = iterator.next()
+    points[key] = optInt(key, 0)
+  }
+  return points
+}
+
+private fun List<AnkiCard>.toJson(): JSONArray {
+  return JSONArray().apply {
+    forEach { card -> put(card.toJson()) }
+  }
+}
+
+private fun AnkiCard.toJson(): JSONObject {
+  return JSONObject()
+    .put("id", id)
+    .put("front", front)
+    .put("back", back)
+    .put("tags", JSONArray(tags))
+    .put("source", source)
+    .put("createdAt", createdAt)
+}
+
+private fun JSONArray.toAnkiCards(): List<AnkiCard> {
+  return buildList {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      val id = item.optString("id").ifBlank { "card-${System.currentTimeMillis()}-$index" }
+      val tags = item.optJSONArray("tags")?.let { array ->
+        buildList {
+          for (tagIndex in 0 until array.length()) {
+            val tag = array.optString(tagIndex).trim()
+            if (tag.isNotBlank()) {
+              add(tag)
+            }
+          }
+        }
+      }.orEmpty()
+
+      add(
+        AnkiCard(
+          id = id,
+          front = item.optString("front"),
+          back = item.optString("back"),
+          tags = tags,
+          source = item.optString("source"),
+          createdAt = item.optLong("createdAt", System.currentTimeMillis())
+        )
+      )
+    }
+  }
+}
+
+private fun String.toWorkspacePageOrDefault(): WorkspacePage {
+  return runCatching { WorkspacePage.valueOf(this) }.getOrDefault(WorkspacePage.CHAT)
 }
 
 private fun formatSessionTime(updatedAt: Long): String {
