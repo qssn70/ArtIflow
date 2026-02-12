@@ -8,8 +8,8 @@ plugins {
 val localProperties = Properties().apply {
   val localFile = rootProject.file("local.properties")
   if (localFile.exists()) {
-    localFile.inputStream().use { stream ->
-      load(stream)
+    localFile.inputStream().reader(Charsets.UTF_8).use { reader ->
+      load(reader)
     }
   }
 }
