@@ -21,6 +21,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,14 +32,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -80,9 +82,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.studysuit.aiqa.BuildConfig
 import com.studysuit.aiqa.data.ArkApiClient
 import com.studysuit.aiqa.data.ArkRequestMessage
+import com.studysuit.aiqa.data.ArkRuntimeConfig
 import com.studysuit.aiqa.data.OpenSpeechAsrClient
+import com.studysuit.aiqa.data.OpenSpeechRuntimeConfig
 import com.studysuit.aiqa.data.PcmWavRecorder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -324,14 +329,13 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       Column(
         modifier = Modifier
           .fillMaxSize()
-          .statusBarsPadding()
-          .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+          .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
       ) {
         HeaderBar(
-          onNewChat = viewModel::startNewChat
+          onNewChat = viewModel::startNewChat,
+          onOpenSettings = viewModel::openSettings
         )
-        ProfileCard(profile = uiState.profile)
 
         LazyColumn(
           modifier = Modifier
@@ -380,10 +384,20 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       onDismiss = viewModel::closeDetails
     )
   }
+
+  if (uiState.isSettingsOpen) {
+    SettingsDialog(
+      settings = uiState.settingsDraft,
+      onDismiss = viewModel::closeSettings,
+      onSave = viewModel::saveSettings,
+      onReset = viewModel::resetSettingsDraft,
+      onSettingsChanged = viewModel::setSettingsDraft
+    )
+  }
 }
 
 @Composable
-private fun HeaderBar(onNewChat: () -> Unit) {
+private fun HeaderBar(onNewChat: () -> Unit, onOpenSettings: () -> Unit) {
   Row(
     modifier = Modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.SpaceBetween,
@@ -392,42 +406,157 @@ private fun HeaderBar(onNewChat: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
       Text(
         text = "StudySuit · AI学习问答",
-        style = MaterialTheme.typography.titleLarge,
+        style = MaterialTheme.typography.titleMedium,
         color = Color(0xFF235E4E),
         fontWeight = FontWeight.Bold
       )
-      Text(
-        text = "普通聊天外观，段落级左滑右滑交互",
-        style = MaterialTheme.typography.bodySmall,
-        color = Color(0xFF556760)
-      )
     }
 
-    OutlinedButton(onClick = onNewChat) {
-      Text(text = "新对话")
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+      IconButton(onClick = onOpenSettings) {
+        Icon(
+          imageVector = Icons.Rounded.Settings,
+          contentDescription = "设置",
+          tint = Color(0xFF2C6756)
+        )
+      }
+
+      OutlinedButton(onClick = onNewChat) {
+        Text(text = "新对话")
+      }
     }
   }
 }
 
 @Composable
-private fun ProfileCard(profile: ProfileState) {
-  Card(
-    shape = RoundedCornerShape(16.dp),
-    colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF8F3)),
-    modifier = Modifier.fillMaxWidth()
-  ) {
-    Column(
-      modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-      verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-      Text(text = "画像等级：${profile.level}", style = MaterialTheme.typography.bodySmall)
-      Text(text = "关注知识点：${profile.topicsSummary()}", style = MaterialTheme.typography.bodySmall)
+private fun SettingsDialog(
+  settings: RuntimeSettings,
+  onDismiss: () -> Unit,
+  onSave: () -> Unit,
+  onReset: () -> Unit,
+  onSettingsChanged: (RuntimeSettings) -> Unit
+) {
+  val scrollState = rememberScrollState()
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    containerColor = Color(0xFFF6FBF7),
+    shape = RoundedCornerShape(18.dp),
+    title = {
       Text(
-        text = "追问：${profile.followups} 次 · 语音追问：${profile.voiceFollowups} 次",
-        style = MaterialTheme.typography.bodySmall
+        text = "设置",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF255E4D)
       )
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(max = 440.dp)
+          .verticalScroll(scrollState),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Text(text = "Ark（豆包）", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
+
+        SettingsTextField(
+          label = "ARK_API_KEY",
+          value = settings.arkApiKey,
+          onValueChange = { value -> onSettingsChanged(settings.copy(arkApiKey = value)) }
+        )
+        SettingsTextField(
+          label = "ARK_MODEL",
+          value = settings.arkModel,
+          onValueChange = { value -> onSettingsChanged(settings.copy(arkModel = value)) }
+        )
+        SettingsTextField(
+          label = "ARK_BASE_URL",
+          value = settings.arkBaseUrl,
+          onValueChange = { value -> onSettingsChanged(settings.copy(arkBaseUrl = value)) }
+        )
+        SettingsTextField(
+          label = "ARK_ENDPOINT",
+          value = settings.arkEndpoint,
+          onValueChange = { value -> onSettingsChanged(settings.copy(arkEndpoint = value)) }
+        )
+        SettingsTextField(
+          label = "ARK_SYSTEM_PROMPT",
+          value = settings.arkSystemPrompt,
+          minLines = 3,
+          onValueChange = { value -> onSettingsChanged(settings.copy(arkSystemPrompt = value)) }
+        )
+        SettingsTextField(
+          label = "图片搜题提示词",
+          value = settings.imagePrompt,
+          minLines = 3,
+          onValueChange = { value -> onSettingsChanged(settings.copy(imagePrompt = value)) }
+        )
+
+        HorizontalDivider(color = Color(0x1633564B))
+
+        Text(text = "OpenSpeech", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
+        SettingsTextField(
+          label = "OPENSPEECH_API_KEY",
+          value = settings.openSpeechApiKey,
+          onValueChange = { value -> onSettingsChanged(settings.copy(openSpeechApiKey = value)) }
+        )
+        SettingsTextField(
+          label = "OPENSPEECH_RESOURCE_ID",
+          value = settings.openSpeechResourceId,
+          onValueChange = { value -> onSettingsChanged(settings.copy(openSpeechResourceId = value)) }
+        )
+        SettingsTextField(
+          label = "OPENSPEECH_SUBMIT_URL",
+          value = settings.openSpeechSubmitUrl,
+          onValueChange = { value -> onSettingsChanged(settings.copy(openSpeechSubmitUrl = value)) }
+        )
+        SettingsTextField(
+          label = "OPENSPEECH_QUERY_URL",
+          value = settings.openSpeechQueryUrl,
+          onValueChange = { value -> onSettingsChanged(settings.copy(openSpeechQueryUrl = value)) }
+        )
+        SettingsTextField(
+          label = "OPENSPEECH_UID",
+          value = settings.openSpeechUid,
+          onValueChange = { value -> onSettingsChanged(settings.copy(openSpeechUid = value)) }
+        )
+      }
+    },
+    confirmButton = {
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(onClick = onReset) {
+          Text(text = "恢复默认", color = Color(0xFF4A665C))
+        }
+        Button(onClick = onSave, shape = RoundedCornerShape(10.dp)) {
+          Text(text = "保存")
+        }
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text(text = "取消", color = Color(0xFF4A665C))
+      }
     }
-  }
+  )
+}
+
+@Composable
+private fun SettingsTextField(
+  label: String,
+  value: String,
+  minLines: Int = 1,
+  onValueChange: (String) -> Unit
+) {
+  OutlinedTextField(
+    value = value,
+    onValueChange = onValueChange,
+    label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+    modifier = Modifier.fillMaxWidth(),
+    minLines = minLines,
+    maxLines = if (minLines == 1) 1 else 8,
+    shape = RoundedCornerShape(10.dp),
+    textStyle = MaterialTheme.typography.bodySmall
+  )
 }
 
 @Composable
@@ -567,9 +696,9 @@ private fun InteractiveSpanCard(
   var holdJob by remember(span.id) { mutableStateOf<Job?>(null) }
   val scope = rememberCoroutineScope()
 
-  val holdStartThreshold = -72f
-  val holdCancelThreshold = -28f
-  val recordingCancelThreshold = -32f
+  val holdStartThreshold = -108f
+  val holdCancelThreshold = -46f
+  val recordingCancelThreshold = -58f
 
   val borderColor = when {
     recording -> Color(0xFFDD8258)
@@ -631,7 +760,7 @@ private fun InteractiveSpanCard(
 
           if (shouldSendVoiceFollowup) {
             onVoiceFollowup(span.id)
-          } else if (finalOffset <= -96f) {
+          } else if (finalOffset <= -132f) {
             onAutoExplain(span.id)
           } else if (finalOffset >= 96f) {
             onOpenDetails(span.id)
@@ -758,37 +887,53 @@ private fun SpanDetailDialog(
 ) {
   AlertDialog(
     onDismissRequest = onDismiss,
+    containerColor = Color(0xFFF6FBF7),
+    shape = RoundedCornerShape(18.dp),
     confirmButton = {
       TextButton(onClick = onDismiss) {
-        Text(text = "关闭")
+        Text(text = "关闭", color = Color(0xFF2D6F5D))
       }
     },
     title = {
-      Text(text = "段落详解")
+      Text(
+        text = "段落详解",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF255E4D)
+      )
     },
     text = {
       Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(text = "原始段落", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4E5F58))
+        Text(
+          text = "原始段落",
+          style = MaterialTheme.typography.labelMedium,
+          color = Color(0xFF4B6058)
+        )
         Surface(
           modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp)),
-          color = Color(0xFFF7F5EF)
+            .clip(RoundedCornerShape(10.dp))
+            .border(1.dp, Color(0x183A5A4F), RoundedCornerShape(10.dp)),
+          color = Color(0xFFF4F9F3)
         ) {
           Text(
             text = span.content,
             modifier = Modifier.padding(10.dp),
-            style = MaterialTheme.typography.bodySmall
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF2F433C)
           )
         }
 
-        Text(text = "追问/讲解记录", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4E5F58))
+        Text(
+          text = "追问/讲解记录",
+          style = MaterialTheme.typography.labelMedium,
+          color = Color(0xFF4B6058)
+        )
 
         if (history.isEmpty()) {
           Text(
             text = "这段还没有记录。左滑松手自动讲解，长按松手语音追问，右滑查看。",
             style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF647670)
+            color = Color(0xFF5D7069)
           )
         } else {
           LazyColumn(
@@ -797,11 +942,11 @@ private fun SpanDetailDialog(
           ) {
             items(history, key = { it.id }) { detail ->
               Surface(
-                color = Color(0xFFFCFBF7),
+                color = Color(0xFFFBFEFC),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
                   .fillMaxWidth()
-                  .border(1.dp, Color(0x1F324C45), RoundedCornerShape(10.dp))
+                  .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(10.dp))
               ) {
                 Column(
                   modifier = Modifier.padding(9.dp),
@@ -810,18 +955,19 @@ private fun SpanDetailDialog(
                   Text(
                     text = "${detail.mode} · ${detail.time}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF6D7D76)
+                    color = Color(0xFF67817A)
                   )
                   detail.question?.takeIf { question -> question.isNotBlank() }?.let { question ->
                     Text(
                       text = "追问：$question",
                       style = MaterialTheme.typography.bodySmall,
-                      color = Color(0xFF40534D)
+                      color = Color(0xFF355249)
                     )
                   }
                   Text(
                     text = if (detail.question.isNullOrBlank()) detail.answer else "回答：${detail.answer}",
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF2F433C)
                   )
                 }
               }
@@ -875,6 +1021,7 @@ class StudyChatViewModel : ViewModel() {
     }
 
     val requestConversationToken = conversationToken
+    val settings = _uiState.value.settings
     val question = "$source：请识别并讲解这道题"
     val userMessage = ChatMessage.User(
       id = nextMessageId(),
@@ -890,13 +1037,15 @@ class StudyChatViewModel : ViewModel() {
       )
     }
 
-    val prompt = buildImageQuestionPrompt()
+    val prompt = settings.imagePrompt.trim().ifBlank { DEFAULT_IMAGE_PROMPT }
+    val arkConfig = settings.toArkRuntimeConfig()
 
     viewModelScope.launch {
       val result = arkApiClient.generateReplyWithImage(
         prompt = prompt,
         imageBytes = imageBytes,
-        mimeType = "image/jpeg"
+        mimeType = "image/jpeg",
+        config = arkConfig
       )
 
       if (requestConversationToken != conversationToken) {
@@ -931,9 +1080,47 @@ class StudyChatViewModel : ViewModel() {
     postToast("已开始新对话")
   }
 
+  fun openSettings() {
+    _uiState.update { current ->
+      current.copy(
+        isSettingsOpen = true,
+        settingsDraft = current.settings
+      )
+    }
+  }
+
+  fun closeSettings() {
+    _uiState.update { current ->
+      current.copy(isSettingsOpen = false)
+    }
+  }
+
+  fun setSettingsDraft(newSettings: RuntimeSettings) {
+    _uiState.update { current ->
+      current.copy(settingsDraft = newSettings)
+    }
+  }
+
+  fun resetSettingsDraft() {
+    _uiState.update { current ->
+      current.copy(settingsDraft = RuntimeSettings.defaults())
+    }
+  }
+
+  fun saveSettings() {
+    _uiState.update { current ->
+      current.copy(
+        settings = current.settingsDraft,
+        isSettingsOpen = false,
+        toastMessage = "设置已保存"
+      )
+    }
+  }
+
   fun autoExplain(spanId: String) {
     val span = findSpanById(_uiState.value.messages, spanId) ?: return
     val requestConversationToken = conversationToken
+    val arkConfig = _uiState.value.settings.toArkRuntimeConfig()
 
     startRequest(toastMessage = "正在生成该段讲解...")
 
@@ -942,7 +1129,7 @@ class StudyChatViewModel : ViewModel() {
     )
 
     viewModelScope.launch {
-      val result = arkApiClient.generateReply(requestMessages)
+      val result = arkApiClient.generateReply(requestMessages, config = arkConfig)
 
       if (requestConversationToken != conversationToken) {
         finishRequest()
@@ -1047,7 +1234,8 @@ class StudyChatViewModel : ViewModel() {
       return
     }
 
-    if (!openSpeechAsrClient.isConfigured()) {
+    val speechConfig = _uiState.value.settings.toOpenSpeechRuntimeConfig()
+    if (!openSpeechAsrClient.isConfigured(speechConfig)) {
       postToast("未配置豆包语音识别，未提交追问")
       return
     }
@@ -1056,7 +1244,10 @@ class StudyChatViewModel : ViewModel() {
     startRequest(toastMessage = "豆包语音识别中...")
 
     viewModelScope.launch {
-      val asrResult = openSpeechAsrClient.transcribeByAudioData(audioBytes = audioBytes)
+      val asrResult = openSpeechAsrClient.transcribeByAudioData(
+        audioBytes = audioBytes,
+        config = speechConfig
+      )
       if (requestConversationToken != conversationToken) {
         finishRequest()
         return@launch
@@ -1097,6 +1288,7 @@ class StudyChatViewModel : ViewModel() {
     }
 
     val requestConversationToken = conversationToken
+    val arkConfig = _uiState.value.settings.toArkRuntimeConfig()
     startRequest(clearToast = true) { current ->
       current.copy(
         profile = current.profile.updateWith(
@@ -1114,7 +1306,7 @@ class StudyChatViewModel : ViewModel() {
     )
 
     viewModelScope.launch {
-      val result = arkApiClient.generateReply(historyForRequest)
+      val result = arkApiClient.generateReply(historyForRequest, config = arkConfig)
 
       if (requestConversationToken != conversationToken) {
         finishRequest()
@@ -1162,6 +1354,7 @@ class StudyChatViewModel : ViewModel() {
     clearInput: Boolean = true
   ) {
     val requestConversationToken = conversationToken
+    val arkConfig = _uiState.value.settings.toArkRuntimeConfig()
     val userMessage = ChatMessage.User(id = nextMessageId(), time = currentTime(), text = question)
 
     startRequest(clearToast = true) { current ->
@@ -1175,7 +1368,7 @@ class StudyChatViewModel : ViewModel() {
     val historyForRequest = toArkMessages(_uiState.value.messages)
 
     viewModelScope.launch {
-      val result = arkApiClient.generateReply(historyForRequest)
+      val result = arkApiClient.generateReply(historyForRequest, config = arkConfig)
 
       if (requestConversationToken != conversationToken) {
         finishRequest()
@@ -1281,7 +1474,10 @@ class StudyChatViewModel : ViewModel() {
       input = "",
       selectedSpanId = null,
       toastMessage = null,
-      isLoading = false
+      isLoading = false,
+      isSettingsOpen = false,
+      settings = _uiState.value.settings,
+      settingsDraft = _uiState.value.settings
     )
   }
 
@@ -1368,15 +1564,6 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
-  private fun buildImageQuestionPrompt(): String {
-    return buildString {
-      append("你是一名中学学科辅导老师。请先识别图片中的题干，再按步骤讲解并给出最终答案。")
-      append("如果图片里有多个小题，请按小题编号分别作答。")
-      append("输出格式：\n")
-      append("1) 题目识别\n2) 解题思路\n3) 详细步骤\n4) 最终答案")
-    }
-  }
-
   private fun postToast(message: String) {
     _uiState.update { current ->
       current.copy(toastMessage = message)
@@ -1424,15 +1611,6 @@ private fun findSpanById(messages: List<ChatMessage>, spanId: String?): SpanData
   }
 
   return null
-}
-
-private fun ProfileState.topicsSummary(): String {
-  val top = topicHits.entries
-    .sortedByDescending { entry -> entry.value }
-    .take(3)
-    .joinToString(separator = "、") { entry -> "${entry.key}(${entry.value})" }
-
-  return if (top.isBlank()) "暂无" else top
 }
 
 private fun ProfileState.updateWith(text: String, isFollowup: Boolean, isVoice: Boolean): ProfileState {
@@ -1496,6 +1674,63 @@ private val topicRules = listOf(
   TopicRule(topic = "化学", keywords = listOf("氧化", "还原", "反应", "离子", "平衡"))
 )
 
+private const val DEFAULT_IMAGE_PROMPT =
+  "你是一名中学学科辅导老师。请先识别图片中的题干，再按步骤讲解并给出最终答案。" +
+    "如果图片里有多个小题，请按小题编号分别作答。输出格式：\n" +
+    "1) 题目识别\n2) 解题思路\n3) 详细步骤\n4) 最终答案"
+
+data class RuntimeSettings(
+  val arkApiKey: String,
+  val arkModel: String,
+  val arkBaseUrl: String,
+  val arkEndpoint: String,
+  val arkSystemPrompt: String,
+  val imagePrompt: String,
+  val openSpeechApiKey: String,
+  val openSpeechResourceId: String,
+  val openSpeechSubmitUrl: String,
+  val openSpeechQueryUrl: String,
+  val openSpeechUid: String
+) {
+  companion object {
+    fun defaults(): RuntimeSettings {
+      return RuntimeSettings(
+        arkApiKey = BuildConfig.ARK_API_KEY,
+        arkModel = BuildConfig.ARK_MODEL,
+        arkBaseUrl = BuildConfig.ARK_BASE_URL,
+        arkEndpoint = BuildConfig.ARK_ENDPOINT,
+        arkSystemPrompt = BuildConfig.ARK_SYSTEM_PROMPT,
+        imagePrompt = DEFAULT_IMAGE_PROMPT,
+        openSpeechApiKey = BuildConfig.OPENSPEECH_API_KEY,
+        openSpeechResourceId = BuildConfig.OPENSPEECH_RESOURCE_ID,
+        openSpeechSubmitUrl = BuildConfig.OPENSPEECH_SUBMIT_URL,
+        openSpeechQueryUrl = BuildConfig.OPENSPEECH_QUERY_URL,
+        openSpeechUid = BuildConfig.OPENSPEECH_UID
+      )
+    }
+  }
+}
+
+private fun RuntimeSettings.toArkRuntimeConfig(): ArkRuntimeConfig {
+  return ArkRuntimeConfig(
+    apiKey = arkApiKey,
+    model = arkModel,
+    baseUrl = arkBaseUrl,
+    endpoint = arkEndpoint,
+    systemPrompt = arkSystemPrompt
+  )
+}
+
+private fun RuntimeSettings.toOpenSpeechRuntimeConfig(): OpenSpeechRuntimeConfig {
+  return OpenSpeechRuntimeConfig(
+    apiKey = openSpeechApiKey,
+    resourceId = openSpeechResourceId,
+    submitUrl = openSpeechSubmitUrl,
+    queryUrl = openSpeechQueryUrl,
+    uid = openSpeechUid
+  )
+}
+
 data class ChatUiState(
   val messages: List<ChatMessage> = emptyList(),
   val histories: Map<String, List<SpanDetail>> = emptyMap(),
@@ -1503,7 +1738,10 @@ data class ChatUiState(
   val input: String = "",
   val selectedSpanId: String? = null,
   val toastMessage: String? = null,
-  val isLoading: Boolean = false
+  val isLoading: Boolean = false,
+  val isSettingsOpen: Boolean = false,
+  val settings: RuntimeSettings = RuntimeSettings.defaults(),
+  val settingsDraft: RuntimeSettings = RuntimeSettings.defaults()
 )
 
 data class ProfileState(
