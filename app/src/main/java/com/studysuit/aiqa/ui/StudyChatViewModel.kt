@@ -121,7 +121,7 @@ class StudyChatViewModel : ViewModel() {
           throw throwable
         }
 
-        val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
+        val errorHint = throwableHint(throwable, fallback = "网络不可用")
         finishRequest { current ->
           current.copy(toastMessage = "$source 失败：$errorHint")
         }
@@ -162,22 +162,12 @@ class StudyChatViewModel : ViewModel() {
     touchSession(sessionId)
     val latestTarget = sessionsById[sessionId] ?: target
     val settings = _uiState.value.settings
-    val latestSeeds = deriveSessionSeeds(latestTarget)
-    messageSeed = latestSeeds.messageSeed
-    spanSeed = latestSeeds.spanSeed
-    detailSeed = latestSeeds.detailSeed
-    cardSeed = latestSeeds.cardSeed
-
-    conversationToken += 1
-    inFlightRequests = 0
-
-    _uiState.value = buildUiStateFromSession(
+    activateSession(
       session = latestTarget,
       settings = settings,
-      summaries = buildSessionSummaries(sessionOrder, sessionsById),
-      toastMessage = "已切换到历史会话"
+      toastMessage = "已切换到历史会话",
+      persistSession = true
     )
-    persistSessionsAsync()
   }
 
   fun deleteSession(sessionId: String) {
@@ -196,7 +186,7 @@ class StudyChatViewModel : ViewModel() {
     if (!isActive) {
       updateUiState {
         it.copy(
-            sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById),
+          sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById),
           toastMessage = "会话已删除"
         )
       }
@@ -344,7 +334,7 @@ class StudyChatViewModel : ViewModel() {
           throw throwable
         }
 
-        val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
+        val errorHint = throwableHint(throwable, fallback = "网络不可用")
 
         finishRequest { current ->
           clearSpanProcessing(current, spanId, toastMessage = "自动讲解失败：$errorHint")
@@ -455,7 +445,7 @@ class StudyChatViewModel : ViewModel() {
       }
 
       val errorHint = if (asrResult.isFailure) {
-        asrResult.exceptionOrNull()?.message?.take(80).orEmpty().ifBlank { "识别失败" }
+        throwableHint(asrResult.exceptionOrNull(), fallback = "识别失败")
       } else {
         "识别结果为空"
       }
@@ -545,7 +535,7 @@ class StudyChatViewModel : ViewModel() {
           throw throwable
         }
 
-        val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
+        val errorHint = throwableHint(throwable, fallback = "网络不可用")
 
         finishRequest { current ->
           clearSpanProcessing(current, span.id, toastMessage = "追问失败：$errorHint")
@@ -598,7 +588,7 @@ class StudyChatViewModel : ViewModel() {
           throw throwable
         }
 
-        val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
+        val errorHint = throwableHint(throwable, fallback = "网络不可用")
 
         finishRequest { current ->
           current.copy(
@@ -610,8 +600,7 @@ class StudyChatViewModel : ViewModel() {
   }
 
   private fun resetConversation(showIntroToast: Boolean = false) {
-    conversationToken += 1
-    inFlightRequests = 0
+    resetRequestTracking()
     messageSeed = 0
     spanSeed = 0
     detailSeed = 0
@@ -747,20 +736,11 @@ class StudyChatViewModel : ViewModel() {
     }
 
     val settings = restored.settings
-    val activeSeeds = deriveSessionSeeds(active)
-    messageSeed = activeSeeds.messageSeed
-    spanSeed = activeSeeds.spanSeed
-    detailSeed = activeSeeds.detailSeed
-    cardSeed = activeSeeds.cardSeed
-
-    conversationToken += 1
-    inFlightRequests = 0
-
-    _uiState.value = buildUiStateFromSession(
+    activateSession(
       session = active,
       settings = settings,
-      summaries = buildSessionSummaries(sessionOrder, sessionsById),
-      toastMessage = null
+      toastMessage = null,
+      persistSession = false
     )
   }
 
@@ -862,6 +842,42 @@ class StudyChatViewModel : ViewModel() {
         }
       }
     }
+  }
+
+  private fun activateSession(
+    session: StoredSession,
+    settings: RuntimeSettings,
+    toastMessage: String?,
+    persistSession: Boolean
+  ) {
+    applySessionSeeds(session)
+    resetRequestTracking()
+    _uiState.value = buildUiStateFromSession(
+      session = session,
+      settings = settings,
+      summaries = buildSessionSummaries(sessionOrder, sessionsById),
+      toastMessage = toastMessage
+    )
+    if (persistSession) {
+      persistSessionsAsync()
+    }
+  }
+
+  private fun applySessionSeeds(session: StoredSession) {
+    val seeds = deriveSessionSeeds(session)
+    messageSeed = seeds.messageSeed
+    spanSeed = seeds.spanSeed
+    detailSeed = seeds.detailSeed
+    cardSeed = seeds.cardSeed
+  }
+
+  private fun resetRequestTracking() {
+    conversationToken += 1
+    inFlightRequests = 0
+  }
+
+  private fun throwableHint(throwable: Throwable?, fallback: String): String {
+    return throwable?.message?.take(80).orEmpty().ifBlank { fallback }
   }
 
   private fun postToast(message: String) {
