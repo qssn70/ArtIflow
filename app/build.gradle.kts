@@ -34,7 +34,7 @@ android {
     val arkEndpoint = localValue("ARK_ENDPOINT", "responses")
     val arkSystemPrompt = localValue(
       "ARK_SYSTEM_PROMPT",
-      "你是一个有用的AI学习辅导助手，擅长把复杂知识点讲清楚，优先给步骤化解释。"
+      "你是中学学习辅导助手。回答简洁明了：先给结论，再给关键点；默认3-6行；不要套话，不要长篇大论。"
     )
     val openSpeechApiKey = localValue("OPENSPEECH_API_KEY")
     val openSpeechResourceId = localValue("OPENSPEECH_RESOURCE_ID", "volc.seedasr.auc")
@@ -131,6 +131,7 @@ dependencies {
 
   testImplementation("junit:junit:4.13.2")
   androidTestImplementation("androidx.test.ext:junit:1.2.1")
+  androidTestImplementation("androidx.test:rules:1.6.1")
   androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
   androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }

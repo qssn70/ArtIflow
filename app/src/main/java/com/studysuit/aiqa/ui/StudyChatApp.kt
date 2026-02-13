@@ -16,6 +16,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -74,11 +79,22 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -105,6 +121,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Date
 import java.util.Locale
+import kotlin.math.max
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -342,11 +359,15 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
           .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
       ) {
-        HeaderBar(
-          onNewChat = viewModel::startNewChat,
-          onOpenSettings = viewModel::openSettings,
-          onOpenSessions = viewModel::openSessions
-        )
+        if (uiState.activePage == WorkspacePage.CHAT) {
+          HeaderBar(
+            onNewChat = viewModel::startNewChat,
+            onOpenSettings = viewModel::openSettings,
+            onOpenSessions = viewModel::openSessions
+          )
+        } else {
+          AnkiHeaderBar(cardCount = uiState.ankiCards.size)
+        }
 
         LazyColumn(
           modifier = Modifier
@@ -361,6 +382,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                 is ChatMessage.Assistant -> AssistantBubble(
                   message = message,
                   histories = uiState.histories,
+                  processingSpanIds = uiState.processingSpanIds,
                   onAutoExplain = viewModel::autoExplain,
                   onVoiceFollowup = onVoiceCaptureSubmit,
                   onOpenDetails = viewModel::openDetails,
@@ -377,22 +399,29 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             }
           } else {
             item(key = "anki-workspace") {
-              AnkiWorkspace(
-                knowledgePoints = uiState.knowledgePoints,
-                cards = uiState.ankiCards
-              )
+              Box(modifier = Modifier.fillParentMaxSize()) {
+                AnkiWorkspace(
+                  knowledgePoints = uiState.knowledgePoints,
+                  cards = uiState.ankiCards,
+                  onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
+                  onUpdateCard = viewModel::updateAnkiCard,
+                  onDeleteCard = viewModel::deleteAnkiCard
+                )
+              }
             }
           }
         }
 
-        ComposerBar(
-          input = uiState.input,
-          isLoading = uiState.isLoading,
-          onInputChanged = viewModel::onInputChanged,
-          onSend = viewModel::sendQuestion,
-          onCameraSearch = onCameraQuestionSearch,
-          onGallerySearch = onGalleryQuestionSearch
-        )
+        if (uiState.activePage == WorkspacePage.CHAT) {
+          ComposerBar(
+            input = uiState.input,
+            isLoading = uiState.isLoading,
+            onInputChanged = viewModel::onInputChanged,
+            onSend = viewModel::sendQuestion,
+            onCameraSearch = onCameraQuestionSearch,
+            onGallerySearch = onGalleryQuestionSearch
+          )
+        }
 
         WorkspaceSwipeStrip(
           activePage = uiState.activePage,
@@ -471,6 +500,29 @@ private fun HeaderBar(
       OutlinedButton(onClick = onNewChat) {
         Text(text = "新对话")
       }
+    }
+  }
+}
+
+@Composable
+private fun AnkiHeaderBar(cardCount: Int) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text(
+        text = "Anki 测验区",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF235E4E),
+        fontWeight = FontWeight.Bold
+      )
+      Text(
+        text = "AI 自动制卡 · 共${cardCount}张",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF5F756D)
+      )
     }
   }
 }
@@ -691,104 +743,334 @@ private fun SessionListDialog(
 @Composable
 private fun AnkiWorkspace(
   knowledgePoints: Map<String, Int>,
-  cards: List<AnkiCard>
+  cards: List<AnkiCard>,
+  onSwitchToChat: () -> Unit,
+  onUpdateCard: (cardId: String, front: String, back: String, tags: List<String>) -> Unit,
+  onDeleteCard: (cardId: String) -> Unit
 ) {
-  Column(
-    modifier = Modifier.fillMaxWidth(),
-    verticalArrangement = Arrangement.spacedBy(10.dp)
+  var currentIndex by remember(cards.size) { mutableStateOf(0) }
+  val activeCard = cards.getOrNull(currentIndex.coerceIn(0, (cards.size - 1).coerceAtLeast(0)))
+  var showAnswer by remember(activeCard?.id) { mutableStateOf(false) }
+  var liked by remember(activeCard?.id) { mutableStateOf(false) }
+  var bookmarked by remember(activeCard?.id) { mutableStateOf(false) }
+  var commentCount by remember(activeCard?.id) { mutableStateOf(0) }
+  var isManageDialogOpen by remember(activeCard?.id) { mutableStateOf(false) }
+  var editFront by remember(activeCard?.id) { mutableStateOf(activeCard?.front.orEmpty()) }
+  var editBack by remember(activeCard?.id) { mutableStateOf(activeCard?.back.orEmpty()) }
+  var editTagsText by remember(activeCard?.id) {
+    mutableStateOf(activeCard?.tags?.joinToString(separator = "，").orEmpty())
+  }
+
+  Box(
+    modifier = Modifier
+      .fillMaxSize()
+      .padding(top = 2.dp)
   ) {
-    Text(
-      text = "知识点自动收集",
-      style = MaterialTheme.typography.titleSmall,
-      color = Color(0xFF2A6151)
-    )
-
-    if (knowledgePoints.isEmpty()) {
-      Text(
-        text = "还没有收集到知识点，先提问一两道题试试。",
-        style = MaterialTheme.typography.bodySmall,
-        color = Color(0xFF5D7069)
-      )
-    } else {
-      val topPoints = knowledgePoints.entries
-        .sortedByDescending { entry -> entry.value }
-        .take(16)
-
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    if (activeCard == null) {
+      Column(
+        modifier = Modifier.align(Alignment.Center),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
       ) {
-        topPoints.take(4).forEach { entry ->
-          Surface(
-            color = Color(0xFFEAF6EF),
-            shape = RoundedCornerShape(999.dp),
-            modifier = Modifier
-              .weight(1f)
-              .border(1.dp, Color(0x1A3C5D50), RoundedCornerShape(999.dp))
-          ) {
-            Text(
-              text = "${entry.key}·${entry.value}",
-              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-              style = MaterialTheme.typography.labelSmall,
-              color = Color(0xFF2D5B4D),
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis
-            )
-          }
+        Text(
+          text = "还没有卡片。左滑讲解或段落追问后会自动生成测验卡。",
+          style = MaterialTheme.typography.bodySmall,
+          color = Color(0xFF5D7069)
+        )
+        OutlinedButton(onClick = onSwitchToChat) {
+          Text(text = "去聊天里生成卡片")
         }
       }
-    }
-
-    HorizontalDivider(color = Color(0x1633564B))
-
-    Text(
-      text = "Anki 自动卡片（${cards.size}）",
-      style = MaterialTheme.typography.titleSmall,
-      color = Color(0xFF2A6151)
-    )
-
-    if (cards.isEmpty()) {
-      Text(
-        text = "还没有卡片。你每次提问并得到回答后会自动生成。",
-        style = MaterialTheme.typography.bodySmall,
-        color = Color(0xFF5D7069)
-      )
     } else {
-      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        cards.take(12).forEach { card ->
-          Surface(
-            color = Color(0xFFFBFEFC),
-            shape = RoundedCornerShape(10.dp),
+      val topicHeat = activeCard.tags.firstOrNull()?.let { tag -> knowledgePoints[tag] ?: 0 } ?: 0
+      val likeCount = topicHeat.coerceAtLeast(1) + if (liked) 1 else 0
+      val bookmarkCount = activeCard.tags.size + if (bookmarked) 1 else 0
+
+      Surface(
+        color = Color(0xFFFBFEFC),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+          .align(Alignment.Center)
+          .fillMaxWidth(0.86f)
+          .heightIn(min = 390.dp, max = 560.dp)
+          .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(16.dp))
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 18.dp),
+          verticalArrangement = Arrangement.SpaceBetween
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = if (showAnswer) "A(答案面)" else "Q(测验面)",
+              style = MaterialTheme.typography.labelMedium,
+              color = Color(0xFF53756A)
+            )
+            TextButton(
+              onClick = {
+                editFront = activeCard.front
+                editBack = activeCard.back
+                editTagsText = activeCard.tags.joinToString(separator = "，")
+                isManageDialogOpen = true
+              }
+            ) {
+              Text(text = "管理", color = Color(0xFF2D6F5D))
+            }
+          }
+
+          Box(
             modifier = Modifier
               .fillMaxWidth()
-              .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(10.dp))
+              .weight(1f),
+            contentAlignment = Alignment.Center
           ) {
-            Column(
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-              verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-              Text(
-                text = "Q: ${card.front}",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF2F433C)
-              )
-              Text(
-                text = "A: ${card.back}",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF355249),
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis
-              )
-              Text(
-                text = "${card.source} · ${formatSessionTime(card.createdAt)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF688179)
-              )
+            MarkdownCardText(
+              markdown = if (showAnswer) activeCard.back else activeCard.front,
+              modifier = Modifier.fillMaxWidth()
+            )
+          }
+
+          Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text(
+              text = "${activeCard.source} · ${formatSessionTime(activeCard.createdAt)}",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF688179)
+            )
+            Text(
+              text = if (activeCard.tags.isEmpty()) "标签：未设置" else "标签：${activeCard.tags.joinToString(separator = " · ")}",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF60756E),
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              OutlinedButton(onClick = { showAnswer = !showAnswer }) {
+                Text(text = if (showAnswer) "回题面" else "看答案")
+              }
+              OutlinedButton(
+                onClick = {
+                  currentIndex = if (cards.isEmpty()) {
+                    0
+                  } else {
+                    (currentIndex + 1) % cards.size
+                  }
+                  showAnswer = false
+                }
+              ) {
+                Text(text = "换一张")
+              }
             }
           }
         }
       }
+
+      Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+          .align(Alignment.BottomEnd)
+          .padding(end = 2.dp, bottom = 10.dp)
+      ) {
+        TikTokActionButton(
+          symbol = if (liked) "赞+" else "赞",
+          label = "点赞",
+          count = likeCount,
+          onClick = { liked = !liked }
+        )
+        TikTokActionButton(
+          symbol = if (bookmarked) "藏+" else "藏",
+          label = "收藏",
+          count = bookmarkCount,
+          onClick = { bookmarked = !bookmarked }
+        )
+        TikTokActionButton(
+          symbol = "转",
+          label = "转发",
+          count = 0,
+          onClick = {}
+        )
+        TikTokActionButton(
+          symbol = "评",
+          label = "评论",
+          count = commentCount,
+          onClick = { commentCount += 1 }
+        )
+      }
     }
+
+    if (activeCard != null && isManageDialogOpen) {
+      val manageScroll = rememberScrollState()
+      AlertDialog(
+        onDismissRequest = { isManageDialogOpen = false },
+        containerColor = Color(0xFFF6FBF7),
+        shape = RoundedCornerShape(18.dp),
+        title = {
+          Text(
+            text = "管理 Anki 卡片",
+            style = MaterialTheme.typography.titleMedium,
+            color = Color(0xFF255E4D)
+          )
+        },
+        text = {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(max = 420.dp)
+              .verticalScroll(manageScroll),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            OutlinedTextField(
+              value = editFront,
+              onValueChange = { value -> editFront = value },
+              label = { Text("题面（Q）", style = MaterialTheme.typography.labelSmall) },
+              modifier = Modifier.fillMaxWidth(),
+              minLines = 2,
+              maxLines = 5,
+              shape = RoundedCornerShape(10.dp),
+              textStyle = MaterialTheme.typography.bodySmall
+            )
+            OutlinedTextField(
+              value = editBack,
+              onValueChange = { value -> editBack = value },
+              label = { Text("答案（A）", style = MaterialTheme.typography.labelSmall) },
+              modifier = Modifier.fillMaxWidth(),
+              minLines = 3,
+              maxLines = 7,
+              shape = RoundedCornerShape(10.dp),
+              textStyle = MaterialTheme.typography.bodySmall
+            )
+            OutlinedTextField(
+              value = editTagsText,
+              onValueChange = { value -> editTagsText = value },
+              label = { Text("标签（可自定义）", style = MaterialTheme.typography.labelSmall) },
+              modifier = Modifier.fillMaxWidth(),
+              minLines = 1,
+              maxLines = 3,
+              shape = RoundedCornerShape(10.dp),
+              textStyle = MaterialTheme.typography.bodySmall
+            )
+            Text(
+              text = "标签支持中文逗号/英文逗号分隔；可留空。",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF617771)
+            )
+          }
+        },
+        confirmButton = {
+          Button(
+            onClick = {
+              onUpdateCard(
+                activeCard.id,
+                editFront,
+                editBack,
+                parseAnkiTagsInput(editTagsText)
+              )
+              isManageDialogOpen = false
+            },
+            shape = RoundedCornerShape(10.dp)
+          ) {
+            Text(text = "保存修改")
+          }
+        },
+        dismissButton = {
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(
+              onClick = {
+                onDeleteCard(activeCard.id)
+                isManageDialogOpen = false
+              }
+            ) {
+              Text(text = "删除", color = Color(0xFF8E4D4D))
+            }
+            TextButton(onClick = { isManageDialogOpen = false }) {
+              Text(text = "取消", color = Color(0xFF4A665C))
+            }
+          }
+        }
+      )
+    }
+  }
+}
+
+@Composable
+private fun MarkdownCardText(markdown: String, modifier: Modifier = Modifier) {
+  MarkdownFormattedText(
+    markdown = markdown,
+    textStyle = MaterialTheme.typography.headlineSmall,
+    textColor = Color(0xFF2F433C),
+    textAlign = TextAlign.Center,
+    modifier = modifier
+  )
+}
+
+@Composable
+private fun MarkdownBodyText(markdown: String, modifier: Modifier = Modifier) {
+  MarkdownFormattedText(
+    markdown = markdown,
+    textStyle = MaterialTheme.typography.bodyMedium,
+    textColor = Color(0xFF2F433C),
+    textAlign = TextAlign.Start,
+    modifier = modifier
+  )
+}
+
+@Composable
+private fun MarkdownFormattedText(
+  markdown: String,
+  textStyle: androidx.compose.ui.text.TextStyle,
+  textColor: Color,
+  textAlign: TextAlign,
+  modifier: Modifier = Modifier
+) {
+  val effectiveLineHeight = remember(textStyle.fontSize) { markdownLineHeightFor(textStyle.fontSize) }
+  val renderedStyle = remember(textStyle, effectiveLineHeight) {
+    textStyle.copy(lineHeight = effectiveLineHeight)
+  }
+  val annotated = remember(markdown, textStyle.fontSize) {
+    markdownToAnnotatedString(markdown, baseFontSize = textStyle.fontSize)
+  }
+  Text(
+    text = annotated,
+    style = renderedStyle,
+    color = textColor,
+    textAlign = textAlign,
+    modifier = modifier
+  )
+}
+
+@Composable
+private fun TikTokActionButton(
+  symbol: String,
+  label: String,
+  count: Int,
+  onClick: () -> Unit
+) {
+  Column(
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.spacedBy(2.dp)
+  ) {
+    Surface(
+      color = Color(0xFFF2F7F4),
+      shape = CircleShape,
+      modifier = Modifier
+        .size(42.dp)
+        .border(1.dp, Color(0x173B5D52), CircleShape)
+    ) {
+      IconButton(onClick = onClick) {
+        Text(
+          text = symbol,
+          style = MaterialTheme.typography.labelLarge,
+          color = Color(0xFF2E5F50)
+        )
+      }
+    }
+    Text(text = label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF5C736B))
+    Text(text = count.toString(), style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B8079))
   }
 }
 
@@ -904,6 +1186,7 @@ private fun AssistantLoadingBubble() {
 private fun AssistantBubble(
   message: ChatMessage.Assistant,
   histories: Map<String, List<SpanDetail>>,
+  processingSpanIds: Set<String>,
   onAutoExplain: (String) -> Unit,
   onVoiceFollowup: (String) -> Unit,
   onOpenDetails: (String) -> Unit,
@@ -931,6 +1214,7 @@ private fun AssistantBubble(
           InteractiveSpanCard(
             span = span,
             historyCount = historyCount,
+            isProcessing = processingSpanIds.contains(span.id),
             onAutoExplain = onAutoExplain,
             onVoiceFollowup = onVoiceFollowup,
             onOpenDetails = onOpenDetails,
@@ -954,6 +1238,7 @@ private fun AssistantBubble(
 private fun InteractiveSpanCard(
   span: SpanData,
   historyCount: Int,
+  isProcessing: Boolean,
   onAutoExplain: (String) -> Unit,
   onVoiceFollowup: (String) -> Unit,
   onOpenDetails: (String) -> Unit,
@@ -971,12 +1256,75 @@ private fun InteractiveSpanCard(
   val holdStartThreshold = -108f
   val holdCancelThreshold = -46f
   val recordingCancelThreshold = -58f
+  val processingPulse by rememberInfiniteTransition(label = "span_processing_transition").animateFloat(
+    initialValue = 0f,
+    targetValue = 1f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 820),
+      repeatMode = RepeatMode.Reverse
+    ),
+    label = "span_processing_pulse"
+  )
 
   val borderColor = when {
     recording -> Color(0xFFDD8258)
     isDragging -> Color(0x802E8B72)
+    isProcessing -> lerp(Color(0x2B51635C), Color(0x9151635C), processingPulse)
     else -> Color(0x22354C45)
   }
+
+  val dragModifier = Modifier.draggable(
+    state = rememberDraggableState { delta ->
+      offsetX = (offsetX + delta).coerceIn(-220f, 170f)
+
+      if (offsetX <= holdStartThreshold && holdJob == null && !recording && !recordingCanceledInGesture) {
+        holdJob = scope.launch {
+          delay(620)
+          recording = true
+          onVoiceCaptureStart(span.id)
+        }
+      }
+
+      if (offsetX > holdCancelThreshold && !recording) {
+        holdJob?.cancel()
+        holdJob = null
+      }
+
+      if (recording && offsetX > recordingCancelThreshold) {
+        recording = false
+        recordingCanceledInGesture = true
+        holdJob?.cancel()
+        holdJob = null
+        onVoiceCaptureCancel(span.id)
+      }
+    },
+    orientation = Orientation.Horizontal,
+    onDragStarted = {
+      isDragging = true
+      recording = false
+      recordingCanceledInGesture = false
+      holdJob?.cancel()
+      holdJob = null
+    },
+    onDragStopped = {
+      val finalOffset = offsetX
+      val shouldSendVoiceFollowup = recording
+      holdJob?.cancel()
+      holdJob = null
+      isDragging = false
+      offsetX = 0f
+      recording = false
+      recordingCanceledInGesture = false
+
+      if (shouldSendVoiceFollowup) {
+        onVoiceFollowup(span.id)
+      } else if (finalOffset <= -132f) {
+        onAutoExplain(span.id)
+      } else if (finalOffset >= 96f) {
+        onOpenDetails(span.id)
+      }
+    }
+  )
 
   Card(
     shape = RoundedCornerShape(12.dp),
@@ -987,98 +1335,48 @@ private fun InteractiveSpanCard(
       .fillMaxWidth()
       .graphicsLayer { translationX = animatedOffset }
       .border(1.dp, borderColor, RoundedCornerShape(12.dp))
-      .draggable(
-        state = rememberDraggableState { delta ->
-          offsetX = (offsetX + delta).coerceIn(-220f, 170f)
-
-          if (offsetX <= holdStartThreshold && holdJob == null && !recording && !recordingCanceledInGesture) {
-            holdJob = scope.launch {
-              delay(620)
-              recording = true
-              onVoiceCaptureStart(span.id)
-            }
-          }
-
-          if (offsetX > holdCancelThreshold && !recording) {
-            holdJob?.cancel()
-            holdJob = null
-          }
-
-          if (recording && offsetX > recordingCancelThreshold) {
-            recording = false
-            recordingCanceledInGesture = true
-            holdJob?.cancel()
-            holdJob = null
-            onVoiceCaptureCancel(span.id)
-          }
-        },
-        orientation = Orientation.Horizontal,
-        onDragStarted = {
-          isDragging = true
-          recording = false
-          recordingCanceledInGesture = false
-          holdJob?.cancel()
-          holdJob = null
-        },
-        onDragStopped = {
-          val finalOffset = offsetX
-          val shouldSendVoiceFollowup = recording
-          holdJob?.cancel()
-          holdJob = null
-          isDragging = false
-          offsetX = 0f
-          recording = false
-          recordingCanceledInGesture = false
-
-          if (shouldSendVoiceFollowup) {
-            onVoiceFollowup(span.id)
-          } else if (finalOffset <= -132f) {
-            onAutoExplain(span.id)
-          } else if (finalOffset >= 96f) {
-            onOpenDetails(span.id)
-          }
-        }
-      )
   ) {
-    Column(
-      modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-      verticalArrangement = Arrangement.spacedBy(7.dp)
-    ) {
-      Text(text = span.content, style = MaterialTheme.typography.bodyMedium)
-
-      AnimatedVisibility(
-        visible = recording,
-        enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
-        exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 })
+    Box(modifier = Modifier.fillMaxWidth().then(dragModifier)) {
+      Column(
+        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
       ) {
-        Text(
-          text = "录音中... 松手提交，回滑取消",
-          style = MaterialTheme.typography.labelMedium,
-          color = Color(0xFFB45932)
-        )
-      }
+        MarkdownBodyText(markdown = span.content)
 
-      HorizontalDivider(color = Color(0x14324F45))
+        AnimatedVisibility(
+          visible = recording,
+          enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
+          exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 })
+        ) {
+          Text(
+            text = "录音中... 松手提交，回滑取消",
+            style = MaterialTheme.typography.labelMedium,
+            color = Color(0xFFB45932)
+          )
+        }
 
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        Text(
-          text = "左滑讲解 / 长按语音 / 右滑详解",
-          style = MaterialTheme.typography.labelSmall,
-          color = Color(0xFF647670),
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.fillMaxWidth(0.76f)
-        )
+        HorizontalDivider(color = Color(0x14324F45))
 
-        Text(
-          text = "详解 $historyCount 条",
-          style = MaterialTheme.typography.labelSmall,
-          color = Color(0xFF4F625B)
-        )
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text(
+            text = "左滑讲解 / 长按语音 / 右滑详解",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF647670),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(0.76f)
+          )
+
+          Text(
+            text = "详解 $historyCount 条",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF4F625B)
+          )
+        }
       }
     }
   }
@@ -1187,11 +1485,12 @@ private fun SpanDetailDialog(
             .border(1.dp, Color(0x183A5A4F), RoundedCornerShape(10.dp)),
           color = Color(0xFFF4F9F3)
         ) {
-          Text(
-            text = span.content,
+          MarkdownFormattedText(
+            markdown = span.content,
+            textStyle = MaterialTheme.typography.bodySmall,
+            textColor = Color(0xFF2F433C),
+            textAlign = TextAlign.Start,
             modifier = Modifier.padding(10.dp),
-            style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF2F433C)
           )
         }
 
@@ -1231,15 +1530,27 @@ private fun SpanDetailDialog(
                   )
                   detail.question?.takeIf { question -> question.isNotBlank() }?.let { question ->
                     Text(
-                      text = "追问：$question",
-                      style = MaterialTheme.typography.bodySmall,
-                      color = Color(0xFF355249)
+                      text = "追问",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = Color(0xFF5F7A71)
+                    )
+                    MarkdownFormattedText(
+                      markdown = question,
+                      textStyle = MaterialTheme.typography.bodySmall,
+                      textColor = Color(0xFF355249),
+                      textAlign = TextAlign.Start
                     )
                   }
                   Text(
-                    text = if (detail.question.isNullOrBlank()) detail.answer else "回答：${detail.answer}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF2F433C)
+                    text = if (detail.question.isNullOrBlank()) "讲解" else "回答",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF5F7A71)
+                  )
+                  MarkdownFormattedText(
+                    markdown = detail.answer,
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    textColor = Color(0xFF2F433C),
+                    textAlign = TextAlign.Start
                   )
                 }
               }
@@ -1324,7 +1635,7 @@ class StudyChatViewModel : ViewModel() {
       )
     }
 
-    val prompt = settings.imagePrompt.trim().ifBlank { DEFAULT_IMAGE_PROMPT }
+    val prompt = normalizeImagePrompt(settings.imagePrompt)
     val arkConfig = settings.toArkRuntimeConfig()
 
     viewModelScope.launch {
@@ -1343,18 +1654,9 @@ class StudyChatViewModel : ViewModel() {
       result.onSuccess { reply ->
         val assistantMessage = createAssistantMessage(reply, question)
         finishRequest { current ->
-          val tags = detectKnowledgePoints(question + "\n" + reply)
-          val card = createAnkiCard(
-            front = question,
-            back = reply,
-            source = source,
-            tags = tags
-          )
-
           current.copy(
             messages = current.messages + assistantMessage,
             knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(reply)),
-            ankiCards = prependAnkiCard(current.ankiCards, card),
             toastMessage = "$source 已完成"
           )
         }
@@ -1497,12 +1799,58 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
+  fun updateAnkiCard(cardId: String, front: String, back: String, tags: List<String>) {
+    val normalizedFront = normalizeCardText(front, maxLen = 500)
+    val normalizedBack = normalizeCardText(back, maxLen = 1200)
+    val normalizedTags = tags.map(String::trim).filter(String::isNotEmpty).distinct().take(10)
+
+    if (normalizedFront.isBlank() || normalizedBack.isBlank()) {
+      postToast("题面和答案都不能为空")
+      return
+    }
+
+    updateUiState(persistSession = true) { current ->
+      val index = current.ankiCards.indexOfFirst { card -> card.id == cardId }
+      if (index < 0) {
+        current.copy(toastMessage = "卡片不存在")
+      } else {
+        val updatedCards = current.ankiCards.toMutableList()
+        val card = updatedCards[index]
+        updatedCards[index] = card.copy(
+          front = normalizedFront,
+          back = normalizedBack,
+          tags = normalizedTags
+        )
+        current.copy(
+          ankiCards = updatedCards,
+          toastMessage = "Anki 卡片已更新"
+        )
+      }
+    }
+  }
+
+  fun deleteAnkiCard(cardId: String) {
+    updateUiState(persistSession = true) { current ->
+      val remainingCards = current.ankiCards.filterNot { card -> card.id == cardId }
+      if (remainingCards.size == current.ankiCards.size) {
+        current.copy(toastMessage = "卡片不存在")
+      } else {
+        current.copy(
+          ankiCards = remainingCards,
+          toastMessage = "已删除 Anki 卡片"
+        )
+      }
+    }
+  }
+
   fun autoExplain(spanId: String) {
     val span = findSpanById(_uiState.value.messages, spanId) ?: return
     val requestConversationToken = conversationToken
     val arkConfig = _uiState.value.settings.toArkRuntimeConfig()
 
-    startRequest(toastMessage = "正在生成该段讲解...")
+    startRequest(toastMessage = "正在生成该段讲解...") { current ->
+      current.copy(processingSpanIds = current.processingSpanIds + spanId)
+    }
 
     val requestMessages = listOf(
       ArkRequestMessage(role = "user", text = buildAutoExplainPrompt(span.content))
@@ -1512,7 +1860,9 @@ class StudyChatViewModel : ViewModel() {
       val result = arkApiClient.generateReply(requestMessages, config = arkConfig)
 
       if (requestConversationToken != conversationToken) {
-        finishRequest()
+        finishRequest { current ->
+          current.copy(processingSpanIds = current.processingSpanIds - spanId)
+        }
         return@launch
       }
 
@@ -1529,12 +1879,23 @@ class StudyChatViewModel : ViewModel() {
 
           current.copy(
             histories = updatedHistory,
+            processingSpanIds = current.processingSpanIds - spanId,
             toastMessage = "已生成该段讲解，右滑可查看详解"
           )
         }
+        generateAnkiCardByAiAsync(
+          requestConversationToken = requestConversationToken,
+          source = "左滑自动讲解",
+          mode = "自动讲解",
+          spanContent = span.content,
+          question = null,
+          answer = reply
+        )
       }.onFailure { throwable ->
         if (throwable is CancellationException) {
-          finishRequest()
+          finishRequest { current ->
+            current.copy(processingSpanIds = current.processingSpanIds - spanId)
+          }
           throw throwable
         }
 
@@ -1542,6 +1903,7 @@ class StudyChatViewModel : ViewModel() {
 
         finishRequest { current ->
           current.copy(
+            processingSpanIds = current.processingSpanIds - spanId,
             toastMessage = "自动讲解失败：$errorHint"
           )
         }
@@ -1621,7 +1983,9 @@ class StudyChatViewModel : ViewModel() {
     }
 
     val requestConversationToken = conversationToken
-    startRequest(toastMessage = "豆包语音识别中...")
+    startRequest(toastMessage = "豆包语音识别中...") { current ->
+      current.copy(processingSpanIds = current.processingSpanIds + span.id)
+    }
 
     viewModelScope.launch {
       val asrResult = openSpeechAsrClient.transcribeByAudioData(
@@ -1629,7 +1993,9 @@ class StudyChatViewModel : ViewModel() {
         config = speechConfig
       )
       if (requestConversationToken != conversationToken) {
-        finishRequest()
+        finishRequest { current ->
+          current.copy(processingSpanIds = current.processingSpanIds - span.id)
+        }
         return@launch
       }
 
@@ -1651,7 +2017,12 @@ class StudyChatViewModel : ViewModel() {
       } else {
         "识别结果为空"
       }
-      postToast("豆包语音识别失败：$errorHint，未提交追问")
+      updateUiState { current ->
+        current.copy(
+          processingSpanIds = current.processingSpanIds - span.id,
+          toastMessage = "豆包语音识别失败：$errorHint，未提交追问"
+        )
+      }
     }
   }
 
@@ -1676,7 +2047,8 @@ class StudyChatViewModel : ViewModel() {
           isFollowup = true,
           isVoice = isVoice
         ),
-        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(normalizedQuestion))
+        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(normalizedQuestion)),
+        processingSpanIds = current.processingSpanIds + span.id
       )
     }
 
@@ -1690,7 +2062,9 @@ class StudyChatViewModel : ViewModel() {
       val result = arkApiClient.generateReply(historyForRequest, config = arkConfig)
 
       if (requestConversationToken != conversationToken) {
-        finishRequest()
+        finishRequest { current ->
+          current.copy(processingSpanIds = current.processingSpanIds - span.id)
+        }
         return@launch
       }
 
@@ -1705,23 +2079,26 @@ class StudyChatViewModel : ViewModel() {
             answer = reply
           )
           updatedHistory[span.id] = listOf(detail) + current.histories[span.id].orEmpty()
-          val tags = detectKnowledgePoints(normalizedQuestion + "\n" + reply)
-          val card = createAnkiCard(
-            front = normalizedQuestion,
-            back = reply,
-            source = mode,
-            tags = tags
-          )
 
           current.copy(
             histories = updatedHistory,
-            ankiCards = prependAnkiCard(current.ankiCards, card),
+            processingSpanIds = current.processingSpanIds - span.id,
             toastMessage = "追问已保存，右滑查看本段详解"
           )
         }
+        generateAnkiCardByAiAsync(
+          requestConversationToken = requestConversationToken,
+          source = mode,
+          mode = mode,
+          spanContent = span.content,
+          question = normalizedQuestion,
+          answer = reply
+        )
       }.onFailure { throwable ->
         if (throwable is CancellationException) {
-          finishRequest()
+          finishRequest { current ->
+            current.copy(processingSpanIds = current.processingSpanIds - span.id)
+          }
           throw throwable
         }
 
@@ -1729,6 +2106,7 @@ class StudyChatViewModel : ViewModel() {
 
         finishRequest { current ->
           current.copy(
+            processingSpanIds = current.processingSpanIds - span.id,
             toastMessage = "追问失败：$errorHint"
           )
         }
@@ -1769,17 +2147,8 @@ class StudyChatViewModel : ViewModel() {
         val assistantMessage = createAssistantMessage(reply, question)
 
         finishRequest { current ->
-          val tags = detectKnowledgePoints(question + "\n" + reply)
-          val card = createAnkiCard(
-            front = question,
-            back = reply,
-            source = if (isFollowup) "段落追问" else "聊天问答",
-            tags = tags
-          )
-
           current.copy(
             messages = current.messages + assistantMessage,
-            ankiCards = prependAnkiCard(current.ankiCards, card),
             toastMessage = null
           )
         }
@@ -1830,6 +2199,7 @@ class StudyChatViewModel : ViewModel() {
     val recentDetails = details.take(4).asReversed()
     val contextMessage = buildString {
       append("我们只讨论这一段内容，请基于段落回答追问。\n")
+      append("回答要求：简洁直接，先结论后要点，默认不超过6行。\n")
       append("段落：")
       append(span.content)
     }
@@ -2156,9 +2526,9 @@ class StudyChatViewModel : ViewModel() {
 
   private fun buildAutoExplainPrompt(spanContent: String): String {
     return buildString {
-      append("请只针对下面这一段内容做讲解。")
+      append("请只针对下面这一段内容做简洁讲解。")
       append("输出要求：")
-      append("1) 用中文；2) 3~5句；3) 先说结论再说步骤；4) 给一个常见易错点。")
+      append("1) 用中文；2) 先1句结论；3) 再给2~3条关键点；4) 总字数尽量控制在120字内；5) 不要套话。")
       append("\n\n段落内容：")
       append(spanContent)
     }
@@ -2199,9 +2569,13 @@ class StudyChatViewModel : ViewModel() {
     source: String,
     tags: List<String>
   ): AnkiCard {
-    val normalizedFront = front.trim().replace(Regex("\\s+"), " ").take(160)
-    val normalizedBack = back.trim().replace(Regex("\\s+"), " ").take(280)
-    val effectiveTags = tags.map(String::trim).filter(String::isNotEmpty).distinct().take(5)
+    val normalizedFront = normalizeCardText(front, maxLen = 500)
+    val normalizedBack = normalizeCardText(back, maxLen = 1200)
+    val effectiveTags = tags
+      .map(String::trim)
+      .filter(String::isNotEmpty)
+      .distinct()
+      .take(10)
 
     return AnkiCard(
       id = nextCardId(),
@@ -2211,6 +2585,184 @@ class StudyChatViewModel : ViewModel() {
       source = source,
       createdAt = System.currentTimeMillis()
     )
+  }
+
+  private fun generateAnkiCardByAiAsync(
+    requestConversationToken: Long,
+    source: String,
+    mode: String,
+    spanContent: String,
+    question: String?,
+    answer: String
+  ) {
+    val settingsSnapshot = _uiState.value.settings
+    val cardConfig = settingsSnapshot.toArkRuntimeConfig().copy(systemPrompt = ANKI_CARD_SYSTEM_PROMPT)
+    val profileSnapshot = _uiState.value.profile
+    val knowledgeSnapshot = _uiState.value.knowledgePoints
+
+    viewModelScope.launch {
+      val prompt = buildAnkiGenerationPrompt(
+        mode = mode,
+        spanContent = spanContent,
+        question = question,
+        answer = answer,
+        profile = profileSnapshot,
+        knowledgePoints = knowledgeSnapshot
+      )
+      val result = arkApiClient.generateReply(
+        messages = listOf(ArkRequestMessage(role = "user", text = prompt)),
+        config = cardConfig
+      )
+
+      if (requestConversationToken != conversationToken) {
+        return@launch
+      }
+
+      result.getOrNull()?.let { raw ->
+        val parsed = parseAiAnkiCard(raw = raw, source = source) ?: return@let
+        updateUiState(persistSession = true) { current ->
+          current.copy(ankiCards = prependAnkiCard(current.ankiCards, parsed))
+        }
+      }
+    }
+  }
+
+  private fun buildAnkiGenerationPrompt(
+    mode: String,
+    spanContent: String,
+    question: String?,
+    answer: String,
+    profile: ProfileState,
+    knowledgePoints: Map<String, Int>
+  ): String {
+    val topTopics = profile.topicHits.entries
+      .sortedByDescending { entry -> entry.value }
+      .take(4)
+      .joinToString(separator = "，") { entry -> "${entry.key}(${entry.value})" }
+      .ifBlank { "暂无" }
+    val topKnowledge = knowledgePoints.entries
+      .sortedByDescending { entry -> entry.value }
+      .take(6)
+      .joinToString(separator = "，") { entry -> "${entry.key}(${entry.value})" }
+      .ifBlank { "暂无" }
+
+    return buildString {
+      append("请根据下面学习交互，生成1张最合适的Anki卡片。")
+      append("不要套固定模板，请自行判断卡型（概念/对比/因果/步骤/易错点/例题等）。")
+      append("要求：front可直接测验、back简洁准确、不要套话。")
+      append("如本次内容不适合制卡，返回 skip=true。")
+      append("\n仅输出JSON，不要代码块，不要解释。")
+      append("\nJSON格式：{\"skip\":false,\"front\":\"...\",\"back\":\"...\",\"tags\":[\"...\"],\"card_type\":\"...\"}")
+      append("\n约束：front<=60字，back<=180字，tags<=6。")
+      append("\n\n交互模式：")
+      append(mode)
+      append("\n用户画像热点：")
+      append(topTopics)
+      append("\n知识点热度：")
+      append(topKnowledge)
+      append("\n段落内容：")
+      append(spanContent)
+      if (!question.isNullOrBlank()) {
+        append("\n用户追问：")
+        append(question)
+      }
+      append("\nAI回答：")
+      append(answer)
+    }
+  }
+
+  private fun parseAiAnkiCard(raw: String, source: String): AnkiCard? {
+    val payload = parseJsonObjectSafely(raw) ?: return null
+    if (payload.optBoolean("skip", false)) {
+      return null
+    }
+
+    val front = payload.optString("front").trim()
+    val back = payload.optString("back").trim()
+    if (front.isBlank() || back.isBlank()) {
+      return null
+    }
+
+    val tags = payload.optJSONArray("tags")?.let { array ->
+      buildList {
+        for (index in 0 until array.length()) {
+          val tag = array.optString(index).trim()
+          if (tag.isNotBlank()) {
+            add(tag)
+          }
+        }
+      }
+    }.orEmpty()
+
+    return createAnkiCard(
+      front = front,
+      back = back,
+      source = source,
+      tags = tags
+    )
+  }
+
+  private fun parseJsonObjectSafely(raw: String): JSONObject? {
+    val fenced = Regex("```(?:json)?\\s*(\\{[\\s\\S]*})\\s*```", setOf(RegexOption.IGNORE_CASE))
+      .find(raw)
+      ?.groupValues
+      ?.getOrNull(1)
+      ?.trim()
+
+    val trimmed = raw.trim()
+    val bracketStart = trimmed.indexOf('{')
+    val bracketEnd = trimmed.lastIndexOf('}')
+    val sliced = if (bracketStart >= 0 && bracketEnd > bracketStart) {
+      trimmed.substring(bracketStart, bracketEnd + 1)
+    } else {
+      null
+    }
+
+    val candidates = buildList {
+      if (!fenced.isNullOrBlank()) add(fenced)
+      if (!sliced.isNullOrBlank()) add(sliced)
+      if (trimmed.isNotBlank()) add(trimmed)
+    }
+
+    candidates.forEach { candidate ->
+      runCatching { JSONObject(candidate) }.getOrNull()?.let { parsed ->
+        return parsed
+      }
+    }
+    return null
+  }
+
+  private fun normalizeCardText(text: String, maxLen: Int): String {
+    val normalized = text
+      .replace("\r\n", "\n")
+      .replace('\r', '\n')
+      .trim()
+    if (normalized.isEmpty()) {
+      return ""
+    }
+
+    val trimmedLines = normalized
+      .split('\n')
+      .map { line -> line.trimEnd() }
+
+    val collapsed = buildString {
+      var pendingBlank = 0
+      trimmedLines.forEach { line ->
+        if (line.isBlank()) {
+          pendingBlank += 1
+          return@forEach
+        }
+
+        if (length > 0) {
+          val blanksToInsert = pendingBlank.coerceIn(1, 2)
+          repeat(blanksToInsert) { append('\n') }
+        }
+        pendingBlank = 0
+        append(line)
+      }
+    }.trim()
+
+    return collapsed.take(maxLen)
   }
 
   private fun prependAnkiCard(current: List<AnkiCard>, card: AnkiCard): List<AnkiCard> {
@@ -2350,10 +2902,23 @@ private val knowledgeRules = listOf(
   KnowledgeRule(point = "化学反应", keywords = listOf("氧化", "还原", "离子", "平衡", "反应", "浓度"))
 )
 
-private const val DEFAULT_IMAGE_PROMPT =
+private const val LEGACY_ARK_SYSTEM_PROMPT =
+  "你是一个有用的AI学习辅导助手，擅长把复杂知识点讲清楚，优先给步骤化解释。"
+
+private const val DEFAULT_ARK_SYSTEM_PROMPT =
+  "你是中学学习辅导助手。回答简洁明了：先给结论，再给关键点；默认3-6行；不要套话，不要长篇大论。"
+
+private const val ANKI_CARD_SYSTEM_PROMPT =
+  "你是Anki制卡助手。根据学习交互自选最合适卡型，输出可直接测验的卡片；内容简洁准确，不套模板。"
+
+private const val LEGACY_IMAGE_PROMPT =
   "你是一名中学学科辅导老师。请先识别图片中的题干，再按步骤讲解并给出最终答案。" +
     "如果图片里有多个小题，请按小题编号分别作答。输出格式：\n" +
     "1) 题目识别\n2) 解题思路\n3) 详细步骤\n4) 最终答案"
+
+private const val DEFAULT_IMAGE_PROMPT =
+  "你是一名中学学科辅导老师。请识别题目并简洁作答：先给结论，再给2-4条必要步骤；" +
+    "多小题按编号回答；不要套话和长篇大论。"
 
 data class RuntimeSettings(
   val arkApiKey: String,
@@ -2393,7 +2958,7 @@ private fun RuntimeSettings.toArkRuntimeConfig(): ArkRuntimeConfig {
     model = arkModel,
     baseUrl = arkBaseUrl,
     endpoint = arkEndpoint,
-    systemPrompt = arkSystemPrompt
+    systemPrompt = normalizeSystemPrompt(arkSystemPrompt)
   )
 }
 
@@ -2420,6 +2985,7 @@ data class ChatUiState(
   val sessionSummaries: List<SessionSummary> = emptyList(),
   val isSessionsOpen: Boolean = false,
   val toastMessage: String? = null,
+  val processingSpanIds: Set<String> = emptySet(),
   val isLoading: Boolean = false,
   val isSettingsOpen: Boolean = false,
   val settings: RuntimeSettings = RuntimeSettings.defaults(),
@@ -2864,6 +3430,246 @@ private fun JSONArray.toAnkiCards(): List<AnkiCard> {
 
 private fun String.toWorkspacePageOrDefault(): WorkspacePage {
   return runCatching { WorkspacePage.valueOf(this) }.getOrDefault(WorkspacePage.CHAT)
+}
+
+private fun markdownToAnnotatedString(markdown: String, baseFontSize: TextUnit): AnnotatedString {
+  val normalized = markdown.replace("\r\n", "\n").replace('\r', '\n')
+  val lines = normalized.split('\n')
+  val codeStyle = SpanStyle(
+    fontFamily = FontFamily.Monospace,
+    background = Color(0x153B5D52)
+  )
+
+  return buildAnnotatedString {
+    var inCodeBlock = false
+
+    lines.forEachIndexed { index, rawLine ->
+      val trimmed = rawLine.trimStart()
+      if (trimmed.startsWith("```")) {
+        inCodeBlock = !inCodeBlock
+      } else if (inCodeBlock) {
+        withStyle(codeStyle) {
+          append(rawLine)
+        }
+      } else {
+        val headingInfo = markdownHeading(trimmed)
+        when {
+          headingInfo != null -> {
+            withStyle(
+              SpanStyle(
+                fontWeight = FontWeight.Bold,
+                fontSize = markdownHeadingSize(headingInfo.second, baseFontSize)
+              )
+            ) {
+              appendMarkdownInline(this, headingInfo.first)
+            }
+          }
+
+          markdownBulletRegex.matches(trimmed) -> {
+            withStyle(SpanStyle(fontWeight = FontWeight.Medium)) {
+              append("• ")
+            }
+            appendMarkdownInline(this, trimmed.replaceFirst(markdownBulletRegex, ""))
+          }
+
+          markdownOrderedRegex.matches(trimmed) -> {
+            val match = markdownOrderedRegex.find(trimmed)
+            if (match != null) {
+              append(match.groupValues[1])
+              append(". ")
+              appendMarkdownInline(this, trimmed.substring(match.range.last + 1).trimStart())
+            } else {
+              appendMarkdownInline(this, trimmed)
+            }
+          }
+
+          trimmed.startsWith(">") -> {
+            withStyle(SpanStyle(color = Color(0xFF5A7269))) {
+              append("▎ ")
+            }
+            appendMarkdownInline(this, trimmed.removePrefix(">").trimStart())
+          }
+
+          else -> appendMarkdownInline(this, rawLine)
+        }
+      }
+
+      if (index < lines.lastIndex) {
+        append('\n')
+      }
+    }
+  }
+}
+
+private fun markdownHeading(line: String): Pair<String, Int>? {
+  return when {
+    line.startsWith("### ") -> line.removePrefix("### ") to 3
+    line.startsWith("## ") -> line.removePrefix("## ") to 2
+    line.startsWith("# ") -> line.removePrefix("# ") to 1
+    else -> null
+  }
+}
+
+private fun markdownHeadingSize(level: Int, baseFontSize: TextUnit): TextUnit {
+  val base = markdownFontSizeValue(baseFontSize)
+  val delta = when (level) {
+    1 -> 6f
+    2 -> 4f
+    else -> 2f
+  }
+  return (base + delta).sp
+}
+
+private fun markdownLineHeightFor(baseFontSize: TextUnit): TextUnit {
+  val base = markdownFontSizeValue(baseFontSize)
+  val headingPeak = base + 6f
+  val lineHeight = max(base * 1.55f, headingPeak * 1.35f)
+  return lineHeight.sp
+}
+
+private fun markdownFontSizeValue(baseFontSize: TextUnit): Float {
+  return if (baseFontSize == TextUnit.Unspecified) 16f else baseFontSize.value
+}
+
+private fun appendMarkdownInline(builder: AnnotatedString.Builder, text: String) {
+  var cursor = 0
+
+  while (cursor < text.length) {
+    when {
+      text.startsWith("**", cursor) -> {
+        val end = text.indexOf("**", cursor + 2)
+        if (end > cursor + 2) {
+          builder.withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+            appendMarkdownInline(this, text.substring(cursor + 2, end))
+          }
+          cursor = end + 2
+        } else {
+          builder.append("**")
+          cursor += 2
+        }
+      }
+
+      text.startsWith("*", cursor) -> {
+        val end = text.indexOf("*", cursor + 1)
+        if (end > cursor + 1) {
+          builder.withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+            appendMarkdownInline(this, text.substring(cursor + 1, end))
+          }
+          cursor = end + 1
+        } else {
+          builder.append('*')
+          cursor += 1
+        }
+      }
+
+      text.startsWith("_", cursor) -> {
+        val end = text.indexOf("_", cursor + 1)
+        if (end > cursor + 1) {
+          builder.withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+            appendMarkdownInline(this, text.substring(cursor + 1, end))
+          }
+          cursor = end + 1
+        } else {
+          builder.append('_')
+          cursor += 1
+        }
+      }
+
+      text.startsWith("~~", cursor) -> {
+        val end = text.indexOf("~~", cursor + 2)
+        if (end > cursor + 2) {
+          builder.withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
+            appendMarkdownInline(this, text.substring(cursor + 2, end))
+          }
+          cursor = end + 2
+        } else {
+          builder.append("~~")
+          cursor += 2
+        }
+      }
+
+      text.startsWith("`", cursor) -> {
+        val end = text.indexOf('`', cursor + 1)
+        if (end > cursor + 1) {
+          builder.withStyle(
+            SpanStyle(
+              fontFamily = FontFamily.Monospace,
+              background = Color(0x153B5D52)
+            )
+          ) {
+            append(text.substring(cursor + 1, end))
+          }
+          cursor = end + 1
+        } else {
+          builder.append('`')
+          cursor += 1
+        }
+      }
+
+      text.startsWith("[", cursor) -> {
+        val closeBracket = text.indexOf(']', cursor + 1)
+        val hasParen = closeBracket != -1 && closeBracket + 1 < text.length && text[closeBracket + 1] == '('
+        if (hasParen) {
+          val closeParen = text.indexOf(')', closeBracket + 2)
+          if (closeParen > closeBracket + 2) {
+            val label = text.substring(cursor + 1, closeBracket)
+            builder.withStyle(
+              SpanStyle(
+                color = Color(0xFF2F6D93),
+                textDecoration = TextDecoration.Underline
+              )
+            ) {
+              appendMarkdownInline(this, label)
+            }
+            cursor = closeParen + 1
+          } else {
+            builder.append('[')
+            cursor += 1
+          }
+        } else {
+          builder.append('[')
+          cursor += 1
+        }
+      }
+
+      else -> {
+        builder.append(text[cursor])
+        cursor += 1
+      }
+    }
+  }
+}
+
+private val markdownBulletRegex = Regex("^[-*+]\\s+")
+private val markdownOrderedRegex = Regex("^(\\d+)\\.\\s+")
+
+private fun normalizeSystemPrompt(prompt: String): String {
+  val trimmed = prompt.trim()
+  return when {
+    trimmed.isBlank() -> DEFAULT_ARK_SYSTEM_PROMPT
+    trimmed == LEGACY_ARK_SYSTEM_PROMPT -> DEFAULT_ARK_SYSTEM_PROMPT
+    else -> trimmed
+  }
+}
+
+private fun normalizeImagePrompt(prompt: String): String {
+  val trimmed = prompt.trim()
+  return when {
+    trimmed.isBlank() -> DEFAULT_IMAGE_PROMPT
+    trimmed == LEGACY_IMAGE_PROMPT -> DEFAULT_IMAGE_PROMPT
+    else -> trimmed
+  }
+}
+
+private fun parseAnkiTagsInput(input: String): List<String> {
+  return input
+    .split(Regex("[,，;；\\n]+"))
+    .asSequence()
+    .map { token -> token.trim() }
+    .filter { token -> token.isNotEmpty() }
+    .distinct()
+    .take(10)
+    .toList()
 }
 
 private fun formatSessionTime(updatedAt: Long): String {
