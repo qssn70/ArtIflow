@@ -171,23 +171,11 @@ class StudyChatViewModel : ViewModel() {
     conversationToken += 1
     inFlightRequests = 0
 
-    _uiState.value = ChatUiState(
-      messages = latestTarget.messages,
-      histories = latestTarget.histories,
-      profile = latestTarget.profile,
-      input = latestTarget.input,
-      selectedSpanId = null,
-      activePage = latestTarget.activePage,
-      knowledgePoints = latestTarget.knowledgePoints,
-      ankiCards = latestTarget.ankiCards,
-      activeSessionId = latestTarget.id,
-      sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById),
-      isSessionsOpen = false,
-      toastMessage = "已切换到历史会话",
-      isLoading = false,
-      isSettingsOpen = false,
+    _uiState.value = buildUiStateFromSession(
+      session = latestTarget,
       settings = settings,
-      settingsDraft = settings
+      summaries = buildSessionSummaries(sessionOrder, sessionsById),
+      toastMessage = "已切换到历史会话"
     )
     persistSessionsAsync()
   }
@@ -637,48 +625,25 @@ class StudyChatViewModel : ViewModel() {
     cardSeed = 0
     sessionSeed += 1
 
-    val intro = listOf(
-      "你好，我是你的学习搭子。这个界面看起来是普通 AI Chat，但每一段都能左滑右滑交互。",
-      "左滑松手会自动讲解当前段落，不会把讲解追加到底部，而是存进段落详解记录。",
-      "左滑后不松手会进入语音追问模式，松手即提交追问并更新你的学习画像。",
-      "右滑可拉出详解弹窗，回看该段追问与回答；追问内容不会追加到底部聊天。"
-    ).joinToString(separator = "\n\n")
-
-    val sessionId = "session-${System.currentTimeMillis()}-$sessionSeed"
+    val now = System.currentTimeMillis()
+    val sessionId = "session-$now-$sessionSeed"
     val settings = _uiState.value.settings
     val settingsDraft = _uiState.value.settingsDraft
+    val introMessage = createAssistantMessage(buildIntroGuideContent(), "初始化引导")
 
-    val initialState = ChatUiState(
-      messages = listOf(createAssistantMessage(intro, "初始化引导")),
-      histories = emptyMap(),
-      profile = ProfileState(level = "高二 · 进阶冲刺"),
-      input = "",
-      selectedSpanId = null,
-      activePage = WorkspacePage.CHAT,
-      knowledgePoints = emptyMap(),
-      ankiCards = emptyList(),
-      activeSessionId = sessionId,
-      sessionSummaries = emptyList(),
-      isSessionsOpen = false,
-      toastMessage = if (showIntroToast) "已开始新对话" else null,
-      isLoading = false,
-      isSettingsOpen = false,
+    val initialState = createInitialSessionState(
+      sessionId = sessionId,
+      introMessage = introMessage,
       settings = settings,
-      settingsDraft = settingsDraft
+      settingsDraft = settingsDraft,
+      showIntroToast = showIntroToast
     )
 
-    sessionsById[sessionId] = StoredSession(
-      id = sessionId,
+    sessionsById[sessionId] = toStoredSessionSnapshot(
+      state = initialState,
       title = "新会话",
-      createdAt = System.currentTimeMillis(),
-      updatedAt = System.currentTimeMillis(),
-      messages = initialState.messages,
-      histories = initialState.histories,
-      profile = initialState.profile,
-      input = initialState.input,
-      activePage = initialState.activePage,
-      knowledgePoints = initialState.knowledgePoints,
-      ankiCards = initialState.ankiCards
+      createdAt = now,
+      updatedAt = now
     )
     sessionOrder.remove(sessionId)
     sessionOrder.add(0, sessionId)
@@ -740,18 +705,12 @@ class StudyChatViewModel : ViewModel() {
     val now = System.currentTimeMillis()
     val title = buildSessionTitle(state.messages, currentTime())
 
-    val updated = StoredSession(
-      id = sessionId,
+    val createdAt = sessionsById[sessionId]?.createdAt ?: now
+    val updated = toStoredSessionSnapshot(
+      state = state,
       title = title,
-      createdAt = sessionsById[sessionId]?.createdAt ?: now,
-      updatedAt = now,
-      messages = state.messages,
-      histories = state.histories,
-      profile = state.profile,
-      input = state.input,
-      activePage = state.activePage,
-      knowledgePoints = state.knowledgePoints,
-      ankiCards = state.ankiCards
+      createdAt = createdAt,
+      updatedAt = now
     )
 
     sessionsById[sessionId] = updated
@@ -804,23 +763,11 @@ class StudyChatViewModel : ViewModel() {
     conversationToken += 1
     inFlightRequests = 0
 
-    _uiState.value = ChatUiState(
-      messages = active.messages,
-      histories = active.histories,
-      profile = active.profile,
-      input = active.input,
-      selectedSpanId = null,
-      activePage = active.activePage,
-      knowledgePoints = active.knowledgePoints,
-      ankiCards = active.ankiCards,
-      activeSessionId = active.id,
-      sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById),
-      isSessionsOpen = false,
-      toastMessage = null,
-      isLoading = false,
-      isSettingsOpen = false,
+    _uiState.value = buildUiStateFromSession(
+      session = active,
       settings = settings,
-      settingsDraft = settings
+      summaries = buildSessionSummaries(sessionOrder, sessionsById),
+      toastMessage = null
     )
   }
 
