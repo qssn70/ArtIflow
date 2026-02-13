@@ -162,7 +162,11 @@ class StudyChatViewModel : ViewModel() {
     touchSession(sessionId)
     val latestTarget = sessionsById[sessionId] ?: target
     val settings = _uiState.value.settings
-    hydrateSeeds(latestTarget)
+    val latestSeeds = deriveSessionSeeds(latestTarget)
+    messageSeed = latestSeeds.messageSeed
+    spanSeed = latestSeeds.spanSeed
+    detailSeed = latestSeeds.detailSeed
+    cardSeed = latestSeeds.cardSeed
 
     conversationToken += 1
     inFlightRequests = 0
@@ -177,7 +181,7 @@ class StudyChatViewModel : ViewModel() {
       knowledgePoints = latestTarget.knowledgePoints,
       ankiCards = latestTarget.ankiCards,
       activeSessionId = latestTarget.id,
-      sessionSummaries = currentSessionSummaries(),
+      sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById),
       isSessionsOpen = false,
       toastMessage = "已切换到历史会话",
       isLoading = false,
@@ -204,7 +208,7 @@ class StudyChatViewModel : ViewModel() {
     if (!isActive) {
       updateUiState {
         it.copy(
-          sessionSummaries = currentSessionSummaries(),
+            sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById),
           toastMessage = "会话已删除"
         )
       }
@@ -680,7 +684,7 @@ class StudyChatViewModel : ViewModel() {
     sessionOrder.add(0, sessionId)
 
     _uiState.value = initialState.copy(
-      sessionSummaries = currentSessionSummaries()
+      sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById)
     )
     persistSessionsAsync()
   }
@@ -734,7 +738,7 @@ class StudyChatViewModel : ViewModel() {
   private fun syncActiveSessionSnapshot(state: ChatUiState) {
     val sessionId = state.activeSessionId.ifBlank { return }
     val now = System.currentTimeMillis()
-    val title = buildSessionTitle(state.messages)
+    val title = buildSessionTitle(state.messages, currentTime())
 
     val updated = StoredSession(
       id = sessionId,
@@ -754,38 +758,13 @@ class StudyChatViewModel : ViewModel() {
     touchSession(sessionId)
 
     _uiState.update { current ->
-      current.copy(sessionSummaries = currentSessionSummaries())
+      current.copy(sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById))
     }
   }
 
   private fun touchSession(sessionId: String) {
     sessionOrder.remove(sessionId)
     sessionOrder.add(0, sessionId)
-  }
-
-  private fun currentSessionSummaries(): List<SessionSummary> {
-    return sessionOrder.mapNotNull { id ->
-      val item = sessionsById[id] ?: return@mapNotNull null
-      SessionSummary(
-        id = item.id,
-        title = item.title,
-        updatedAt = item.updatedAt,
-        messageCount = item.messages.size
-      )
-    }.sortedByDescending { it.updatedAt }
-  }
-
-  private fun buildSessionTitle(messages: List<ChatMessage>): String {
-    val firstUserText = messages.asSequence()
-      .filterIsInstance<ChatMessage.User>()
-      .map { user -> user.text.trim() }
-      .firstOrNull { text -> text.isNotBlank() }
-
-    if (!firstUserText.isNullOrBlank()) {
-      return firstUserText.take(18)
-    }
-
-    return "新会话 ${currentTime()}"
   }
 
   private fun restoreSessionsFromStorage() {
@@ -816,7 +795,11 @@ class StudyChatViewModel : ViewModel() {
     }
 
     val settings = restored.settings
-    hydrateSeeds(active)
+    val activeSeeds = deriveSessionSeeds(active)
+    messageSeed = activeSeeds.messageSeed
+    spanSeed = activeSeeds.spanSeed
+    detailSeed = activeSeeds.detailSeed
+    cardSeed = activeSeeds.cardSeed
 
     conversationToken += 1
     inFlightRequests = 0
@@ -831,7 +814,7 @@ class StudyChatViewModel : ViewModel() {
       knowledgePoints = active.knowledgePoints,
       ankiCards = active.ankiCards,
       activeSessionId = active.id,
-      sessionSummaries = currentSessionSummaries(),
+      sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById),
       isSessionsOpen = false,
       toastMessage = null,
       isLoading = false,
@@ -839,27 +822,6 @@ class StudyChatViewModel : ViewModel() {
       settings = settings,
       settingsDraft = settings
     )
-  }
-
-  private fun hydrateSeeds(active: StoredSession) {
-    messageSeed = active.messages.mapNotNull { message ->
-      message.id.removePrefix("msg-").toIntOrNull()
-    }.maxOrNull() ?: 0
-
-    spanSeed = active.messages
-      .filterIsInstance<ChatMessage.Assistant>()
-      .flatMap { assistant -> assistant.spans }
-      .mapNotNull { span -> span.id.removePrefix("span-").toIntOrNull() }
-      .maxOrNull() ?: 0
-
-    detailSeed = active.histories.values
-      .flatten()
-      .mapNotNull { detail -> detail.id.removePrefix("detail-").toIntOrNull() }
-      .maxOrNull() ?: 0
-
-    cardSeed = active.ankiCards.mapNotNull { card ->
-      card.id.removePrefix("card-").toIntOrNull()
-    }.maxOrNull() ?: 0
   }
 
   private fun persistSessionsAsync() {

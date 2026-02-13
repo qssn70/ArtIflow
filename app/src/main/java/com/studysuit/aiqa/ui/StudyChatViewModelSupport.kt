@@ -275,3 +275,66 @@ internal fun prependAnkiCard(current: List<AnkiCard>, card: AnkiCard): List<Anki
   }
   return listOf(card) + deduplicated.take(199)
 }
+
+internal fun buildSessionSummaries(
+  sessionOrder: List<String>,
+  sessionsById: Map<String, StoredSession>
+): List<SessionSummary> {
+  return sessionOrder.mapNotNull { id ->
+    val item = sessionsById[id] ?: return@mapNotNull null
+    SessionSummary(
+      id = item.id,
+      title = item.title,
+      updatedAt = item.updatedAt,
+      messageCount = item.messages.size
+    )
+  }.sortedByDescending { summary -> summary.updatedAt }
+}
+
+internal fun buildSessionTitle(messages: List<ChatMessage>, fallbackTime: String): String {
+  val firstUserText = messages.asSequence()
+    .filterIsInstance<ChatMessage.User>()
+    .map { user -> user.text.trim() }
+    .firstOrNull { text -> text.isNotBlank() }
+
+  if (!firstUserText.isNullOrBlank()) {
+    return firstUserText.take(18)
+  }
+
+  return "新会话 $fallbackTime"
+}
+
+internal data class SessionSeeds(
+  val messageSeed: Int,
+  val spanSeed: Int,
+  val detailSeed: Int,
+  val cardSeed: Int
+)
+
+internal fun deriveSessionSeeds(active: StoredSession): SessionSeeds {
+  val messageSeed = active.messages.mapNotNull { message ->
+    message.id.removePrefix("msg-").toIntOrNull()
+  }.maxOrNull() ?: 0
+
+  val spanSeed = active.messages
+    .filterIsInstance<ChatMessage.Assistant>()
+    .flatMap { assistant -> assistant.spans }
+    .mapNotNull { span -> span.id.removePrefix("span-").toIntOrNull() }
+    .maxOrNull() ?: 0
+
+  val detailSeed = active.histories.values
+    .flatten()
+    .mapNotNull { detail -> detail.id.removePrefix("detail-").toIntOrNull() }
+    .maxOrNull() ?: 0
+
+  val cardSeed = active.ankiCards.mapNotNull { card ->
+    card.id.removePrefix("card-").toIntOrNull()
+  }.maxOrNull() ?: 0
+
+  return SessionSeeds(
+    messageSeed = messageSeed,
+    spanSeed = spanSeed,
+    detailSeed = detailSeed,
+    cardSeed = cardSeed
+  )
+}
