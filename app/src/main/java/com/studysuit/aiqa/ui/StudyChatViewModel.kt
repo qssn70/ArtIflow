@@ -296,7 +296,7 @@ class StudyChatViewModel : ViewModel() {
     val arkConfig = _uiState.value.settings.toArkRuntimeConfig()
 
     startRequest(toastMessage = "正在生成该段讲解...") { current ->
-      current.copy(processingSpanIds = current.processingSpanIds + spanId)
+      markSpanProcessing(current, spanId)
     }
 
     val requestMessages = listOf(
@@ -308,25 +308,23 @@ class StudyChatViewModel : ViewModel() {
 
       if (requestConversationToken != conversationToken) {
         finishRequest { current ->
-          current.copy(processingSpanIds = current.processingSpanIds - spanId)
+          clearSpanProcessing(current, spanId)
         }
         return@launch
       }
 
       result.onSuccess { reply ->
         finishRequest { current ->
-          val updatedHistory = current.histories.toMutableMap()
           val detail = SpanDetail(
             id = nextDetailId(),
             mode = "自动讲解",
             time = currentDateTime(),
             answer = reply
           )
-          updatedHistory[spanId] = listOf(detail) + current.histories[spanId].orEmpty()
-
-          current.copy(
-            histories = updatedHistory,
-            processingSpanIds = current.processingSpanIds - spanId,
+          appendSpanDetailHistory(
+            current = current,
+            spanId = spanId,
+            detail = detail,
             toastMessage = "已生成该段讲解，右滑可查看详解"
           )
         }
@@ -341,7 +339,7 @@ class StudyChatViewModel : ViewModel() {
       }.onFailure { throwable ->
         if (throwable is CancellationException) {
           finishRequest { current ->
-            current.copy(processingSpanIds = current.processingSpanIds - spanId)
+            clearSpanProcessing(current, spanId)
           }
           throw throwable
         }
@@ -349,10 +347,7 @@ class StudyChatViewModel : ViewModel() {
         val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
 
         finishRequest { current ->
-          current.copy(
-            processingSpanIds = current.processingSpanIds - spanId,
-            toastMessage = "自动讲解失败：$errorHint"
-          )
+          clearSpanProcessing(current, spanId, toastMessage = "自动讲解失败：$errorHint")
         }
       }
     }
@@ -431,7 +426,7 @@ class StudyChatViewModel : ViewModel() {
 
     val requestConversationToken = conversationToken
     startRequest(toastMessage = "豆包语音识别中...") { current ->
-      current.copy(processingSpanIds = current.processingSpanIds + span.id)
+      markSpanProcessing(current, span.id)
     }
 
     viewModelScope.launch {
@@ -441,7 +436,7 @@ class StudyChatViewModel : ViewModel() {
       )
       if (requestConversationToken != conversationToken) {
         finishRequest { current ->
-          current.copy(processingSpanIds = current.processingSpanIds - span.id)
+          clearSpanProcessing(current, span.id)
         }
         return@launch
       }
@@ -465,8 +460,9 @@ class StudyChatViewModel : ViewModel() {
         "识别结果为空"
       }
       updateUiState { current ->
-        current.copy(
-          processingSpanIds = current.processingSpanIds - span.id,
+        clearSpanProcessing(
+          current,
+          span.id,
           toastMessage = "豆包语音识别失败：$errorHint，未提交追问"
         )
       }
@@ -488,14 +484,16 @@ class StudyChatViewModel : ViewModel() {
     val requestConversationToken = conversationToken
     val arkConfig = _uiState.value.settings.toArkRuntimeConfig()
     startRequest(clearToast = true) { current ->
-      current.copy(
-        profile = current.profile.updateWith(
-          text = normalizedQuestion,
-          isFollowup = true,
-          isVoice = isVoice
+      markSpanProcessing(
+        current.copy(
+          profile = current.profile.updateWith(
+            text = normalizedQuestion,
+            isFollowup = true,
+            isVoice = isVoice
+          ),
+          knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(normalizedQuestion))
         ),
-        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(normalizedQuestion)),
-        processingSpanIds = current.processingSpanIds + span.id
+        span.id
       )
     }
 
@@ -510,14 +508,13 @@ class StudyChatViewModel : ViewModel() {
 
       if (requestConversationToken != conversationToken) {
         finishRequest { current ->
-          current.copy(processingSpanIds = current.processingSpanIds - span.id)
+          clearSpanProcessing(current, span.id)
         }
         return@launch
       }
 
       result.onSuccess { reply ->
         finishRequest { current ->
-          val updatedHistory = current.histories.toMutableMap()
           val detail = SpanDetail(
             id = nextDetailId(),
             mode = mode,
@@ -525,11 +522,10 @@ class StudyChatViewModel : ViewModel() {
             question = normalizedQuestion,
             answer = reply
           )
-          updatedHistory[span.id] = listOf(detail) + current.histories[span.id].orEmpty()
-
-          current.copy(
-            histories = updatedHistory,
-            processingSpanIds = current.processingSpanIds - span.id,
+          appendSpanDetailHistory(
+            current = current,
+            spanId = span.id,
+            detail = detail,
             toastMessage = "追问已保存，右滑查看本段详解"
           )
         }
@@ -544,7 +540,7 @@ class StudyChatViewModel : ViewModel() {
       }.onFailure { throwable ->
         if (throwable is CancellationException) {
           finishRequest { current ->
-            current.copy(processingSpanIds = current.processingSpanIds - span.id)
+            clearSpanProcessing(current, span.id)
           }
           throw throwable
         }
@@ -552,10 +548,7 @@ class StudyChatViewModel : ViewModel() {
         val errorHint = throwable.message?.take(80).orEmpty().ifBlank { "网络不可用" }
 
         finishRequest { current ->
-          current.copy(
-            processingSpanIds = current.processingSpanIds - span.id,
-            toastMessage = "追问失败：$errorHint"
-          )
+          clearSpanProcessing(current, span.id, toastMessage = "追问失败：$errorHint")
         }
       }
     }

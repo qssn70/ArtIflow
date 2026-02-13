@@ -139,4 +139,28 @@ class StudyChatViewModelSupportTest {
     assertEquals(4, seeds.detailSeed)
     assertEquals(6, seeds.cardSeed)
   }
+
+  @Test
+  fun spanProcessingHelpers_updateProcessingAndHistory() {
+    val base = ChatUiState(
+      histories = mapOf(
+        "span-1" to listOf(SpanDetail(id = "detail-1", mode = "自动讲解", time = "10:00", answer = "old"))
+      )
+    )
+
+    val marked = markSpanProcessing(base, "span-1")
+    val appended = appendSpanDetailHistory(
+      current = marked,
+      spanId = "span-1",
+      detail = SpanDetail(id = "detail-2", mode = "追问", time = "10:01", question = "q", answer = "new"),
+      toastMessage = "done"
+    )
+    val cleared = clearSpanProcessing(appended, "span-1", toastMessage = "cleared")
+
+    assertTrue(marked.processingSpanIds.contains("span-1"))
+    assertEquals("detail-2", appended.histories["span-1"]?.firstOrNull()?.id)
+    assertEquals("done", appended.toastMessage)
+    assertTrue(cleared.processingSpanIds.isEmpty())
+    assertEquals("cleared", cleared.toastMessage)
+  }
 }

@@ -276,6 +276,36 @@ internal fun prependAnkiCard(current: List<AnkiCard>, card: AnkiCard): List<Anki
   return listOf(card) + deduplicated.take(199)
 }
 
+internal fun markSpanProcessing(current: ChatUiState, spanId: String): ChatUiState {
+  return current.copy(processingSpanIds = current.processingSpanIds + spanId)
+}
+
+internal fun clearSpanProcessing(
+  current: ChatUiState,
+  spanId: String,
+  toastMessage: String? = current.toastMessage
+): ChatUiState {
+  return current.copy(
+    processingSpanIds = current.processingSpanIds - spanId,
+    toastMessage = toastMessage
+  )
+}
+
+internal fun appendSpanDetailHistory(
+  current: ChatUiState,
+  spanId: String,
+  detail: SpanDetail,
+  toastMessage: String
+): ChatUiState {
+  val updatedHistory = current.histories.toMutableMap()
+  updatedHistory[spanId] = listOf(detail) + current.histories[spanId].orEmpty()
+  return current.copy(
+    histories = updatedHistory,
+    processingSpanIds = current.processingSpanIds - spanId,
+    toastMessage = toastMessage
+  )
+}
+
 internal fun buildSessionSummaries(
   sessionOrder: List<String>,
   sessionsById: Map<String, StoredSession>
