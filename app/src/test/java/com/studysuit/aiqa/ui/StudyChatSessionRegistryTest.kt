@@ -59,6 +59,15 @@ class StudyChatSessionRegistryTest {
     assertEquals(listOf("b", "a"), summaries.map { summary -> summary.id })
   }
 
+  @Test
+  fun createdAtOf_returnsValueForExistingSession() {
+    val registry = SessionRegistry()
+    registry.put(buildSession("a", updatedAt = 100L), moveToFront = false)
+
+    assertEquals(100L, registry.createdAtOf("a"))
+    assertEquals(null, registry.createdAtOf("missing"))
+  }
+
   private fun buildSession(id: String, updatedAt: Long): StoredSession {
     return StoredSession(
       id = id,

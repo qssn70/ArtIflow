@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.studysuit.aiqa.data.ArkApiClient
-import com.studysuit.aiqa.data.ArkRequestMessage
 import com.studysuit.aiqa.data.OpenSpeechAsrClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -25,8 +24,10 @@ class StudyChatViewModel : ViewModel() {
   private var sessionSeed = 0
   private var conversationToken = 0L
   private var inFlightRequests = 0
-  private val arkApiClient = ArkApiClient()
-  private val openSpeechAsrClient = OpenSpeechAsrClient()
+  private val requestCoordinator = StudyChatRequestCoordinator(
+    arkApiClient = ArkApiClient(),
+    openSpeechAsrClient = OpenSpeechAsrClient()
+  )
   private var sessionStorage: SessionStorage? = null
   private val sessionRegistry = SessionRegistry()
 
@@ -89,16 +90,8 @@ class StudyChatViewModel : ViewModel() {
       )
     }
 
-    val prompt = normalizeImagePrompt(settings.imagePrompt)
-    val arkConfig = settings.toArkRuntimeConfig()
-
     viewModelScope.launch {
-      val result = arkApiClient.generateReplyWithImage(
-        prompt = prompt,
-        imageBytes = imageBytes,
-        mimeType = "image/jpeg",
-        config = arkConfig
-      )
+      val result = requestCoordinator.replyForImageQuestion(imageBytes = imageBytes, settings = settings)
 
       if (requestConversationToken != conversationToken) {
         finishRequest()
@@ -280,18 +273,14 @@ class StudyChatViewModel : ViewModel() {
   fun autoExplain(spanId: String) {
     val span = findSpanById(_uiState.value.messages, spanId) ?: return
     val requestConversationToken = conversationToken
-    val arkConfig = _uiState.value.settings.toArkRuntimeConfig()
+    val settings = _uiState.value.settings
 
     startRequest(toastMessage = "正在生成该段讲解...") { current ->
       markSpanProcessing(current, spanId)
     }
 
-    val requestMessages = listOf(
-      ArkRequestMessage(role = "user", text = buildAutoExplainPrompt(span.content))
-    )
-
     viewModelScope.launch {
-      val result = arkApiClient.generateReply(requestMessages, config = arkConfig)
+      val result = requestCoordinator.replyForAutoExplain(spanContent = span.content, settings = settings)
 
       if (requestConversationToken != conversationToken) {
         finishRequest { current ->
@@ -405,8 +394,8 @@ class StudyChatViewModel : ViewModel() {
       return
     }
 
-    val speechConfig = _uiState.value.settings.toOpenSpeechRuntimeConfig()
-    if (!openSpeechAsrClient.isConfigured(speechConfig)) {
+    val settings = _uiState.value.settings
+    if (!requestCoordinator.canTranscribe(settings)) {
       postToast("未配置豆包语音识别，未提交追问")
       return
     }
@@ -417,10 +406,7 @@ class StudyChatViewModel : ViewModel() {
     }
 
     viewModelScope.launch {
-      val asrResult = openSpeechAsrClient.transcribeByAudioData(
-        audioBytes = audioBytes,
-        config = speechConfig
-      )
+      val asrResult = requestCoordinator.transcribe(audioBytes = audioBytes, settings = settings)
       if (requestConversationToken != conversationToken) {
         finishRequest { current ->
           clearSpanProcessing(current, span.id)
@@ -469,7 +455,7 @@ class StudyChatViewModel : ViewModel() {
     }
 
     val requestConversationToken = conversationToken
-    val arkConfig = _uiState.value.settings.toArkRuntimeConfig()
+    val settings = _uiState.value.settings
     startRequest(clearToast = true) { current ->
       markSpanProcessing(
         current.copy(
@@ -484,14 +470,15 @@ class StudyChatViewModel : ViewModel() {
       )
     }
 
-    val historyForRequest = toSpanFollowupMessages(
-      span = span,
-      followupQuestion = normalizedQuestion,
-      details = _uiState.value.histories[span.id].orEmpty()
-    )
+    val detailsSnapshot = _uiState.value.histories[span.id].orEmpty()
 
     viewModelScope.launch {
-      val result = arkApiClient.generateReply(historyForRequest, config = arkConfig)
+      val result = requestCoordinator.replyForSpanFollowup(
+        span = span,
+        followupQuestion = normalizedQuestion,
+        details = detailsSnapshot,
+        settings = settings
+      )
 
       if (requestConversationToken != conversationToken) {
         finishRequest { current ->
@@ -548,7 +535,7 @@ class StudyChatViewModel : ViewModel() {
     clearInput: Boolean = true
   ) {
     val requestConversationToken = conversationToken
-    val arkConfig = _uiState.value.settings.toArkRuntimeConfig()
+    val settings = _uiState.value.settings
     val userMessage = ChatMessage.User(id = nextMessageId(), time = currentTime(), text = question)
 
     startRequest(clearToast = true) { current ->
@@ -560,10 +547,10 @@ class StudyChatViewModel : ViewModel() {
       )
     }
 
-    val historyForRequest = toArkMessages(_uiState.value.messages)
+    val messagesSnapshot = _uiState.value.messages
 
     viewModelScope.launch {
-      val result = arkApiClient.generateReply(historyForRequest, config = arkConfig)
+      val result = requestCoordinator.replyForConversation(messages = messagesSnapshot, settings = settings)
 
       if (requestConversationToken != conversationToken) {
         finishRequest()
@@ -620,10 +607,10 @@ class StudyChatViewModel : ViewModel() {
 
     sessionRegistry.put(
       toStoredSessionSnapshot(
-      state = initialState,
-      title = "新会话",
-      createdAt = now,
-      updatedAt = now
+        state = initialState,
+        title = "新会话",
+        createdAt = now,
+        updatedAt = now
       ),
       moveToFront = true
     )
@@ -791,30 +778,27 @@ class StudyChatViewModel : ViewModel() {
     answer: String
   ) {
     val settingsSnapshot = _uiState.value.settings
-    val cardConfig = settingsSnapshot.toArkRuntimeConfig().copy(systemPrompt = ANKI_CARD_SYSTEM_PROMPT)
     val profileSnapshot = _uiState.value.profile
     val knowledgeSnapshot = _uiState.value.knowledgePoints
 
     viewModelScope.launch {
-      val prompt = buildAnkiGenerationPrompt(
-        mode = mode,
-        spanContent = spanContent,
-        question = question,
-        answer = answer,
-        profile = profileSnapshot,
-        knowledgePoints = knowledgeSnapshot
-      )
-      val result = arkApiClient.generateReply(
-        messages = listOf(ArkRequestMessage(role = "user", text = prompt)),
-        config = cardConfig
+      val result = requestCoordinator.generateAnkiPayload(
+        AnkiGenerationInput(
+          mode = mode,
+          spanContent = spanContent,
+          question = question,
+          answer = answer,
+          profile = profileSnapshot,
+          knowledgePoints = knowledgeSnapshot,
+          settings = settingsSnapshot
+        )
       )
 
       if (requestConversationToken != conversationToken) {
         return@launch
       }
 
-      result.getOrNull()?.let { raw ->
-        val parsedPayload = parseAiAnkiCardPayload(raw = raw) ?: return@let
+      result.getOrNull()?.let { parsedPayload ->
         val parsed = createAnkiCard(
           front = parsedPayload.front,
           back = parsedPayload.back,
