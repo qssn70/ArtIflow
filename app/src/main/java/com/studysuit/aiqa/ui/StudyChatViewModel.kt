@@ -28,8 +28,7 @@ class StudyChatViewModel : ViewModel() {
   private val arkApiClient = ArkApiClient()
   private val openSpeechAsrClient = OpenSpeechAsrClient()
   private var sessionStorage: SessionStorage? = null
-  private val sessionsById = linkedMapOf<String, StoredSession>()
-  private val sessionOrder = mutableListOf<String>()
+  private val sessionRegistry = SessionRegistry()
 
   private val _uiState = MutableStateFlow(ChatUiState())
   val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -156,11 +155,10 @@ class StudyChatViewModel : ViewModel() {
   }
 
   fun switchSession(sessionId: String) {
-    val target = sessionsById[sessionId] ?: return
+    val target = sessionRegistry.get(sessionId) ?: return
     val now = System.currentTimeMillis()
-    sessionsById[sessionId] = target.copy(updatedAt = now)
-    touchSession(sessionId)
-    val latestTarget = sessionsById[sessionId] ?: target
+    sessionRegistry.put(target.copy(updatedAt = now), moveToFront = true)
+    val latestTarget = sessionRegistry.get(sessionId) ?: target
     val settings = _uiState.value.settings
     activateSession(
       session = latestTarget,
@@ -174,10 +172,9 @@ class StudyChatViewModel : ViewModel() {
     val activeId = _uiState.value.activeSessionId
     val isActive = sessionId == activeId
 
-    sessionsById.remove(sessionId)
-    sessionOrder.remove(sessionId)
+    sessionRegistry.remove(sessionId)
 
-    if (sessionsById.isEmpty()) {
+    if (sessionRegistry.isEmpty()) {
       resetConversation(showIntroToast = false)
       postToast("会话已删除")
       return
@@ -186,7 +183,7 @@ class StudyChatViewModel : ViewModel() {
     if (!isActive) {
       updateUiState {
         it.copy(
-          sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById),
+          sessionSummaries = sessionRegistry.summaries(),
           toastMessage = "会话已删除"
         )
       }
@@ -194,7 +191,7 @@ class StudyChatViewModel : ViewModel() {
       return
     }
 
-    val fallbackId = sessionOrder.firstOrNull() ?: sessionsById.keys.first()
+    val fallbackId = sessionRegistry.firstIdOrNull() ?: return
     switchSession(fallbackId)
     postToast("会话已删除")
   }
@@ -621,17 +618,18 @@ class StudyChatViewModel : ViewModel() {
       showIntroToast = showIntroToast
     )
 
-    sessionsById[sessionId] = toStoredSessionSnapshot(
+    sessionRegistry.put(
+      toStoredSessionSnapshot(
       state = initialState,
       title = "新会话",
       createdAt = now,
       updatedAt = now
+      ),
+      moveToFront = true
     )
-    sessionOrder.remove(sessionId)
-    sessionOrder.add(0, sessionId)
 
     _uiState.value = initialState.copy(
-      sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById)
+      sessionSummaries = sessionRegistry.summaries()
     )
     persistSessionsAsync()
   }
@@ -687,7 +685,7 @@ class StudyChatViewModel : ViewModel() {
     val now = System.currentTimeMillis()
     val title = buildSessionTitle(state.messages, currentTime())
 
-    val createdAt = sessionsById[sessionId]?.createdAt ?: now
+    val createdAt = sessionRegistry.createdAtOf(sessionId) ?: now
     val updated = toStoredSessionSnapshot(
       state = state,
       title = title,
@@ -695,42 +693,28 @@ class StudyChatViewModel : ViewModel() {
       updatedAt = now
     )
 
-    sessionsById[sessionId] = updated
-    touchSession(sessionId)
+    sessionRegistry.put(updated, moveToFront = true)
 
     _uiState.update { current ->
-      current.copy(sessionSummaries = buildSessionSummaries(sessionOrder, sessionsById))
+      current.copy(sessionSummaries = sessionRegistry.summaries())
     }
-  }
-
-  private fun touchSession(sessionId: String) {
-    sessionOrder.remove(sessionId)
-    sessionOrder.add(0, sessionId)
   }
 
   private fun restoreSessionsFromStorage() {
     val store = sessionStorage ?: return
     val restored = store.load()
     if (restored == null || restored.sessions.isEmpty()) {
-      sessionsById.clear()
-      sessionOrder.clear()
+      sessionRegistry.clear()
       resetConversation()
       return
     }
 
-    sessionsById.clear()
-    sessionOrder.clear()
+    sessionRegistry.replaceAll(restored.sessions)
 
-    restored.sessions.forEach { session ->
-      sessionsById[session.id] = session
-      sessionOrder += session.id
-    }
-
-    val activeId = restored.activeSessionId.takeIf { id -> sessionsById.containsKey(id) }
-      ?: sessionOrder.first()
-    val active = sessionsById[activeId] ?: run {
-      sessionsById.clear()
-      sessionOrder.clear()
+    val activeId = restored.activeSessionId.takeIf { id -> sessionRegistry.contains(id) }
+      ?: sessionRegistry.firstIdOrNull()
+    val active = activeId?.let { id -> sessionRegistry.get(id) } ?: run {
+      sessionRegistry.clear()
       resetConversation()
       return
     }
@@ -749,7 +733,7 @@ class StudyChatViewModel : ViewModel() {
     val state = _uiState.value
     val activeId = state.activeSessionId.ifBlank { return }
     val settings = state.settings
-    val sessionsSnapshot = sessionOrder.mapNotNull { id -> sessionsById[id] }
+    val sessionsSnapshot = sessionRegistry.orderedSessions()
 
     viewModelScope.launch(Dispatchers.IO) {
       store.save(
@@ -855,7 +839,7 @@ class StudyChatViewModel : ViewModel() {
     _uiState.value = buildUiStateFromSession(
       session = session,
       settings = settings,
-      summaries = buildSessionSummaries(sessionOrder, sessionsById),
+      summaries = sessionRegistry.summaries(),
       toastMessage = toastMessage
     )
     if (persistSession) {
