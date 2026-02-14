@@ -5,7 +5,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.studysuit.aiqa.data.ArkApiClient
 import com.studysuit.aiqa.data.OpenSpeechAsrClient
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -837,23 +836,15 @@ class StudyChatViewModel : ViewModel() {
   ) {
     viewModelScope.launch {
       val result = request()
-      if (abortIfTokenStale(requestConversationToken, onStale)) {
-        return@launch
-      }
-
-      result.onSuccess(onSuccess).onFailure(onFailure)
+      deliverTokenAwareResult(
+        result = result,
+        requestToken = requestConversationToken,
+        activeToken = conversationToken,
+        onStale = onStale,
+        onSuccess = onSuccess,
+        onFailure = onFailure
+      )
     }
-  }
-
-  private fun abortIfTokenStale(
-    requestConversationToken: Long,
-    onStale: () -> Unit
-  ): Boolean {
-    if (!isTokenStale(requestConversationToken, conversationToken)) {
-      return false
-    }
-    onStale()
-    return true
   }
 
   private fun handleRequestFailure(
@@ -862,15 +853,16 @@ class StudyChatViewModel : ViewModel() {
     onCancel: (ChatUiState) -> ChatUiState = { state -> state },
     onError: (ChatUiState, String) -> ChatUiState
   ) {
-    if (throwable is CancellationException) {
-      finishRequest(onCancel)
-      throw throwable
-    }
-
-    val errorHint = resolveErrorHint(throwable, fallback)
-    finishRequest { current ->
-      onError(current, errorHint)
-    }
+    routeRequestFailure(
+      throwable = throwable,
+      fallback = fallback,
+      onCancel = { finishRequest(onCancel) },
+      onError = { errorHint ->
+        finishRequest { current ->
+          onError(current, errorHint)
+        }
+      }
+    )
   }
 
   private fun postToast(message: String) {

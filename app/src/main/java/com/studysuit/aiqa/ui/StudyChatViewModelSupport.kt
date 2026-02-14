@@ -1,6 +1,7 @@
 package com.studysuit.aiqa.ui
 
 import com.studysuit.aiqa.data.ArkRequestMessage
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 import java.util.Locale
 
@@ -10,6 +11,36 @@ internal fun isTokenStale(requestToken: Long, activeToken: Long): Boolean {
 
 internal fun resolveErrorHint(throwable: Throwable?, fallback: String): String {
   return throwable?.message?.take(80).orEmpty().ifBlank { fallback }
+}
+
+internal fun <T> deliverTokenAwareResult(
+  result: Result<T>,
+  requestToken: Long,
+  activeToken: Long,
+  onStale: () -> Unit,
+  onSuccess: (T) -> Unit,
+  onFailure: (Throwable) -> Unit
+) {
+  if (isTokenStale(requestToken, activeToken)) {
+    onStale()
+    return
+  }
+
+  result.onSuccess(onSuccess).onFailure(onFailure)
+}
+
+internal fun routeRequestFailure(
+  throwable: Throwable,
+  fallback: String = "网络不可用",
+  onCancel: () -> Unit = {},
+  onError: (String) -> Unit
+) {
+  if (throwable is CancellationException) {
+    onCancel()
+    throw throwable
+  }
+
+  onError(resolveErrorHint(throwable, fallback))
 }
 
 internal fun toArkMessages(messages: List<ChatMessage>): List<ArkRequestMessage> {

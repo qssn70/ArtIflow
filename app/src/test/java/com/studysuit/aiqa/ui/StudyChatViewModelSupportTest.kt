@@ -1,8 +1,13 @@
 package com.studysuit.aiqa.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
+import kotlinx.coroutines.CancellationException
 
 class StudyChatViewModelSupportTest {
 
@@ -168,6 +173,83 @@ class StudyChatViewModelSupportTest {
   fun isTokenStale_detectsTokenMismatch() {
     assertTrue(isTokenStale(requestToken = 2L, activeToken = 3L))
     assertEquals(false, isTokenStale(requestToken = 5L, activeToken = 5L))
+  }
+
+  @Test
+  fun deliverTokenAwareResult_staleTokenOnlyTriggersStaleCallback() {
+    var staleCalled = false
+    var successCalled = false
+    var failureCalled = false
+
+    deliverTokenAwareResult(
+      result = Result.success("ok"),
+      requestToken = 10L,
+      activeToken = 11L,
+      onStale = { staleCalled = true },
+      onSuccess = { successCalled = true },
+      onFailure = { failureCalled = true }
+    )
+
+    assertTrue(staleCalled)
+    assertFalse(successCalled)
+    assertFalse(failureCalled)
+  }
+
+  @Test
+  fun deliverTokenAwareResult_matchingTokenRoutesResultCallbacks() {
+    var successValue: String? = null
+    var failureValue: Throwable? = null
+
+    deliverTokenAwareResult(
+      result = Result.success("done"),
+      requestToken = 12L,
+      activeToken = 12L,
+      onStale = { fail("stale callback should not be called") },
+      onSuccess = { value -> successValue = value },
+      onFailure = { throwable -> failureValue = throwable }
+    )
+
+    assertEquals("done", successValue)
+    assertEquals(null, failureValue)
+
+    val failure = RuntimeException("network")
+    successValue = null
+    failureValue = null
+
+    deliverTokenAwareResult(
+      result = Result.failure<String>(failure),
+      requestToken = 13L,
+      activeToken = 13L,
+      onStale = { fail("stale callback should not be called") },
+      onSuccess = { value -> successValue = value },
+      onFailure = { throwable -> failureValue = throwable }
+    )
+
+    assertEquals(null, successValue)
+    assertSame(failure, failureValue)
+  }
+
+  @Test
+  fun routeRequestFailure_handlesCancelAndErrorSeparately() {
+    var cancelCalled = false
+    assertThrows(CancellationException::class.java) {
+      routeRequestFailure(
+        throwable = CancellationException("cancelled"),
+        onCancel = { cancelCalled = true },
+        onError = { fail("error callback should not be called") }
+      )
+    }
+    assertTrue(cancelCalled)
+
+    var errorHint: String? = null
+    routeRequestFailure(
+      throwable = RuntimeException(""),
+      fallback = "网络不可用",
+      onCancel = { fail("cancel callback should not be called") },
+      onError = { hint -> errorHint = hint }
+    )
+
+    assertEquals("网络不可用", errorHint)
   }
 
   @Test
