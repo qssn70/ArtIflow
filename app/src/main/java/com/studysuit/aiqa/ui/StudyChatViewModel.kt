@@ -83,10 +83,11 @@ class StudyChatViewModel : ViewModel() {
     )
 
     startRequest(toastMessage = "$source 处理中...") { current ->
-      current.copy(
-        messages = current.messages + userMessage,
-        profile = current.profile.updateWith(text = question, isFollowup = false, isVoice = false),
-        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(source))
+      queueImageQuestionState(
+        current = current,
+        userMessage = userMessage,
+        question = question,
+        source = source
       )
     }
 
@@ -101,10 +102,11 @@ class StudyChatViewModel : ViewModel() {
       result.onSuccess { reply ->
         val assistantMessage = createAssistantMessage(reply, question)
         finishRequest { current ->
-          current.copy(
-            messages = current.messages + assistantMessage,
-            knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(reply)),
-            toastMessage = "$source 已完成"
+          appendAssistantMessageState(
+            current = current,
+            assistantMessage = assistantMessage,
+            toastMessage = "$source 已完成",
+            knowledgeTexts = listOf(reply)
           )
         }
       }.onFailure { throwable ->
@@ -457,16 +459,11 @@ class StudyChatViewModel : ViewModel() {
     val requestConversationToken = conversationToken
     val settings = _uiState.value.settings
     startRequest(clearToast = true) { current ->
-      markSpanProcessing(
-        current.copy(
-          profile = current.profile.updateWith(
-            text = normalizedQuestion,
-            isFollowup = true,
-            isVoice = isVoice
-          ),
-          knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(normalizedQuestion))
-        ),
-        span.id
+      queueSpanFollowupState(
+        current = current,
+        spanId = span.id,
+        question = normalizedQuestion,
+        isVoice = isVoice
       )
     }
 
@@ -539,11 +536,13 @@ class StudyChatViewModel : ViewModel() {
     val userMessage = ChatMessage.User(id = nextMessageId(), time = currentTime(), text = question)
 
     startRequest(clearToast = true) { current ->
-      current.copy(
-        input = if (clearInput) "" else current.input,
-        messages = current.messages + userMessage,
-        profile = current.profile.updateWith(text = question, isFollowup = isFollowup, isVoice = isVoice),
-        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(question))
+      queueQuestionState(
+        current = current,
+        userMessage = userMessage,
+        question = question,
+        isFollowup = isFollowup,
+        isVoice = isVoice,
+        clearInput = clearInput
       )
     }
 
@@ -561,8 +560,9 @@ class StudyChatViewModel : ViewModel() {
         val assistantMessage = createAssistantMessage(reply, question)
 
         finishRequest { current ->
-          current.copy(
-            messages = current.messages + assistantMessage,
+          appendAssistantMessageState(
+            current = current,
+            assistantMessage = assistantMessage,
             toastMessage = null
           )
         }
