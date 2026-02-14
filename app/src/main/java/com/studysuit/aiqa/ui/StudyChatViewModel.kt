@@ -91,14 +91,11 @@ class StudyChatViewModel : ViewModel() {
       )
     }
 
-    viewModelScope.launch {
-      val result = requestCoordinator.replyForImageQuestion(imageBytes = imageBytes, settings = settings)
-
-      if (abortIfTokenStale(requestConversationToken) { finishRequest() }) {
-        return@launch
-      }
-
-      result.onSuccess { reply ->
+    launchTokenAwareRequest(
+      requestConversationToken = requestConversationToken,
+      request = { requestCoordinator.replyForImageQuestion(imageBytes = imageBytes, settings = settings) },
+      onStale = { finishRequest() },
+      onSuccess = { reply ->
         val assistantMessage = createAssistantMessage(reply, question)
         finishRequest { current ->
           appendAssistantMessageState(
@@ -108,7 +105,8 @@ class StudyChatViewModel : ViewModel() {
             knowledgeTexts = listOf(reply)
           )
         }
-      }.onFailure { throwable ->
+      },
+      onFailure = { throwable ->
         handleRequestFailure(
           throwable = throwable,
           onError = { current, errorHint ->
@@ -116,7 +114,7 @@ class StudyChatViewModel : ViewModel() {
           }
         )
       }
-    }
+    )
   }
 
   fun startNewChat() {
@@ -277,18 +275,15 @@ class StudyChatViewModel : ViewModel() {
       markSpanProcessing(current, spanId)
     }
 
-    viewModelScope.launch {
-      val result = requestCoordinator.replyForAutoExplain(spanContent = span.content, settings = settings)
-
-      if (abortIfTokenStale(requestConversationToken) {
-          finishRequest { current ->
-            clearSpanProcessing(current, spanId)
-          }
-        }) {
-        return@launch
-      }
-
-      result.onSuccess { reply ->
+    launchTokenAwareRequest(
+      requestConversationToken = requestConversationToken,
+      request = { requestCoordinator.replyForAutoExplain(spanContent = span.content, settings = settings) },
+      onStale = {
+        finishRequest { current ->
+          clearSpanProcessing(current, spanId)
+        }
+      },
+      onSuccess = { reply ->
         finishRequest { current ->
           val detail = SpanDetail(
             id = nextDetailId(),
@@ -311,7 +306,8 @@ class StudyChatViewModel : ViewModel() {
           question = null,
           answer = reply
         )
-      }.onFailure { throwable ->
+      },
+      onFailure = { throwable ->
         handleRequestFailure(
           throwable = throwable,
           onCancel = { current -> clearSpanProcessing(current, spanId) },
@@ -320,7 +316,7 @@ class StudyChatViewModel : ViewModel() {
           }
         )
       }
-    }
+    )
   }
 
   fun submitVoiceFollowupAudio(spanId: String, audioBytes: ByteArray) {
@@ -399,42 +395,50 @@ class StudyChatViewModel : ViewModel() {
       markSpanProcessing(current, span.id)
     }
 
-    viewModelScope.launch {
-      val asrResult = requestCoordinator.transcribe(audioBytes = audioBytes, settings = settings)
-      if (abortIfTokenStale(requestConversationToken) {
-          finishRequest { current ->
-            clearSpanProcessing(current, span.id)
+    launchTokenAwareRequest(
+      requestConversationToken = requestConversationToken,
+      request = { requestCoordinator.transcribe(audioBytes = audioBytes, settings = settings) },
+      onStale = {
+        finishRequest { current ->
+          clearSpanProcessing(current, span.id)
+        }
+      },
+      onSuccess = { transcriptRaw ->
+        finishRequest()
+
+        val transcript = transcriptRaw.trim()
+        if (transcript.isNotBlank()) {
+          enqueueSpanFollowupAndFetch(
+            span = span,
+            followupQuestion = transcript,
+            isVoice = true,
+            mode = "语音追问"
+          )
+        } else {
+          updateUiState { current ->
+            clearSpanProcessing(
+              current,
+              span.id,
+              toastMessage = "豆包语音识别失败：识别结果为空，未提交追问"
+            )
           }
-        }) {
-        return@launch
-      }
-
-      finishRequest()
-
-      val transcript = asrResult.getOrNull()?.trim().orEmpty()
-      if (asrResult.isSuccess && transcript.isNotBlank()) {
-        enqueueSpanFollowupAndFetch(
-          span = span,
-          followupQuestion = transcript,
-          isVoice = true,
-          mode = "语音追问"
-        )
-        return@launch
-      }
-
-      val errorHint = if (asrResult.isFailure) {
-        resolveErrorHint(asrResult.exceptionOrNull(), fallback = "识别失败")
-      } else {
-        "识别结果为空"
-      }
-      updateUiState { current ->
-        clearSpanProcessing(
-          current,
-          span.id,
-          toastMessage = "豆包语音识别失败：$errorHint，未提交追问"
+        }
+      },
+      onFailure = { throwable ->
+        handleRequestFailure(
+          throwable = throwable,
+          fallback = "识别失败",
+          onCancel = { current -> clearSpanProcessing(current, span.id) },
+          onError = { current, errorHint ->
+            clearSpanProcessing(
+              current,
+              span.id,
+              toastMessage = "豆包语音识别失败：$errorHint，未提交追问"
+            )
+          }
         )
       }
-    }
+    )
   }
 
   private fun enqueueSpanFollowupAndFetch(
@@ -462,23 +466,22 @@ class StudyChatViewModel : ViewModel() {
 
     val detailsSnapshot = _uiState.value.histories[span.id].orEmpty()
 
-    viewModelScope.launch {
-      val result = requestCoordinator.replyForSpanFollowup(
-        span = span,
-        followupQuestion = normalizedQuestion,
-        details = detailsSnapshot,
-        settings = settings
-      )
-
-      if (abortIfTokenStale(requestConversationToken) {
-          finishRequest { current ->
-            clearSpanProcessing(current, span.id)
-          }
-        }) {
-        return@launch
-      }
-
-      result.onSuccess { reply ->
+    launchTokenAwareRequest(
+      requestConversationToken = requestConversationToken,
+      request = {
+        requestCoordinator.replyForSpanFollowup(
+          span = span,
+          followupQuestion = normalizedQuestion,
+          details = detailsSnapshot,
+          settings = settings
+        )
+      },
+      onStale = {
+        finishRequest { current ->
+          clearSpanProcessing(current, span.id)
+        }
+      },
+      onSuccess = { reply ->
         finishRequest { current ->
           val detail = SpanDetail(
             id = nextDetailId(),
@@ -502,7 +505,8 @@ class StudyChatViewModel : ViewModel() {
           question = normalizedQuestion,
           answer = reply
         )
-      }.onFailure { throwable ->
+      },
+      onFailure = { throwable ->
         handleRequestFailure(
           throwable = throwable,
           onCancel = { current -> clearSpanProcessing(current, span.id) },
@@ -511,7 +515,7 @@ class StudyChatViewModel : ViewModel() {
           }
         )
       }
-    }
+    )
   }
 
   private fun enqueueQuestionAndFetch(
@@ -537,14 +541,11 @@ class StudyChatViewModel : ViewModel() {
 
     val messagesSnapshot = _uiState.value.messages
 
-    viewModelScope.launch {
-      val result = requestCoordinator.replyForConversation(messages = messagesSnapshot, settings = settings)
-
-      if (abortIfTokenStale(requestConversationToken) { finishRequest() }) {
-        return@launch
-      }
-
-      result.onSuccess { reply ->
+    launchTokenAwareRequest(
+      requestConversationToken = requestConversationToken,
+      request = { requestCoordinator.replyForConversation(messages = messagesSnapshot, settings = settings) },
+      onStale = { finishRequest() },
+      onSuccess = { reply ->
         val assistantMessage = createAssistantMessage(reply, question)
 
         finishRequest { current ->
@@ -554,7 +555,8 @@ class StudyChatViewModel : ViewModel() {
             toastMessage = null
           )
         }
-      }.onFailure { throwable ->
+      },
+      onFailure = { throwable ->
         handleRequestFailure(
           throwable = throwable,
           onError = { current, errorHint ->
@@ -562,7 +564,7 @@ class StudyChatViewModel : ViewModel() {
           }
         )
       }
-    }
+    )
   }
 
   private fun resetConversation(showIntroToast: Boolean = false) {
@@ -824,6 +826,23 @@ class StudyChatViewModel : ViewModel() {
   private fun resetRequestTracking() {
     conversationToken += 1
     inFlightRequests = 0
+  }
+
+  private fun <T> launchTokenAwareRequest(
+    requestConversationToken: Long,
+    request: suspend () -> Result<T>,
+    onStale: () -> Unit,
+    onSuccess: (T) -> Unit,
+    onFailure: (Throwable) -> Unit
+  ) {
+    viewModelScope.launch {
+      val result = request()
+      if (abortIfTokenStale(requestConversationToken, onStale)) {
+        return@launch
+      }
+
+      result.onSuccess(onSuccess).onFailure(onFailure)
+    }
   }
 
   private fun abortIfTokenStale(
