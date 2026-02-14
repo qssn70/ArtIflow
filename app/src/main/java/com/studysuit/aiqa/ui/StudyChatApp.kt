@@ -10,9 +10,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -323,7 +325,6 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             item(key = "anki-workspace") {
               Box(modifier = Modifier.fillParentMaxSize()) {
                 AnkiWorkspace(
-                  knowledgePoints = uiState.knowledgePoints,
                   cards = uiState.ankiCards,
                   onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
                   onUpdateCard = viewModel::updateAnkiCard,
@@ -419,8 +420,12 @@ private fun HeaderBar(
         )
       }
 
-      OutlinedButton(onClick = onNewChat) {
-        Text(text = "新对话")
+      OutlinedButton(
+        onClick = onNewChat,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+        modifier = Modifier.heightIn(min = 32.dp)
+      ) {
+        Text(text = "新对话", style = MaterialTheme.typography.labelSmall, maxLines = 1)
       }
     }
   }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,7 +39,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -373,18 +373,34 @@ internal fun ComposerBar(
       }
     }
 
-    OutlinedTextField(
-      value = input,
-      onValueChange = onInputChanged,
+    Surface(
+      color = Color(0xFFFDFEFD),
+      shape = RoundedCornerShape(12.dp),
       modifier = Modifier
         .weight(1f)
-        .heightIn(min = 44.dp, max = 44.dp),
-      shape = RoundedCornerShape(12.dp),
-      enabled = true,
-      singleLine = true,
-      textStyle = MaterialTheme.typography.bodySmall,
-      placeholder = { Text(text = "输入问题", style = MaterialTheme.typography.bodySmall) }
-    )
+        .heightIn(min = 40.dp, max = 96.dp)
+        .border(1.dp, Color(0x233E6357), RoundedCornerShape(12.dp))
+    ) {
+      BasicTextField(
+        value = input,
+        onValueChange = onInputChanged,
+        maxLines = 4,
+        textStyle = MaterialTheme.typography.bodySmall.copy(color = Color(0xFF1F3A32)),
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 12.dp, vertical = 10.dp),
+        decorationBox = { innerTextField ->
+          if (input.isBlank()) {
+            Text(
+              text = "输入问题",
+              style = MaterialTheme.typography.bodySmall,
+              color = Color(0xFF6A8077)
+            )
+          }
+          innerTextField()
+        }
+      )
+    }
 
     Button(
       onClick = onSend,

@@ -1,6 +1,7 @@
 package com.studysuit.aiqa.ui
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -40,18 +41,17 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun AnkiWorkspace(
-  knowledgePoints: Map<String, Int>,
   cards: List<AnkiCard>,
   onSwitchToChat: () -> Unit,
   onUpdateCard: (cardId: String, front: String, back: String, tags: List<String>) -> Unit,
   onDeleteCard: (cardId: String) -> Unit
 ) {
   var currentIndex by remember(cards.size) { mutableStateOf(0) }
+  var cardDragOffset by remember(cards.size) { mutableFloatStateOf(0f) }
+  var masteryByCardId by remember { mutableStateOf<Map<String, CardMasteryLevel>>(emptyMap()) }
   val activeCard = cards.getOrNull(currentIndex.coerceIn(0, (cards.size - 1).coerceAtLeast(0)))
+  val activeMastery = activeCard?.let { card -> masteryByCardId[card.id] }
   var showAnswer by remember(activeCard?.id) { mutableStateOf(false) }
-  var liked by remember(activeCard?.id) { mutableStateOf(false) }
-  var bookmarked by remember(activeCard?.id) { mutableStateOf(false) }
-  var commentCount by remember(activeCard?.id) { mutableStateOf(0) }
   var isManageDialogOpen by remember(activeCard?.id) { mutableStateOf(false) }
   var editFront by remember(activeCard?.id) { mutableStateOf(activeCard?.front.orEmpty()) }
   var editBack by remember(activeCard?.id) { mutableStateOf(activeCard?.back.orEmpty()) }
@@ -80,10 +80,6 @@ internal fun AnkiWorkspace(
         }
       }
     } else {
-      val topicHeat = activeCard.tags.firstOrNull()?.let { tag -> knowledgePoints[tag] ?: 0 } ?: 0
-      val likeCount = topicHeat.coerceAtLeast(1) + if (liked) 1 else 0
-      val bookmarkCount = activeCard.tags.size + if (bookmarked) 1 else 0
-
       Surface(
         color = Color(0xFFFBFEFC),
         shape = RoundedCornerShape(16.dp),
@@ -91,6 +87,29 @@ internal fun AnkiWorkspace(
           .align(Alignment.Center)
           .fillMaxWidth(0.86f)
           .heightIn(min = 390.dp, max = 560.dp)
+          .draggable(
+            orientation = Orientation.Vertical,
+            state = rememberDraggableState { delta ->
+              cardDragOffset += delta
+            },
+            onDragStopped = {
+              val threshold = 72f
+              if (cards.size > 1) {
+                when {
+                  cardDragOffset <= -threshold -> {
+                    currentIndex = (currentIndex + 1) % cards.size
+                    showAnswer = false
+                  }
+
+                  cardDragOffset >= threshold -> {
+                    currentIndex = if (currentIndex <= 0) cards.lastIndex else currentIndex - 1
+                    showAnswer = false
+                  }
+                }
+              }
+              cardDragOffset = 0f
+            }
+          )
           .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(16.dp))
       ) {
         Column(
@@ -124,7 +143,10 @@ internal fun AnkiWorkspace(
           Box(
             modifier = Modifier
               .fillMaxWidth()
-              .weight(1f),
+              .weight(1f)
+              .clickable {
+                showAnswer = !showAnswer
+              },
             contentAlignment = Alignment.Center
           ) {
             MarkdownCardText(
@@ -146,23 +168,21 @@ internal fun AnkiWorkspace(
               maxLines = 2,
               overflow = TextOverflow.Ellipsis
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              OutlinedButton(onClick = { showAnswer = !showAnswer }) {
-                Text(text = if (showAnswer) "回题面" else "看答案")
-              }
-              OutlinedButton(
-                onClick = {
-                  currentIndex = if (cards.isEmpty()) {
-                    0
-                  } else {
-                    (currentIndex + 1) % cards.size
-                  }
-                  showAnswer = false
-                }
-              ) {
-                Text(text = "换一张")
-              }
-            }
+            Text(
+              text = "熟练度：${activeMastery?.label ?: "未标记"}",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF5E746D)
+            )
+            Text(
+              text = if (showAnswer) "当前答案面，点击可回题面" else "点击卡片显示答案",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF5E746D)
+            )
+            Text(
+              text = if (cards.size > 1) "上滑下一张，下滑上一张" else "当前仅 1 张卡片",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF6A8179)
+            )
           }
         }
       }
@@ -174,29 +194,35 @@ internal fun AnkiWorkspace(
           .align(Alignment.BottomEnd)
           .padding(end = 2.dp, bottom = 10.dp)
       ) {
-        TikTokActionButton(
-          symbol = if (liked) "赞+" else "赞",
-          label = "点赞",
-          count = likeCount,
-          onClick = { liked = !liked }
+        MasteryActionButton(
+          badgeText = "熟",
+          label = CardMasteryLevel.PROFICIENT.label,
+          fillColor = Color(0xFF2E6E5A),
+          badgeTextColor = Color(0xFFF4FAF7),
+          isSelected = activeMastery == CardMasteryLevel.PROFICIENT,
+          onClick = {
+            masteryByCardId = masteryByCardId + (activeCard.id to CardMasteryLevel.PROFICIENT)
+          }
         )
-        TikTokActionButton(
-          symbol = if (bookmarked) "藏+" else "藏",
-          label = "收藏",
-          count = bookmarkCount,
-          onClick = { bookmarked = !bookmarked }
+        MasteryActionButton(
+          badgeText = "中",
+          label = CardMasteryLevel.FAMILIAR.label,
+          fillColor = Color(0xFF6F9F8D),
+          badgeTextColor = Color(0xFFF3F8F6),
+          isSelected = activeMastery == CardMasteryLevel.FAMILIAR,
+          onClick = {
+            masteryByCardId = masteryByCardId + (activeCard.id to CardMasteryLevel.FAMILIAR)
+          }
         )
-        TikTokActionButton(
-          symbol = "转",
-          label = "转发",
-          count = 0,
-          onClick = {}
-        )
-        TikTokActionButton(
-          symbol = "评",
-          label = "评论",
-          count = commentCount,
-          onClick = { commentCount += 1 }
+        MasteryActionButton(
+          badgeText = "生",
+          label = CardMasteryLevel.NEEDS_WORK.label,
+          fillColor = Color(0xFFC9DED6),
+          badgeTextColor = Color(0xFF2F5F51),
+          isSelected = activeMastery == CardMasteryLevel.NEEDS_WORK,
+          onClick = {
+            masteryByCardId = masteryByCardId + (activeCard.id to CardMasteryLevel.NEEDS_WORK)
+          }
         )
       }
     }
@@ -296,34 +322,50 @@ internal fun AnkiWorkspace(
 }
 
 @Composable
-private fun TikTokActionButton(
-  symbol: String,
+private fun MasteryActionButton(
+  badgeText: String,
   label: String,
-  count: Int,
+  fillColor: Color,
+  badgeTextColor: Color,
+  isSelected: Boolean,
   onClick: () -> Unit
 ) {
+  val buttonColor = if (isSelected) fillColor else fillColor.copy(alpha = 0.82f)
+  val borderColor = if (isSelected) Color(0xFF1F5947) else Color(0x173B5D52)
+  val labelColor = if (isSelected) Color(0xFF2C6350) else Color(0xFF5C736B)
+
   Column(
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(2.dp)
   ) {
     Surface(
-      color = Color(0xFFF2F7F4),
+      color = buttonColor,
       shape = CircleShape,
       modifier = Modifier
         .size(42.dp)
-        .border(1.dp, Color(0x173B5D52), CircleShape)
+        .border(1.dp, borderColor, CircleShape)
     ) {
       IconButton(onClick = onClick) {
         Text(
-          text = symbol,
+          text = badgeText,
           style = MaterialTheme.typography.labelLarge,
-          color = Color(0xFF2E5F50)
+          color = badgeTextColor
         )
       }
     }
-    Text(text = label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF5C736B))
-    Text(text = count.toString(), style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B8079))
+    Text(text = label, style = MaterialTheme.typography.labelSmall, color = labelColor)
+    Text(
+      text = if (isSelected) "当前" else "",
+      style = MaterialTheme.typography.labelSmall,
+      color = Color(0xFF6B8079)
+    )
   }
+}
+
+private enum class CardMasteryLevel(val label: String) {
+  PROFICIENT("熟练"),
+  FAMILIAR("一般"),
+  NEEDS_WORK("生疏")
 }
 
 @Composable
