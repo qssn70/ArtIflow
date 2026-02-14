@@ -44,13 +44,13 @@ internal fun AnkiWorkspace(
   cards: List<AnkiCard>,
   onSwitchToChat: () -> Unit,
   onUpdateCard: (cardId: String, front: String, back: String, tags: List<String>) -> Unit,
-  onDeleteCard: (cardId: String) -> Unit
+  onDeleteCard: (cardId: String) -> Unit,
+  onSetCardMastery: (cardId: String, mastery: CardMasteryLevel) -> Unit
 ) {
   var currentIndex by remember(cards.size) { mutableStateOf(0) }
   var cardDragOffset by remember(cards.size) { mutableFloatStateOf(0f) }
-  var masteryByCardId by remember { mutableStateOf<Map<String, CardMasteryLevel>>(emptyMap()) }
   val activeCard = cards.getOrNull(currentIndex.coerceIn(0, (cards.size - 1).coerceAtLeast(0)))
-  val activeMastery = activeCard?.let { card -> masteryByCardId[card.id] }
+  val activeMastery = activeCard?.mastery ?: CardMasteryLevel.UNRATED
   var showAnswer by remember(activeCard?.id) { mutableStateOf(false) }
   var isManageDialogOpen by remember(activeCard?.id) { mutableStateOf(false) }
   var editFront by remember(activeCard?.id) { mutableStateOf(activeCard?.front.orEmpty()) }
@@ -169,7 +169,14 @@ internal fun AnkiWorkspace(
               overflow = TextOverflow.Ellipsis
             )
             Text(
-              text = "熟练度：${activeMastery?.label ?: "未标记"}",
+              text = "卡组：${activeCard.deckName}",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF60756E),
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+            Text(
+              text = "熟练度：${activeMastery.label}",
               style = MaterialTheme.typography.labelSmall,
               color = Color(0xFF5E746D)
             )
@@ -201,7 +208,7 @@ internal fun AnkiWorkspace(
           badgeTextColor = Color(0xFFF4FAF7),
           isSelected = activeMastery == CardMasteryLevel.PROFICIENT,
           onClick = {
-            masteryByCardId = masteryByCardId + (activeCard.id to CardMasteryLevel.PROFICIENT)
+            onSetCardMastery(activeCard.id, CardMasteryLevel.PROFICIENT)
           }
         )
         MasteryActionButton(
@@ -211,7 +218,7 @@ internal fun AnkiWorkspace(
           badgeTextColor = Color(0xFFF3F8F6),
           isSelected = activeMastery == CardMasteryLevel.FAMILIAR,
           onClick = {
-            masteryByCardId = masteryByCardId + (activeCard.id to CardMasteryLevel.FAMILIAR)
+            onSetCardMastery(activeCard.id, CardMasteryLevel.FAMILIAR)
           }
         )
         MasteryActionButton(
@@ -221,7 +228,7 @@ internal fun AnkiWorkspace(
           badgeTextColor = Color(0xFF2F5F51),
           isSelected = activeMastery == CardMasteryLevel.NEEDS_WORK,
           onClick = {
-            masteryByCardId = masteryByCardId + (activeCard.id to CardMasteryLevel.NEEDS_WORK)
+            onSetCardMastery(activeCard.id, CardMasteryLevel.NEEDS_WORK)
           }
         )
       }
@@ -360,12 +367,6 @@ private fun MasteryActionButton(
       color = Color(0xFF6B8079)
     )
   }
-}
-
-private enum class CardMasteryLevel(val label: String) {
-  PROFICIENT("熟练"),
-  FAMILIAR("一般"),
-  NEEDS_WORK("生疏")
 }
 
 @Composable

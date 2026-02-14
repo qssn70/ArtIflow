@@ -350,6 +350,8 @@ private fun AnkiCard.toJson(): JSONObject {
     .put("tags", JSONArray(tags))
     .put("source", source)
     .put("createdAt", createdAt)
+    .put("mastery", mastery.name)
+    .put("deck", deckName)
 }
 
 private fun JSONArray.toAnkiCards(): List<AnkiCard> {
@@ -375,11 +377,17 @@ private fun JSONArray.toAnkiCards(): List<AnkiCard> {
           back = item.optString("back"),
           tags = tags,
           source = item.optString("source"),
-          createdAt = item.optLong("createdAt", System.currentTimeMillis())
+          createdAt = item.optLong("createdAt", System.currentTimeMillis()),
+          mastery = item.optString("mastery").toCardMasteryLevelOrDefault(),
+          deckName = item.optString("deck").trim().takeIf { value -> value.isNotBlank() } ?: DEFAULT_ANKI_DECK_NAME
         )
       )
     }
   }
+}
+
+private fun String.toCardMasteryLevelOrDefault(): CardMasteryLevel {
+  return runCatching { CardMasteryLevel.valueOf(this) }.getOrDefault(CardMasteryLevel.UNRATED)
 }
 
 private fun String.toWorkspacePageOrDefault(): WorkspacePage {

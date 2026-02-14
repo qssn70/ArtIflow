@@ -23,7 +23,7 @@ internal fun buildUiStateFromSession(
     selectedSpanId = null,
     activePage = session.activePage,
     knowledgePoints = session.knowledgePoints,
-    ankiCards = session.ankiCards,
+    ankiCards = sortAnkiCardsForReview(session.ankiCards),
     activeSessionId = session.id,
     sessionSummaries = summaries,
     isSessionsOpen = false,

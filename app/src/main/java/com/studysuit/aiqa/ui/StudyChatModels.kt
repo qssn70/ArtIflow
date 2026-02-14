@@ -81,6 +81,8 @@ private const val DEFAULT_ARK_SYSTEM_PROMPT =
 internal const val ANKI_CARD_SYSTEM_PROMPT =
   "你是Anki制卡助手。根据学习交互自选最合适卡型，输出可直接测验的卡片；内容简洁准确，不套模板。"
 
+internal const val DEFAULT_ANKI_DECK_NAME = "未分类"
+
 private const val LEGACY_IMAGE_PROMPT =
   "你是一名中学学科辅导老师。请先识别图片中的题干，再按步骤讲解并给出最终答案。" +
     "如果图片里有多个小题，请按小题编号分别作答。输出格式：\n" +
@@ -219,8 +221,20 @@ data class AnkiCard(
   val back: String,
   val tags: List<String>,
   val source: String,
-  val createdAt: Long
+  val createdAt: Long,
+  val mastery: CardMasteryLevel = CardMasteryLevel.UNRATED,
+  val deckName: String = DEFAULT_ANKI_DECK_NAME
 )
+
+enum class CardMasteryLevel(
+  val label: String,
+  val reviewPriority: Int
+) {
+  UNRATED("未标记", 0),
+  NEEDS_WORK("生疏", 1),
+  FAMILIAR("一般", 2),
+  PROFICIENT("熟练", 3)
+}
 
 private fun normalizeSystemPrompt(prompt: String): String {
   val trimmed = prompt.trim()

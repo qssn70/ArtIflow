@@ -188,7 +188,8 @@ internal fun buildAnkiGenerationPrompt(
   question: String?,
   answer: String,
   profile: ProfileState,
-  knowledgePoints: Map<String, Int>
+  knowledgePoints: Map<String, Int>,
+  existingDecks: List<String>
 ): String {
   val topTopics = profile.topicHits.entries
     .sortedByDescending { entry -> entry.value }
@@ -200,21 +201,32 @@ internal fun buildAnkiGenerationPrompt(
     .take(6)
     .joinToString(separator = "，") { entry -> "${entry.key}(${entry.value})" }
     .ifBlank { "暂无" }
+  val deckCatalog = existingDecks
+    .asSequence()
+    .map { deck -> deck.trim() }
+    .filter { deck -> deck.isNotBlank() }
+    .distinct()
+    .joinToString(separator = "，")
+    .ifBlank { "暂无" }
 
   return buildString {
     append("请根据下面学习交互，生成1张最合适的Anki卡片。")
     append("不要套固定模板，请自行判断卡型（概念/对比/因果/步骤/易错点/例题等）。")
     append("要求：front可直接测验、back简洁准确、不要套话。")
     append("如本次内容不适合制卡，返回 skip=true。")
+    append("需要输出 deck 字段：优先归入已有卡组；只有都不匹配时再创建新卡组名。")
     append("\n仅输出JSON，不要代码块，不要解释。")
-    append("\nJSON格式：{\"skip\":false,\"front\":\"...\",\"back\":\"...\",\"tags\":[\"...\"],\"card_type\":\"...\"}")
+    append("\nJSON格式：{\"skip\":false,\"front\":\"...\",\"back\":\"...\",\"tags\":[\"...\"],\"deck\":\"...\",\"card_type\":\"...\"}")
     append("\n约束：front<=60字，back<=180字，tags<=6。")
+    append("\ndeck命名：2~12字，中文优先，不要使用\"卡组\"、\"默认\"这类空泛名称。")
     append("\n\n交互模式：")
     append(mode)
     append("\n用户画像热点：")
     append(topTopics)
     append("\n知识点热度：")
     append(topKnowledge)
+    append("\n已有卡组：")
+    append(deckCatalog)
     append("\n段落内容：")
     append(spanContent)
     if (!question.isNullOrBlank()) {
@@ -229,7 +241,16 @@ internal fun buildAnkiGenerationPrompt(
 internal data class AiAnkiCardPayload(
   val front: String,
   val back: String,
-  val tags: List<String>
+  val tags: List<String>,
+  val deck: String?
+)
+
+internal data class AnkiDeckSummary(
+  val name: String,
+  val cardCount: Int,
+  val topTags: List<String>,
+  val needsWorkCount: Int,
+  val proficientCount: Int
 )
 
 internal fun parseAiAnkiCardPayload(raw: String): AiAnkiCardPayload? {
@@ -255,7 +276,106 @@ internal fun parseAiAnkiCardPayload(raw: String): AiAnkiCardPayload? {
     }
   }.orEmpty()
 
-  return AiAnkiCardPayload(front = front, back = back, tags = tags)
+  val deck = payload.optString("deck").trim().takeIf { value -> value.isNotBlank() }
+
+  return AiAnkiCardPayload(front = front, back = back, tags = tags, deck = deck)
+}
+
+internal fun detectExistingDeckCategories(cards: List<AnkiCard>): List<String> {
+  return cards
+    .asSequence()
+    .map { card -> card.deckName.trim() }
+    .filter { deck -> deck.isNotBlank() }
+    .distinct()
+    .toList()
+}
+
+internal fun buildAnkiDeckSummaries(cards: List<AnkiCard>): List<AnkiDeckSummary> {
+  return cards
+    .groupBy { card -> normalizeDeckName(card.deckName) ?: DEFAULT_ANKI_DECK_NAME }
+    .map { (deck, cardsInDeck) ->
+      val tagHits = linkedMapOf<String, Int>()
+      cardsInDeck.forEach { card ->
+        card.tags.forEach { tag ->
+          val normalized = tag.trim()
+          if (normalized.isNotBlank()) {
+            tagHits[normalized] = (tagHits[normalized] ?: 0) + 1
+          }
+        }
+      }
+
+      AnkiDeckSummary(
+        name = deck,
+        cardCount = cardsInDeck.size,
+        topTags = tagHits.entries
+          .sortedByDescending { entry -> entry.value }
+          .map { entry -> entry.key }
+          .take(3),
+        needsWorkCount = cardsInDeck.count { card -> card.mastery == CardMasteryLevel.NEEDS_WORK },
+        proficientCount = cardsInDeck.count { card -> card.mastery == CardMasteryLevel.PROFICIENT }
+      )
+    }
+    .sortedWith(compareByDescending<AnkiDeckSummary> { it.cardCount }.thenBy { it.name })
+}
+
+internal fun resolveDeckNameForAutoCard(
+  suggestedDeck: String?,
+  tags: List<String>,
+  existingCards: List<AnkiCard>
+): String {
+  val existingDecks = detectExistingDeckCategories(existingCards)
+  val normalizedSuggestion = normalizeDeckName(suggestedDeck)
+
+  if (normalizedSuggestion != null) {
+    return existingDecks.firstOrNull { deck ->
+      deck.equals(normalizedSuggestion, ignoreCase = true)
+    } ?: normalizedSuggestion
+  }
+
+  val normalizedTags = tags
+    .asSequence()
+    .map { tag -> tag.trim().lowercase(Locale.getDefault()) }
+    .filter { tag -> tag.isNotBlank() }
+    .toSet()
+
+  if (normalizedTags.isNotEmpty()) {
+    val grouped = existingCards.groupBy { card -> card.deckName }
+    val matchedDeck = grouped
+      .map { (deck, cardsInDeck) ->
+        val deckTags = cardsInDeck
+          .flatMap { card -> card.tags }
+          .asSequence()
+          .map { tag -> tag.trim().lowercase(Locale.getDefault()) }
+          .filter { tag -> tag.isNotBlank() }
+          .toSet()
+        val score = normalizedTags.count { tag -> tag in deckTags }
+        deck to score
+      }
+      .filter { (_, score) -> score > 0 }
+      .maxByOrNull { (_, score) -> score }
+      ?.first
+
+    if (!matchedDeck.isNullOrBlank()) {
+      return matchedDeck
+    }
+  }
+
+  val firstTag = tags.firstOrNull { tag -> tag.isNotBlank() }
+  if (!firstTag.isNullOrBlank()) {
+    return normalizeDeckName("${firstTag.trim()}卡组") ?: DEFAULT_ANKI_DECK_NAME
+  }
+
+  return existingDecks.firstOrNull { deck ->
+    deck.equals(DEFAULT_ANKI_DECK_NAME, ignoreCase = true)
+  } ?: DEFAULT_ANKI_DECK_NAME
+}
+
+internal fun normalizeDeckName(raw: String?): String? {
+  val trimmed = raw?.trim().orEmpty()
+  if (trimmed.isBlank()) {
+    return null
+  }
+  return trimmed.replace(Regex("\\s+"), " ").take(12)
 }
 
 private fun parseJsonObjectSafely(raw: String): JSONObject? {
@@ -322,6 +442,13 @@ internal fun prependAnkiCard(current: List<AnkiCard>, card: AnkiCard): List<Anki
     existing.front == card.front && existing.back == card.back
   }
   return listOf(card) + deduplicated.take(199)
+}
+
+internal fun sortAnkiCardsForReview(cards: List<AnkiCard>): List<AnkiCard> {
+  return cards.sortedWith(
+    compareBy<AnkiCard> { card -> card.mastery.reviewPriority }
+      .thenByDescending { card -> card.createdAt }
+  )
 }
 
 internal fun markSpanProcessing(current: ChatUiState, spanId: String): ChatUiState {

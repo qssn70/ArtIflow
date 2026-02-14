@@ -11,6 +11,7 @@ internal data class AnkiGenerationInput(
   val answer: String,
   val profile: ProfileState,
   val knowledgePoints: Map<String, Int>,
+  val existingDecks: List<String>,
   val settings: RuntimeSettings
 )
 
@@ -75,7 +76,8 @@ internal class StudyChatRequestCoordinator(
       question = input.question,
       answer = input.answer,
       profile = input.profile,
-      knowledgePoints = input.knowledgePoints
+      knowledgePoints = input.knowledgePoints,
+      existingDecks = input.existingDecks
     )
 
     return arkApiClient.generateReply(

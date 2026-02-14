@@ -244,8 +244,82 @@ class StudyChatViewModel : ViewModel() {
           tags = normalizedTags
         )
         current.copy(
-          ankiCards = updatedCards,
+          ankiCards = sortAnkiCardsForReview(updatedCards),
           toastMessage = "Anki 卡片已更新"
+        )
+      }
+    }
+  }
+
+  fun setAnkiCardMastery(cardId: String, mastery: CardMasteryLevel) {
+    updateUiState(persistSession = true) { current ->
+      val index = current.ankiCards.indexOfFirst { card -> card.id == cardId }
+      if (index < 0) {
+        current.copy(toastMessage = "卡片不存在")
+      } else {
+        val updatedCards = current.ankiCards.toMutableList()
+        val card = updatedCards[index]
+        updatedCards[index] = card.copy(mastery = mastery)
+        current.copy(ankiCards = sortAnkiCardsForReview(updatedCards))
+      }
+    }
+  }
+
+  fun renameAnkiDeck(deckName: String, newDeckName: String) {
+    val fromDeck = deckName.trim()
+    val toDeck = newDeckName.trim().replace(Regex("\\s+"), " ").take(12)
+    if (fromDeck.isBlank() || toDeck.isBlank()) {
+      postToast("卡组名不能为空")
+      return
+    }
+    if (fromDeck == DEFAULT_ANKI_DECK_NAME) {
+      postToast("系统卡组不可重命名")
+      return
+    }
+    if (fromDeck == toDeck) {
+      postToast("卡组名未变化")
+      return
+    }
+
+    updateUiState(persistSession = true) { current ->
+      val updatedCards = current.ankiCards.map { card ->
+        if (card.deckName == fromDeck) {
+          card.copy(deckName = toDeck)
+        } else {
+          card
+        }
+      }
+      if (updatedCards == current.ankiCards) {
+        current.copy(toastMessage = "卡组不存在")
+      } else {
+        current.copy(
+          ankiCards = sortAnkiCardsForReview(updatedCards),
+          toastMessage = "已重命名卡组"
+        )
+      }
+    }
+  }
+
+  fun archiveAnkiDeck(deckName: String) {
+    val deck = deckName.trim()
+    if (deck.isBlank() || deck == DEFAULT_ANKI_DECK_NAME) {
+      return
+    }
+
+    updateUiState(persistSession = true) { current ->
+      val updatedCards = current.ankiCards.map { card ->
+        if (card.deckName == deck) {
+          card.copy(deckName = DEFAULT_ANKI_DECK_NAME)
+        } else {
+          card
+        }
+      }
+      if (updatedCards == current.ankiCards) {
+        current.copy(toastMessage = "卡组不存在")
+      } else {
+        current.copy(
+          ankiCards = sortAnkiCardsForReview(updatedCards),
+          toastMessage = "已归档到未分类"
         )
       }
     }
@@ -724,7 +798,8 @@ class StudyChatViewModel : ViewModel() {
     front: String,
     back: String,
     source: String,
-    tags: List<String>
+    tags: List<String>,
+    deckName: String
   ): AnkiCard {
     val normalizedFront = normalizeCardText(front, maxLen = 500)
     val normalizedBack = normalizeCardText(back, maxLen = 1200)
@@ -740,7 +815,8 @@ class StudyChatViewModel : ViewModel() {
       back = normalizedBack,
       tags = effectiveTags,
       source = source,
-      createdAt = System.currentTimeMillis()
+      createdAt = System.currentTimeMillis(),
+      deckName = deckName
     )
   }
 
@@ -755,6 +831,7 @@ class StudyChatViewModel : ViewModel() {
     val settingsSnapshot = _uiState.value.settings
     val profileSnapshot = _uiState.value.profile
     val knowledgeSnapshot = _uiState.value.knowledgePoints
+    val deckSnapshot = detectExistingDeckCategories(_uiState.value.ankiCards)
 
     viewModelScope.launch {
       val result = requestCoordinator.generateAnkiPayload(
@@ -765,6 +842,7 @@ class StudyChatViewModel : ViewModel() {
           answer = answer,
           profile = profileSnapshot,
           knowledgePoints = knowledgeSnapshot,
+          existingDecks = deckSnapshot,
           settings = settingsSnapshot
         )
       )
@@ -774,14 +852,20 @@ class StudyChatViewModel : ViewModel() {
       }
 
       result.getOrNull()?.let { parsedPayload ->
-        val parsed = createAnkiCard(
-          front = parsedPayload.front,
-          back = parsedPayload.back,
-          source = source,
-          tags = parsedPayload.tags
-        )
         updateUiState(persistSession = true) { current ->
-          current.copy(ankiCards = prependAnkiCard(current.ankiCards, parsed))
+          val resolvedDeck = resolveDeckNameForAutoCard(
+            suggestedDeck = parsedPayload.deck,
+            tags = parsedPayload.tags,
+            existingCards = current.ankiCards
+          )
+          val parsed = createAnkiCard(
+            front = parsedPayload.front,
+            back = parsedPayload.back,
+            source = source,
+            tags = parsedPayload.tags,
+            deckName = resolvedDeck
+          )
+          current.copy(ankiCards = sortAnkiCardsForReview(prependAnkiCard(current.ankiCards, parsed)))
         }
       }
     }

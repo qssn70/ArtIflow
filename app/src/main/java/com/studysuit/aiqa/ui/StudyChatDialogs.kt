@@ -21,6 +21,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -229,6 +233,124 @@ internal fun SessionListDialog(
                   }
                   TextButton(onClick = { onDelete(session.id) }) {
                     Text(text = "删除", color = Color(0xFF8E4D4D))
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = onDismiss) {
+        Text(text = "关闭", color = Color(0xFF2D6F5D))
+      }
+    }
+  )
+}
+
+@Composable
+internal fun DeckManagerDialog(
+  decks: List<AnkiDeckSummary>,
+  onDismiss: () -> Unit,
+  onRenameDeck: (deckName: String, newDeckName: String) -> Unit,
+  onArchiveDeck: (deckName: String) -> Unit
+) {
+  var editingDeck by remember(decks) { mutableStateOf<String?>(null) }
+  var renameInput by remember(decks) { mutableStateOf("") }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    containerColor = Color(0xFFF6FBF7),
+    shape = RoundedCornerShape(18.dp),
+    title = {
+      Text(
+        text = "卡组管理",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF255E4D)
+      )
+    },
+    text = {
+      if (decks.isEmpty()) {
+        Text(text = "暂无卡组", color = Color(0xFF5D7069))
+      } else {
+        LazyColumn(
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 360.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          items(decks, key = { it.name }) { deck ->
+            Surface(
+              color = Color(0xFFFBFEFC),
+              shape = RoundedCornerShape(10.dp),
+              modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(10.dp))
+            ) {
+              Column(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                      text = deck.name,
+                      style = MaterialTheme.typography.bodySmall,
+                      color = Color(0xFF2F433C),
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                      text = "${deck.cardCount} 张卡片",
+                      style = MaterialTheme.typography.labelSmall,
+                      color = Color(0xFF668078)
+                    )
+                  }
+
+                  if (deck.name != DEFAULT_ANKI_DECK_NAME) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                      TextButton(onClick = {
+                        editingDeck = deck.name
+                        renameInput = deck.name
+                      }) {
+                        Text(text = "重命名")
+                      }
+                      TextButton(onClick = { onArchiveDeck(deck.name) }) {
+                        Text(text = "归档", color = Color(0xFF8E4D4D))
+                      }
+                    }
+                  }
+                }
+
+                if (editingDeck == deck.name) {
+                  OutlinedTextField(
+                    value = renameInput,
+                    onValueChange = { value -> renameInput = value },
+                    label = { Text("新卡组名", style = MaterialTheme.typography.labelSmall) },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 1,
+                    maxLines = 1,
+                    shape = RoundedCornerShape(10.dp),
+                    textStyle = MaterialTheme.typography.bodySmall
+                  )
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                      onRenameDeck(deck.name, renameInput)
+                      editingDeck = null
+                    }) {
+                      Text(text = "保存", color = Color(0xFF2D6F5D))
+                    }
+                    TextButton(onClick = {
+                      editingDeck = null
+                      renameInput = ""
+                    }) {
+                      Text(text = "取消", color = Color(0xFF4A665C))
+                    }
                   }
                 }
               }

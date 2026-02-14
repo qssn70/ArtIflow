@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
@@ -60,6 +61,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   var activeVoiceSession by remember { mutableStateOf<PcmWavRecorder.Session?>(null) }
   var pendingPermissionSpanId by remember { mutableStateOf<String?>(null) }
   var pendingCameraCapture by remember { mutableStateOf(false) }
+  var isDeckArchiveOpen by remember { mutableStateOf(false) }
 
   val cameraImageLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.TakePicturePreview()
@@ -157,6 +159,10 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     } else {
       uiState.histories[selectedSpan.id].orEmpty()
     }
+  }
+
+  val ankiDeckSummaries = remember(uiState.ankiCards) {
+    buildAnkiDeckSummaries(uiState.ankiCards)
   }
 
   val beginVoiceCapture: (String) -> Unit = { spanId ->
@@ -290,7 +296,11 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             onOpenSessions = viewModel::openSessions
           )
         } else {
-          AnkiHeaderBar(cardCount = uiState.ankiCards.size)
+          AnkiHeaderBar(
+            cardCount = uiState.ankiCards.size,
+            deckCount = ankiDeckSummaries.size,
+            onOpenDeckManager = { isDeckArchiveOpen = true }
+          )
         }
 
         LazyColumn(
@@ -328,7 +338,8 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                   cards = uiState.ankiCards,
                   onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
                   onUpdateCard = viewModel::updateAnkiCard,
-                  onDeleteCard = viewModel::deleteAnkiCard
+                  onDeleteCard = viewModel::deleteAnkiCard,
+                  onSetCardMastery = viewModel::setAnkiCardMastery
                 )
               }
             }
@@ -349,6 +360,16 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
         WorkspaceSwipeStrip(
           activePage = uiState.activePage,
           onSwitch = viewModel::switchWorkspacePage
+        )
+      }
+
+      if (uiState.activePage == WorkspacePage.ANKI && isDeckArchiveOpen) {
+        AnkiDeckArchiveScreen(
+          decks = ankiDeckSummaries,
+          cards = uiState.ankiCards,
+          onClose = { isDeckArchiveOpen = false },
+          onRenameDeck = viewModel::renameAnkiDeck,
+          onArchiveDeck = viewModel::archiveAnkiDeck
         )
       }
     }
@@ -381,6 +402,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       onDelete = viewModel::deleteSession
     )
   }
+
 }
 
 @Composable
@@ -432,7 +454,11 @@ private fun HeaderBar(
 }
 
 @Composable
-private fun AnkiHeaderBar(cardCount: Int) {
+private fun AnkiHeaderBar(
+  cardCount: Int,
+  deckCount: Int,
+  onOpenDeckManager: () -> Unit
+) {
   Row(
     modifier = Modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.SpaceBetween,
@@ -446,9 +472,17 @@ private fun AnkiHeaderBar(cardCount: Int) {
         fontWeight = FontWeight.Bold
       )
       Text(
-        text = "AI 自动制卡 · 共${cardCount}张",
+        text = "AI 自动制卡 · ${deckCount}组 / ${cardCount}张",
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF5F756D)
+      )
+    }
+
+    IconButton(onClick = onOpenDeckManager) {
+      Icon(
+        imageVector = Icons.Rounded.Archive,
+        contentDescription = "管理卡组",
+        tint = Color(0xFF2C6756)
       )
     }
   }

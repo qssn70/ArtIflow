@@ -88,6 +88,151 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun sortAnkiCardsForReview_ordersByMasteryThenRecency() {
+    val cards = listOf(
+      AnkiCard(
+        id = "card-1",
+        front = "Q1",
+        back = "A1",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 10L,
+        mastery = CardMasteryLevel.UNRATED
+      ),
+      AnkiCard(
+        id = "card-2",
+        front = "Q2",
+        back = "A2",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 50L,
+        mastery = CardMasteryLevel.PROFICIENT
+      ),
+      AnkiCard(
+        id = "card-3",
+        front = "Q3",
+        back = "A3",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 30L,
+        mastery = CardMasteryLevel.NEEDS_WORK
+      ),
+      AnkiCard(
+        id = "card-4",
+        front = "Q4",
+        back = "A4",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 40L,
+        mastery = CardMasteryLevel.UNRATED
+      )
+    )
+
+    val ordered = sortAnkiCardsForReview(cards)
+
+    assertEquals(listOf("card-4", "card-1", "card-3", "card-2"), ordered.map { card -> card.id })
+  }
+
+  @Test
+  fun resolveDeckNameForAutoCard_prefersExistingDeckBySuggestionOrTagOverlap() {
+    val existing = listOf(
+      AnkiCard(
+        id = "card-1",
+        front = "Q1",
+        back = "A1",
+        tags = listOf("函数", "导数"),
+        source = "s",
+        createdAt = 1L,
+        deckName = "函数"
+      ),
+      AnkiCard(
+        id = "card-2",
+        front = "Q2",
+        back = "A2",
+        tags = listOf("电磁", "电流"),
+        source = "s",
+        createdAt = 2L,
+        deckName = "电学"
+      )
+    )
+
+    val bySuggestion = resolveDeckNameForAutoCard(
+      suggestedDeck = "函数",
+      tags = listOf("代数"),
+      existingCards = existing
+    )
+    val byOverlap = resolveDeckNameForAutoCard(
+      suggestedDeck = null,
+      tags = listOf("电流", "欧姆定律"),
+      existingCards = existing
+    )
+
+    assertEquals("函数", bySuggestion)
+    assertEquals("电学", byOverlap)
+  }
+
+  @Test
+  fun resolveDeckNameForAutoCard_createsDeckWhenNoExistingMatch() {
+    val existing = listOf(
+      AnkiCard(
+        id = "card-1",
+        front = "Q1",
+        back = "A1",
+        tags = listOf("函数"),
+        source = "s",
+        createdAt = 1L,
+        deckName = "函数"
+      )
+    )
+
+    val newDeck = resolveDeckNameForAutoCard(
+      suggestedDeck = null,
+      tags = listOf("化学平衡"),
+      existingCards = existing
+    )
+
+    assertEquals("化学平衡卡组", newDeck)
+  }
+
+  @Test
+  fun buildAnkiDeckSummaries_groupsAndSortsByCardCount() {
+    val cards = listOf(
+      AnkiCard(
+        id = "card-1",
+        front = "Q1",
+        back = "A1",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 1L,
+        deckName = "函数"
+      ),
+      AnkiCard(
+        id = "card-2",
+        front = "Q2",
+        back = "A2",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 2L,
+        deckName = "函数"
+      ),
+      AnkiCard(
+        id = "card-3",
+        front = "Q3",
+        back = "A3",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 3L,
+        deckName = "电学"
+      )
+    )
+
+    val summaries = buildAnkiDeckSummaries(cards)
+
+    assertEquals(listOf("函数", "电学"), summaries.map { deck -> deck.name })
+    assertEquals(listOf(2, 1), summaries.map { deck -> deck.cardCount })
+  }
+
+  @Test
   fun buildSessionTitle_usesUserMessageOrFallbackTime() {
     val withUser = listOf(
       ChatMessage.User(id = "msg-1", time = "10:00", text = "  这是一个很长很长的问题标题会被截断  ")
