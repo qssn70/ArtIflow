@@ -163,4 +163,20 @@ class StudyChatViewModelSupportTest {
     assertTrue(cleared.processingSpanIds.isEmpty())
     assertEquals("cleared", cleared.toastMessage)
   }
+
+  @Test
+  fun isTokenStale_detectsTokenMismatch() {
+    assertTrue(isTokenStale(requestToken = 2L, activeToken = 3L))
+    assertEquals(false, isTokenStale(requestToken = 5L, activeToken = 5L))
+  }
+
+  @Test
+  fun resolveErrorHint_usesFallbackAndTruncatesMessage() {
+    val fallback = resolveErrorHint(throwable = null, fallback = "网络不可用")
+    val longMessage = "x".repeat(120)
+    val resolved = resolveErrorHint(RuntimeException(longMessage), fallback = "unused")
+
+    assertEquals("网络不可用", fallback)
+    assertEquals(80, resolved.length)
+  }
 }

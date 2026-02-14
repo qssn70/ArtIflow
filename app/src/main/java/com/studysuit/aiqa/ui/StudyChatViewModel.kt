@@ -94,8 +94,7 @@ class StudyChatViewModel : ViewModel() {
     viewModelScope.launch {
       val result = requestCoordinator.replyForImageQuestion(imageBytes = imageBytes, settings = settings)
 
-      if (requestConversationToken != conversationToken) {
-        finishRequest()
+      if (abortIfTokenStale(requestConversationToken) { finishRequest() }) {
         return@launch
       }
 
@@ -110,15 +109,12 @@ class StudyChatViewModel : ViewModel() {
           )
         }
       }.onFailure { throwable ->
-        if (throwable is CancellationException) {
-          finishRequest()
-          throw throwable
-        }
-
-        val errorHint = throwableHint(throwable, fallback = "网络不可用")
-        finishRequest { current ->
-          current.copy(toastMessage = "$source 失败：$errorHint")
-        }
+        handleRequestFailure(
+          throwable = throwable,
+          onError = { current, errorHint ->
+            current.copy(toastMessage = "$source 失败：$errorHint")
+          }
+        )
       }
     }
   }
@@ -284,10 +280,11 @@ class StudyChatViewModel : ViewModel() {
     viewModelScope.launch {
       val result = requestCoordinator.replyForAutoExplain(spanContent = span.content, settings = settings)
 
-      if (requestConversationToken != conversationToken) {
-        finishRequest { current ->
-          clearSpanProcessing(current, spanId)
-        }
+      if (abortIfTokenStale(requestConversationToken) {
+          finishRequest { current ->
+            clearSpanProcessing(current, spanId)
+          }
+        }) {
         return@launch
       }
 
@@ -315,18 +312,13 @@ class StudyChatViewModel : ViewModel() {
           answer = reply
         )
       }.onFailure { throwable ->
-        if (throwable is CancellationException) {
-          finishRequest { current ->
-            clearSpanProcessing(current, spanId)
+        handleRequestFailure(
+          throwable = throwable,
+          onCancel = { current -> clearSpanProcessing(current, spanId) },
+          onError = { current, errorHint ->
+            clearSpanProcessing(current, spanId, toastMessage = "自动讲解失败：$errorHint")
           }
-          throw throwable
-        }
-
-        val errorHint = throwableHint(throwable, fallback = "网络不可用")
-
-        finishRequest { current ->
-          clearSpanProcessing(current, spanId, toastMessage = "自动讲解失败：$errorHint")
-        }
+        )
       }
     }
   }
@@ -409,10 +401,11 @@ class StudyChatViewModel : ViewModel() {
 
     viewModelScope.launch {
       val asrResult = requestCoordinator.transcribe(audioBytes = audioBytes, settings = settings)
-      if (requestConversationToken != conversationToken) {
-        finishRequest { current ->
-          clearSpanProcessing(current, span.id)
-        }
+      if (abortIfTokenStale(requestConversationToken) {
+          finishRequest { current ->
+            clearSpanProcessing(current, span.id)
+          }
+        }) {
         return@launch
       }
 
@@ -430,7 +423,7 @@ class StudyChatViewModel : ViewModel() {
       }
 
       val errorHint = if (asrResult.isFailure) {
-        throwableHint(asrResult.exceptionOrNull(), fallback = "识别失败")
+        resolveErrorHint(asrResult.exceptionOrNull(), fallback = "识别失败")
       } else {
         "识别结果为空"
       }
@@ -477,10 +470,11 @@ class StudyChatViewModel : ViewModel() {
         settings = settings
       )
 
-      if (requestConversationToken != conversationToken) {
-        finishRequest { current ->
-          clearSpanProcessing(current, span.id)
-        }
+      if (abortIfTokenStale(requestConversationToken) {
+          finishRequest { current ->
+            clearSpanProcessing(current, span.id)
+          }
+        }) {
         return@launch
       }
 
@@ -509,18 +503,13 @@ class StudyChatViewModel : ViewModel() {
           answer = reply
         )
       }.onFailure { throwable ->
-        if (throwable is CancellationException) {
-          finishRequest { current ->
-            clearSpanProcessing(current, span.id)
+        handleRequestFailure(
+          throwable = throwable,
+          onCancel = { current -> clearSpanProcessing(current, span.id) },
+          onError = { current, errorHint ->
+            clearSpanProcessing(current, span.id, toastMessage = "追问失败：$errorHint")
           }
-          throw throwable
-        }
-
-        val errorHint = throwableHint(throwable, fallback = "网络不可用")
-
-        finishRequest { current ->
-          clearSpanProcessing(current, span.id, toastMessage = "追问失败：$errorHint")
-        }
+        )
       }
     }
   }
@@ -551,8 +540,7 @@ class StudyChatViewModel : ViewModel() {
     viewModelScope.launch {
       val result = requestCoordinator.replyForConversation(messages = messagesSnapshot, settings = settings)
 
-      if (requestConversationToken != conversationToken) {
-        finishRequest()
+      if (abortIfTokenStale(requestConversationToken) { finishRequest() }) {
         return@launch
       }
 
@@ -567,18 +555,12 @@ class StudyChatViewModel : ViewModel() {
           )
         }
       }.onFailure { throwable ->
-        if (throwable is CancellationException) {
-          finishRequest()
-          throw throwable
-        }
-
-        val errorHint = throwableHint(throwable, fallback = "网络不可用")
-
-        finishRequest { current ->
-          current.copy(
-            toastMessage = "回答失败：$errorHint"
-          )
-        }
+        handleRequestFailure(
+          throwable = throwable,
+          onError = { current, errorHint ->
+            current.copy(toastMessage = "回答失败：$errorHint")
+          }
+        )
       }
     }
   }
@@ -794,7 +776,7 @@ class StudyChatViewModel : ViewModel() {
         )
       )
 
-      if (requestConversationToken != conversationToken) {
+      if (isTokenStale(requestConversationToken, conversationToken)) {
         return@launch
       }
 
@@ -844,8 +826,32 @@ class StudyChatViewModel : ViewModel() {
     inFlightRequests = 0
   }
 
-  private fun throwableHint(throwable: Throwable?, fallback: String): String {
-    return throwable?.message?.take(80).orEmpty().ifBlank { fallback }
+  private fun abortIfTokenStale(
+    requestConversationToken: Long,
+    onStale: () -> Unit
+  ): Boolean {
+    if (!isTokenStale(requestConversationToken, conversationToken)) {
+      return false
+    }
+    onStale()
+    return true
+  }
+
+  private fun handleRequestFailure(
+    throwable: Throwable,
+    fallback: String = "网络不可用",
+    onCancel: (ChatUiState) -> ChatUiState = { state -> state },
+    onError: (ChatUiState, String) -> ChatUiState
+  ) {
+    if (throwable is CancellationException) {
+      finishRequest(onCancel)
+      throw throwable
+    }
+
+    val errorHint = resolveErrorHint(throwable, fallback)
+    finishRequest { current ->
+      onError(current, errorHint)
+    }
   }
 
   private fun postToast(message: String) {

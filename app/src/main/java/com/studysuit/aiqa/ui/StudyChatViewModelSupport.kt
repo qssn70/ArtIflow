@@ -4,6 +4,14 @@ import com.studysuit.aiqa.data.ArkRequestMessage
 import org.json.JSONObject
 import java.util.Locale
 
+internal fun isTokenStale(requestToken: Long, activeToken: Long): Boolean {
+  return requestToken != activeToken
+}
+
+internal fun resolveErrorHint(throwable: Throwable?, fallback: String): String {
+  return throwable?.message?.take(80).orEmpty().ifBlank { fallback }
+}
+
 internal fun toArkMessages(messages: List<ChatMessage>): List<ArkRequestMessage> {
   return messages
     .filterNot { message ->
