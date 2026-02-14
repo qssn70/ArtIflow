@@ -653,14 +653,11 @@ class StudyChatViewModel : ViewModel() {
   private fun syncActiveSessionSnapshot(state: ChatUiState) {
     val sessionId = state.activeSessionId.ifBlank { return }
     val now = System.currentTimeMillis()
-    val title = buildSessionTitle(state.messages, currentTime())
-
-    val createdAt = sessionRegistry.createdAtOf(sessionId) ?: now
-    val updated = toStoredSessionSnapshot(
+    val updated = buildSyncedSessionSnapshot(
       state = state,
-      title = title,
-      createdAt = createdAt,
-      updatedAt = now
+      fallbackTime = currentTime(),
+      now = now,
+      existingCreatedAt = sessionRegistry.createdAtOf(sessionId)
     )
 
     sessionRegistry.put(updated, moveToFront = true)
@@ -701,18 +698,13 @@ class StudyChatViewModel : ViewModel() {
   private fun persistSessionsAsync() {
     val store = sessionStorage ?: return
     val state = _uiState.value
-    val activeId = state.activeSessionId.ifBlank { return }
-    val settings = state.settings
-    val sessionsSnapshot = sessionRegistry.orderedSessions()
+    val payload = buildPersistedSessionsPayload(
+      state = state,
+      sessions = sessionRegistry.orderedSessions()
+    ) ?: return
 
     viewModelScope.launch(Dispatchers.IO) {
-      store.save(
-        PersistedSessions(
-          activeSessionId = activeId,
-          settings = settings,
-          sessions = sessionsSnapshot
-        )
-      )
+      store.save(payload)
     }
   }
 

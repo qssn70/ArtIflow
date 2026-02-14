@@ -82,3 +82,42 @@ internal fun createInitialSessionState(
     settingsDraft = settingsDraft
   )
 }
+
+internal fun buildSessionTitle(messages: List<ChatMessage>, fallbackTime: String): String {
+  val firstUserText = messages.asSequence()
+    .filterIsInstance<ChatMessage.User>()
+    .map { user -> user.text.trim() }
+    .firstOrNull { text -> text.isNotBlank() }
+
+  if (!firstUserText.isNullOrBlank()) {
+    return firstUserText.take(18)
+  }
+
+  return "新会话 $fallbackTime"
+}
+
+internal fun buildSyncedSessionSnapshot(
+  state: ChatUiState,
+  fallbackTime: String,
+  now: Long,
+  existingCreatedAt: Long?
+): StoredSession {
+  return toStoredSessionSnapshot(
+    state = state,
+    title = buildSessionTitle(state.messages, fallbackTime),
+    createdAt = existingCreatedAt ?: now,
+    updatedAt = now
+  )
+}
+
+internal fun buildPersistedSessionsPayload(
+  state: ChatUiState,
+  sessions: List<StoredSession>
+): PersistedSessions? {
+  val activeSessionId = state.activeSessionId.ifBlank { return null }
+  return PersistedSessions(
+    activeSessionId = activeSessionId,
+    settings = state.settings,
+    sessions = sessions
+  )
+}

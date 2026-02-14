@@ -2,6 +2,7 @@ package com.studysuit.aiqa.ui
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -104,6 +105,49 @@ class StudyChatViewModelSupportTest {
 
     assertEquals("这是一个很长很长的问题标题会被截断", titleWithUser)
     assertEquals("新会话 11:22", fallbackTitle)
+  }
+
+  @Test
+  fun buildSyncedSessionSnapshot_reusesCreatedAtAndUpdatesTitle() {
+    val state = ChatUiState(
+      messages = listOf(
+        ChatMessage.User(id = "msg-1", time = "10:00", text = "极限题怎么做")
+      ),
+      activeSessionId = "session-1"
+    )
+
+    val synced = buildSyncedSessionSnapshot(
+      state = state,
+      fallbackTime = "11:22",
+      now = 200L,
+      existingCreatedAt = 100L
+    )
+
+    assertEquals("session-1", synced.id)
+    assertEquals("极限题怎么做", synced.title)
+    assertEquals(100L, synced.createdAt)
+    assertEquals(200L, synced.updatedAt)
+  }
+
+  @Test
+  fun buildPersistedSessionsPayload_handlesBlankAndActiveSessionId() {
+    val blankState = ChatUiState(activeSessionId = "  ")
+    assertNull(buildPersistedSessionsPayload(blankState, sessions = emptyList()))
+
+    val settings = RuntimeSettings.defaults().copy(arkApiKey = "test-key")
+    val activeState = ChatUiState(activeSessionId = "session-2", settings = settings)
+    val stored = toStoredSessionSnapshot(
+      state = activeState,
+      title = "会话",
+      createdAt = 1L,
+      updatedAt = 2L
+    )
+
+    val payload = buildPersistedSessionsPayload(activeState, sessions = listOf(stored))
+
+    assertEquals("session-2", payload?.activeSessionId)
+    assertEquals("test-key", payload?.settings?.arkApiKey)
+    assertEquals(1, payload?.sessions?.size)
   }
 
   @Test

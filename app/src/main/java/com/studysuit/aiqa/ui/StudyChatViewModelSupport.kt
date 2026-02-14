@@ -360,19 +360,6 @@ internal fun buildSessionSummaries(
   }.sortedByDescending { summary -> summary.updatedAt }
 }
 
-internal fun buildSessionTitle(messages: List<ChatMessage>, fallbackTime: String): String {
-  val firstUserText = messages.asSequence()
-    .filterIsInstance<ChatMessage.User>()
-    .map { user -> user.text.trim() }
-    .firstOrNull { text -> text.isNotBlank() }
-
-  if (!firstUserText.isNullOrBlank()) {
-    return firstUserText.take(18)
-  }
-
-  return "新会话 $fallbackTime"
-}
-
 internal data class SessionSeeds(
   val messageSeed: Int,
   val spanSeed: Int,
