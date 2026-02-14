@@ -5,6 +5,19 @@ import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 import java.util.Locale
 
+private val fencedJsonRegex = Regex(
+  pattern = "```(?:json)?\\s*(\\{.*?\\})\\s*```",
+  options = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+)
+
+internal fun extractFencedJsonCandidate(raw: String): String? {
+  return fencedJsonRegex
+    .find(raw)
+    ?.groupValues
+    ?.getOrNull(1)
+    ?.trim()
+}
+
 internal fun isTokenStale(requestToken: Long, activeToken: Long): Boolean {
   return requestToken != activeToken
 }
@@ -246,11 +259,7 @@ internal fun parseAiAnkiCardPayload(raw: String): AiAnkiCardPayload? {
 }
 
 private fun parseJsonObjectSafely(raw: String): JSONObject? {
-  val fenced = Regex("```(?:json)?\\s*(\\{[\\s\\S]*})\\s*```", setOf(RegexOption.IGNORE_CASE))
-    .find(raw)
-    ?.groupValues
-    ?.getOrNull(1)
-    ?.trim()
+  val fenced = extractFencedJsonCandidate(raw)
 
   val trimmed = raw.trim()
   val bracketStart = trimmed.indexOf('{')

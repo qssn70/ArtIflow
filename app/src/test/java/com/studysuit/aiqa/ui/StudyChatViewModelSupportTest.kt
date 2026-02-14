@@ -297,6 +297,34 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun extractFencedJsonCandidate_parsesMarkdownFencedJson() {
+    val raw = """
+      ```json
+      {
+        "skip": false,
+        "front": "牛顿第二定律",
+        "back": "F=ma",
+        "tags": ["物理", "力学"]
+      }
+      ```
+    """.trimIndent()
+
+    val json = extractFencedJsonCandidate(raw)
+
+    assertEquals(
+      """
+      {
+        "skip": false,
+        "front": "牛顿第二定律",
+        "back": "F=ma",
+        "tags": ["物理", "力学"]
+      }
+      """.trimIndent(),
+      json
+    )
+  }
+
+  @Test
   fun resolveErrorHint_usesFallbackAndTruncatesMessage() {
     val fallback = resolveErrorHint(throwable = null, fallback = "网络不可用")
     val longMessage = "x".repeat(120)
