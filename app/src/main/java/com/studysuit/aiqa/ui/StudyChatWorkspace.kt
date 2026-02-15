@@ -43,8 +43,10 @@ import androidx.compose.ui.unit.dp
 internal fun AnkiWorkspace(
   cards: List<AnkiCard>,
   isDueReviewMode: Boolean,
+  focusedDeckName: String?,
   onSwitchToChat: () -> Unit,
   onExitDueReviewMode: () -> Unit,
+  onExitDeckFocusedPractice: () -> Unit,
   onUpdateCard: (cardId: String, front: String, back: String, tags: List<String>) -> Unit,
   onDeleteCard: (cardId: String) -> Unit,
   onSetCardMastery: (cardId: String, mastery: CardMasteryLevel) -> Unit
@@ -73,13 +75,21 @@ internal fun AnkiWorkspace(
         verticalArrangement = Arrangement.spacedBy(10.dp)
       ) {
         Text(
-          text = if (isDueReviewMode) "今日待复习已完成，做得很好。" else "还没有卡片。左滑讲解或段落追问后会自动生成测验卡。",
+          text = when {
+            isDueReviewMode -> "今日待复习已完成，做得很好。"
+            !focusedDeckName.isNullOrBlank() -> "$focusedDeckName 卡组暂无可练习卡片。"
+            else -> "还没有卡片。左滑讲解或段落追问后会自动生成测验卡。"
+          },
           style = MaterialTheme.typography.bodySmall,
           color = Color(0xFF5D7069)
         )
         if (isDueReviewMode) {
           OutlinedButton(onClick = onExitDueReviewMode) {
             Text(text = "返回全部卡片")
+          }
+        } else if (!focusedDeckName.isNullOrBlank()) {
+          OutlinedButton(onClick = onExitDeckFocusedPractice) {
+            Text(text = "退出卡组专练")
           }
         } else {
           OutlinedButton(onClick = onSwitchToChat) {

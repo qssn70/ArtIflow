@@ -49,7 +49,8 @@ internal fun AnkiDeckArchiveScreen(
   onClose: () -> Unit,
   onRenameDeck: (deckName: String, newDeckName: String) -> Unit,
   onArchiveDeck: (deckName: String) -> Unit,
-  onUpdateCard: (cardId: String, front: String, back: String, tags: List<String>) -> Unit
+  onUpdateCard: (cardId: String, front: String, back: String, tags: List<String>) -> Unit,
+  onDeckPractice: (deckName: String) -> Unit
 ) {
   var selectedDeckName by remember { mutableStateOf<String?>(null) }
   var renameTargetDeck by remember { mutableStateOf<String?>(null) }
@@ -166,6 +167,9 @@ internal fun AnkiDeckArchiveScreen(
 
           if (activeDeck != DEFAULT_ANKI_DECK_NAME) {
             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+              TextButton(onClick = { onDeckPractice(activeDeck) }) {
+                Text(text = "专练", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2D6F5D))
+              }
               TextButton(onClick = {
                 renameTargetDeck = activeDeck
                 renameInput = activeDeck

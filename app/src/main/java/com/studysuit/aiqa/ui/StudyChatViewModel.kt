@@ -155,9 +155,10 @@ class StudyChatViewModel : ViewModel() {
     updateUiState(persistSession = true) { current ->
       val target = current.copy(
         activePage = page,
-        isDueReviewMode = false
+        isDueReviewMode = false,
+        focusedDeckName = null
       )
-      if (current.activePage == page && !current.isDueReviewMode) {
+      if (current.activePage == page && !current.isDueReviewMode && current.focusedDeckName == null) {
         current
       } else {
         target
@@ -176,7 +177,33 @@ class StudyChatViewModel : ViewModel() {
       current.copy(
         activePage = WorkspacePage.ANKI,
         isDueReviewMode = true,
+        focusedDeckName = null,
         toastMessage = "进入今日待复习（$dueCount 张）"
+      )
+    }
+  }
+
+  fun openDeckFocusedPractice(deckName: String) {
+    val normalizedDeck = normalizeDeckName(deckName)
+    if (normalizedDeck.isNullOrBlank()) {
+      postToast("卡组名称无效")
+      return
+    }
+
+    val targetCards = _uiState.value.ankiCards.filter { card ->
+      (normalizeDeckName(card.deckName) ?: DEFAULT_ANKI_DECK_NAME) == normalizedDeck
+    }
+    if (targetCards.isEmpty()) {
+      postToast("该卡组暂无可练习卡片")
+      return
+    }
+
+    updateUiState(persistSession = true) { current ->
+      current.copy(
+        activePage = WorkspacePage.ANKI,
+        isDueReviewMode = false,
+        focusedDeckName = normalizedDeck,
+        toastMessage = "进入卡组专练：$normalizedDeck"
       )
     }
   }
@@ -186,7 +213,17 @@ class StudyChatViewModel : ViewModel() {
       if (!current.isDueReviewMode) {
         current
       } else {
-        current.copy(isDueReviewMode = false)
+        current.copy(isDueReviewMode = false, focusedDeckName = null)
+      }
+    }
+  }
+
+  fun closeDeckFocusedPractice() {
+    updateUiState { current ->
+      if (current.focusedDeckName == null) {
+        current
+      } else {
+        current.copy(focusedDeckName = null)
       }
     }
   }

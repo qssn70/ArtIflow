@@ -15,9 +15,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -62,6 +65,7 @@ private data class ComposerImageDraft(
 )
 
 @Composable
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val snackbarHostState = remember { SnackbarHostState() }
@@ -196,8 +200,14 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val dueCardsToday = remember(uiState.ankiCards) {
     dueReviewCards(uiState.ankiCards)
   }
-  val visibleAnkiCards = remember(uiState.ankiCards, uiState.isDueReviewMode) {
-    if (uiState.isDueReviewMode) dueReviewCards(uiState.ankiCards) else uiState.ankiCards
+  val visibleAnkiCards = remember(uiState.ankiCards, uiState.isDueReviewMode, uiState.focusedDeckName) {
+    when {
+      uiState.isDueReviewMode -> dueReviewCards(uiState.ankiCards)
+      uiState.focusedDeckName != null -> uiState.ankiCards.filter { card ->
+        (normalizeDeckName(card.deckName) ?: DEFAULT_ANKI_DECK_NAME) == uiState.focusedDeckName
+      }
+      else -> uiState.ankiCards
+    }
   }
 
   val hasModalDialog = uiState.isSettingsOpen || uiState.isSessionsOpen || selectedSpan != null
@@ -360,8 +370,10 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             cardCount = visibleAnkiCards.size,
             deckCount = ankiDeckSummaries.size,
             isDueReviewMode = uiState.isDueReviewMode,
+            focusedDeckName = uiState.focusedDeckName,
             dueReviewCount = dueCardsToday.size,
             onExitDueReviewMode = viewModel::closeDueReviewMode,
+            onExitDeckFocusedPractice = viewModel::closeDeckFocusedPractice,
             onOpenDeckManager = { isDeckArchiveOpen = true }
           )
         }
@@ -400,8 +412,10 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                 AnkiWorkspace(
                   cards = visibleAnkiCards,
                   isDueReviewMode = uiState.isDueReviewMode,
+                  focusedDeckName = uiState.focusedDeckName,
                   onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
                   onExitDueReviewMode = viewModel::closeDueReviewMode,
+                  onExitDeckFocusedPractice = viewModel::closeDeckFocusedPractice,
                   onUpdateCard = viewModel::updateAnkiCard,
                   onDeleteCard = viewModel::deleteAnkiCard,
                   onSetCardMastery = viewModel::setAnkiCardMastery
@@ -412,52 +426,60 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
         }
 
         if (uiState.activePage == WorkspacePage.CHAT) {
-          ComposerBar(
-            input = uiState.input,
-            pendingImagePreviews = pendingImageDrafts.map { draft -> draft.bytes },
-            isLoading = uiState.isLoading,
-            onInputChanged = viewModel::onInputChanged,
-            onSend = {
-              if (pendingImageDrafts.isEmpty()) {
-                viewModel.sendQuestion()
-              } else {
-                val mergedImages = mergeImagesForUpload(pendingImageDrafts.map { draft -> draft.bytes })
-                if (mergedImages.isEmpty()) {
-                  viewModel.showImageReadFailed("图片处理失败")
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .imePadding()
+          ) {
+            ComposerBar(
+              input = uiState.input,
+              pendingImagePreviews = pendingImageDrafts.map { draft -> draft.bytes },
+              isLoading = uiState.isLoading,
+              onInputChanged = viewModel::onInputChanged,
+              onSend = {
+                if (pendingImageDrafts.isEmpty()) {
+                  viewModel.sendQuestion()
                 } else {
-                  val note = uiState.input.trim().ifBlank { null }
-                  val source = if (pendingImageDrafts.size > 1) {
-                    "多图搜题"
+                  val mergedImages = mergeImagesForUpload(pendingImageDrafts.map { draft -> draft.bytes })
+                  if (mergedImages.isEmpty()) {
+                    viewModel.showImageReadFailed("图片处理失败")
                   } else {
-                    pendingImageDrafts.first().source
-                  }
-                  viewModel.submitImageQuestion(
-                    imageBytes = mergedImages,
-                    source = source,
-                    note = note,
-                    imageCount = pendingImageDrafts.size,
-                    previewImages = pendingImageDrafts.map { draft -> draft.bytes }
-                  )
-                  pendingImageDrafts = emptyList()
-                  if (uiState.input.isNotBlank()) {
-                    viewModel.onInputChanged("")
+                    val note = uiState.input.trim().ifBlank { null }
+                    val source = if (pendingImageDrafts.size > 1) {
+                      "多图搜题"
+                    } else {
+                      pendingImageDrafts.first().source
+                    }
+                    viewModel.submitImageQuestion(
+                      imageBytes = mergedImages,
+                      source = source,
+                      note = note,
+                      imageCount = pendingImageDrafts.size,
+                      previewImages = pendingImageDrafts.map { draft -> draft.bytes }
+                    )
+                    pendingImageDrafts = emptyList()
+                    if (uiState.input.isNotBlank()) {
+                      viewModel.onInputChanged("")
+                    }
                   }
                 }
-              }
-            },
-            onCameraSearch = onCameraQuestionSearch,
-            onGallerySearch = onGalleryQuestionSearch,
-            onRemovePendingImage = { index ->
-              pendingImageDrafts = pendingImageDrafts.filterIndexed { i, _ -> i != index }
-            },
-            onClearPendingImages = { pendingImageDrafts = emptyList() }
-          )
+              },
+              onCameraSearch = onCameraQuestionSearch,
+              onGallerySearch = onGalleryQuestionSearch,
+              onRemovePendingImage = { index ->
+                pendingImageDrafts = pendingImageDrafts.filterIndexed { i, _ -> i != index }
+              },
+              onClearPendingImages = { pendingImageDrafts = emptyList() }
+            )
+          }
         }
 
-        WorkspaceSwipeStrip(
-          activePage = uiState.activePage,
-          onSwitch = viewModel::switchWorkspacePage
-        )
+        if (!WindowInsets.isImeVisible) {
+          WorkspaceSwipeStrip(
+            activePage = uiState.activePage,
+            onSwitch = viewModel::switchWorkspacePage
+          )
+        }
       }
 
       if (uiState.activePage == WorkspacePage.ANKI && isDeckArchiveOpen) {
@@ -467,7 +489,11 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
           onClose = { isDeckArchiveOpen = false },
           onRenameDeck = viewModel::renameAnkiDeck,
           onArchiveDeck = viewModel::archiveAnkiDeck,
-          onUpdateCard = viewModel::updateAnkiCard
+          onUpdateCard = viewModel::updateAnkiCard,
+          onDeckPractice = { deckName ->
+            isDeckArchiveOpen = false
+            viewModel.openDeckFocusedPractice(deckName)
+          }
         )
       }
     }
@@ -572,8 +598,10 @@ private fun AnkiHeaderBar(
   cardCount: Int,
   deckCount: Int,
   isDueReviewMode: Boolean,
+  focusedDeckName: String?,
   dueReviewCount: Int,
   onExitDueReviewMode: () -> Unit,
+  onExitDeckFocusedPractice: () -> Unit,
   onOpenDeckManager: () -> Unit
 ) {
   Row(
@@ -591,6 +619,8 @@ private fun AnkiHeaderBar(
       Text(
         text = if (isDueReviewMode) {
           "今日待复习 · 剩余 $cardCount 张（共 $dueReviewCount 张）"
+        } else if (!focusedDeckName.isNullOrBlank()) {
+          "卡组专练 · $focusedDeckName · $cardCount 张"
         } else {
           "AI 自动制卡 · ${deckCount}组 / ${cardCount}张"
         },
@@ -603,6 +633,10 @@ private fun AnkiHeaderBar(
       if (isDueReviewMode) {
         TextButton(onClick = onExitDueReviewMode) {
           Text(text = "退出待复习", style = MaterialTheme.typography.labelSmall)
+        }
+      } else if (!focusedDeckName.isNullOrBlank()) {
+        TextButton(onClick = onExitDeckFocusedPractice) {
+          Text(text = "退出专练", style = MaterialTheme.typography.labelSmall)
         }
       }
       IconButton(onClick = onOpenDeckManager) {

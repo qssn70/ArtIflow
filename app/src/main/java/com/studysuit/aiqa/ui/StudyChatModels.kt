@@ -154,6 +154,7 @@ data class ChatUiState(
   val knowledgePoints: Map<String, Int> = emptyMap(),
   val ankiCards: List<AnkiCard> = emptyList(),
   val isDueReviewMode: Boolean = false,
+  val focusedDeckName: String? = null,
   val activeSessionId: String = "",
   val sessionSummaries: List<SessionSummary> = emptyList(),
   val isSessionsOpen: Boolean = false,
