@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <string name="app_name">ArtI flow</string>
+  <color name="ic_launcher_background">#F5F3EB</color>
 </resources>

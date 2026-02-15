@@ -19,8 +19,28 @@ internal class StudyChatRequestCoordinator(
   private val arkApiClient: ArkApiClient,
   private val openSpeechAsrClient: OpenSpeechAsrClient
 ) {
-  suspend fun replyForImageQuestion(imageBytes: ByteArray, settings: RuntimeSettings): Result<String> {
-    val prompt = normalizeImagePrompt(settings.imagePrompt)
+  suspend fun replyForImageQuestion(
+    imageBytes: ByteArray,
+    settings: RuntimeSettings,
+    note: String?,
+    imageCount: Int
+  ): Result<String> {
+    val prompt = buildString {
+      append(normalizeImagePrompt(settings.imagePrompt))
+
+      if (imageCount > 1) {
+        append("\n补充要求：本次上传了")
+        append(imageCount)
+        append("张图片，请综合识别后统一作答。")
+      }
+
+      val normalizedNote = note?.trim().orEmpty()
+      if (normalizedNote.isNotBlank()) {
+        append("\n用户补充：")
+        append(normalizedNote)
+      }
+    }
+
     return arkApiClient.generateReplyWithImage(
       prompt = prompt,
       imageBytes = imageBytes,

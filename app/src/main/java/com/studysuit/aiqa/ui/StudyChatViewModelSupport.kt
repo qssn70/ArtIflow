@@ -451,6 +451,86 @@ internal fun sortAnkiCardsForReview(cards: List<AnkiCard>): List<AnkiCard> {
   )
 }
 
+internal fun mergeGlobalAnkiCards(sessions: List<StoredSession>): List<AnkiCard> {
+  val mergedByContent = linkedMapOf<String, AnkiCard>()
+
+  sessions.forEach { session ->
+    session.ankiCards.forEach { card ->
+      val key = "${card.front.trim()}\u0001${card.back.trim()}"
+      val existing = mergedByContent[key]
+      mergedByContent[key] = if (existing == null) {
+        card
+      } else {
+        pickPreferredGlobalCard(existing, card)
+      }
+    }
+  }
+
+  return sortAnkiCardsForReview(mergedByContent.values.toList())
+}
+
+private fun pickPreferredGlobalCard(existing: AnkiCard, candidate: AnkiCard): AnkiCard {
+  val existingReviewMoment = existing.lastReviewedAt ?: Long.MIN_VALUE
+  val candidateReviewMoment = candidate.lastReviewedAt ?: Long.MIN_VALUE
+
+  return when {
+    candidateReviewMoment > existingReviewMoment -> candidate
+    candidateReviewMoment < existingReviewMoment -> existing
+    candidate.reviewCount > existing.reviewCount -> candidate
+    candidate.reviewCount < existing.reviewCount -> existing
+    candidate.createdAt > existing.createdAt -> candidate
+    else -> existing
+  }
+}
+
+private const val MILLIS_PER_DAY = 24L * 60L * 60L * 1000L
+
+internal fun isCardDueForReview(card: AnkiCard, now: Long = System.currentTimeMillis()): Boolean {
+  return card.nextReviewAt <= now
+}
+
+internal fun dueReviewCards(cards: List<AnkiCard>, now: Long = System.currentTimeMillis()): List<AnkiCard> {
+  return cards
+    .asSequence()
+    .filter { card -> isCardDueForReview(card, now) }
+    .sortedWith(
+      compareBy<AnkiCard> { card -> card.nextReviewAt }
+        .thenBy { card -> card.mastery.reviewPriority }
+        .thenByDescending { card -> card.createdAt }
+    )
+    .toList()
+}
+
+internal fun countDueReviewCards(cards: List<AnkiCard>, now: Long = System.currentTimeMillis()): Int {
+  return dueReviewCards(cards, now).size
+}
+
+internal fun applySrsReview(
+  card: AnkiCard,
+  mastery: CardMasteryLevel,
+  reviewedAt: Long = System.currentTimeMillis()
+): AnkiCard {
+  val intervalDays = when (mastery) {
+    CardMasteryLevel.UNRATED -> 0L
+    CardMasteryLevel.NEEDS_WORK -> 1L
+    CardMasteryLevel.FAMILIAR -> 3L
+    CardMasteryLevel.PROFICIENT -> 7L
+  }
+
+  val nextReviewAt = if (intervalDays <= 0L) {
+    reviewedAt
+  } else {
+    reviewedAt + intervalDays * MILLIS_PER_DAY
+  }
+
+  return card.copy(
+    mastery = mastery,
+    reviewCount = card.reviewCount + 1,
+    lastReviewedAt = reviewedAt,
+    nextReviewAt = nextReviewAt
+  )
+}
+
 internal fun markSpanProcessing(current: ChatUiState, spanId: String): ChatUiState {
   return current.copy(processingSpanIds = current.processingSpanIds + spanId)
 }

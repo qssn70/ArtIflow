@@ -196,12 +196,28 @@ private fun JSONObject.toProfileState(): ProfileState {
 
 private fun ChatMessage.toJson(): JSONObject {
   return when (this) {
-    is ChatMessage.User -> JSONObject()
-      .put("type", "user")
-      .put("id", id)
-      .put("time", time)
-      .put("text", text)
-      .put("image", imagePreviewBytes?.let { bytes -> Base64.encodeToString(bytes, Base64.NO_WRAP) } ?: JSONObject.NULL)
+    is ChatMessage.User -> {
+      val previewList = if (imagePreviewList.isNotEmpty()) {
+        imagePreviewList
+      } else {
+        imagePreviewBytes?.let { bytes -> listOf(bytes) }.orEmpty()
+      }
+
+      JSONObject()
+        .put("type", "user")
+        .put("id", id)
+        .put("time", time)
+        .put("text", text)
+        .put("image", previewList.firstOrNull()?.let { bytes -> Base64.encodeToString(bytes, Base64.NO_WRAP) } ?: JSONObject.NULL)
+        .put(
+          "images",
+          JSONArray().apply {
+            previewList.forEach { bytes ->
+              put(Base64.encodeToString(bytes, Base64.NO_WRAP))
+            }
+          }
+        )
+    }
 
     is ChatMessage.Assistant -> JSONObject()
       .put("type", "assistant")
@@ -226,18 +242,42 @@ private fun JSONArray.toChatMessages(): List<ChatMessage> {
       val item = optJSONObject(index) ?: continue
       when (item.optString("type")) {
         "user" -> {
+          val imageList = item.optJSONArray("images")?.let { array ->
+            buildList {
+              for (imageIndex in 0 until array.length()) {
+                val encoded = array.optString(imageIndex)
+                if (encoded.isBlank() || encoded == "null") {
+                  continue
+                }
+                runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()?.let { decoded ->
+                  if (decoded.isNotEmpty()) {
+                    add(decoded)
+                  }
+                }
+              }
+            }
+          }.orEmpty()
+
           val encodedImage = item.optString("image")
-          val imageBytes = if (encodedImage.isBlank() || encodedImage == "null") {
+          val legacyImage = if (encodedImage.isBlank() || encodedImage == "null") {
             null
           } else {
             runCatching { Base64.decode(encodedImage, Base64.DEFAULT) }.getOrNull()
           }
+
+          val previewList = if (imageList.isNotEmpty()) {
+            imageList
+          } else {
+            legacyImage?.let { bytes -> listOf(bytes) }.orEmpty()
+          }
+
           add(
             ChatMessage.User(
               id = item.optString("id"),
               time = item.optString("time"),
               text = item.optString("text"),
-              imagePreviewBytes = imageBytes
+              imagePreviewBytes = previewList.firstOrNull(),
+              imagePreviewList = previewList
             )
           )
         }
@@ -350,6 +390,9 @@ private fun AnkiCard.toJson(): JSONObject {
     .put("tags", JSONArray(tags))
     .put("source", source)
     .put("createdAt", createdAt)
+    .put("nextReviewAt", nextReviewAt)
+    .put("reviewCount", reviewCount)
+    .put("lastReviewedAt", lastReviewedAt ?: JSONObject.NULL)
     .put("mastery", mastery.name)
     .put("deck", deckName)
 }
@@ -378,6 +421,9 @@ private fun JSONArray.toAnkiCards(): List<AnkiCard> {
           tags = tags,
           source = item.optString("source"),
           createdAt = item.optLong("createdAt", System.currentTimeMillis()),
+          nextReviewAt = item.optLong("nextReviewAt", item.optLong("createdAt", System.currentTimeMillis())),
+          reviewCount = item.optInt("reviewCount", 0).coerceAtLeast(0),
+          lastReviewedAt = item.optLong("lastReviewedAt", -1L).takeIf { value -> value > 0L },
           mastery = item.optString("mastery").toCardMasteryLevelOrDefault(),
           deckName = item.optString("deck").trim().takeIf { value -> value.isNotBlank() } ?: DEFAULT_ANKI_DECK_NAME
         )

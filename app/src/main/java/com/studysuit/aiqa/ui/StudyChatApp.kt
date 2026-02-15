@@ -1,8 +1,11 @@
 package com.studysuit.aiqa.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,9 +33,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,6 +55,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.studysuit.aiqa.data.PcmWavRecorder
 import kotlinx.coroutines.launch
 
+private data class ComposerImageDraft(
+  val id: String,
+  val source: String,
+  val bytes: ByteArray
+)
+
 @Composable
 fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -62,6 +73,24 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   var pendingPermissionSpanId by remember { mutableStateOf<String?>(null) }
   var pendingCameraCapture by remember { mutableStateOf(false) }
   var isDeckArchiveOpen by remember { mutableStateOf(false) }
+  var lastBackPressedAt by remember { mutableLongStateOf(0L) }
+  var pendingImageDrafts by remember { mutableStateOf<List<ComposerImageDraft>>(emptyList()) }
+
+  val appendPendingImage: (String, ByteArray) -> Unit = { source, imageBytes ->
+    if (imageBytes.isEmpty()) {
+      viewModel.showImageReadFailed("图片读取失败")
+    } else if (pendingImageDrafts.size >= 6) {
+      Toast.makeText(context, "最多添加 6 张图片", Toast.LENGTH_SHORT).show()
+    } else {
+      val draft = ComposerImageDraft(
+        id = "draft-${System.currentTimeMillis()}-${pendingImageDrafts.size}",
+        source = source,
+        bytes = imageBytes
+      )
+      pendingImageDrafts = pendingImageDrafts + draft
+      Toast.makeText(context, "已加入待上传（${pendingImageDrafts.size}）", Toast.LENGTH_SHORT).show()
+    }
+  }
 
   val cameraImageLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.TakePicturePreview()
@@ -73,7 +102,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       if (imageBytes == null || imageBytes.isEmpty()) {
         viewModel.showImageReadFailed("拍照结果为空")
       } else {
-        viewModel.submitImageQuestion(imageBytes = imageBytes, source = "拍照搜题")
+        appendPendingImage("拍照搜题", imageBytes)
       }
     }
   }
@@ -91,7 +120,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       if (imageBytes == null || imageBytes.isEmpty()) {
         viewModel.showImageReadFailed("相册图片读取失败")
       } else {
-        viewModel.submitImageQuestion(imageBytes = imageBytes, source = "相册搜题")
+        appendPendingImage("相册搜题", imageBytes)
       }
     }
   }
@@ -163,6 +192,35 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
 
   val ankiDeckSummaries = remember(uiState.ankiCards) {
     buildAnkiDeckSummaries(uiState.ankiCards)
+  }
+  val dueCardsToday = remember(uiState.ankiCards) {
+    dueReviewCards(uiState.ankiCards)
+  }
+  val visibleAnkiCards = remember(uiState.ankiCards, uiState.isDueReviewMode) {
+    if (uiState.isDueReviewMode) dueReviewCards(uiState.ankiCards) else uiState.ankiCards
+  }
+
+  val hasModalDialog = uiState.isSettingsOpen || uiState.isSessionsOpen || selectedSpan != null
+  BackHandler(enabled = !hasModalDialog) {
+    when {
+      isDeckArchiveOpen -> {
+        isDeckArchiveOpen = false
+      }
+
+      uiState.activePage != WorkspacePage.CHAT -> {
+        viewModel.switchWorkspacePage(WorkspacePage.CHAT)
+      }
+
+      else -> {
+        val now = System.currentTimeMillis()
+        if (now - lastBackPressedAt <= 1500L) {
+          (context as? Activity)?.finish()
+        } else {
+          lastBackPressedAt = now
+          Toast.makeText(context, "再按一次退出应用", Toast.LENGTH_SHORT).show()
+        }
+      }
+    }
   }
 
   val beginVoiceCapture: (String) -> Unit = { spanId ->
@@ -291,14 +349,19 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       ) {
         if (uiState.activePage == WorkspacePage.CHAT) {
           HeaderBar(
+            dueReviewCount = dueCardsToday.size,
+            onOpenDueReview = viewModel::openDueReviewQueue,
             onNewChat = viewModel::startNewChat,
             onOpenSettings = viewModel::openSettings,
             onOpenSessions = viewModel::openSessions
           )
         } else {
           AnkiHeaderBar(
-            cardCount = uiState.ankiCards.size,
+            cardCount = visibleAnkiCards.size,
             deckCount = ankiDeckSummaries.size,
+            isDueReviewMode = uiState.isDueReviewMode,
+            dueReviewCount = dueCardsToday.size,
+            onExitDueReviewMode = viewModel::closeDueReviewMode,
             onOpenDeckManager = { isDeckArchiveOpen = true }
           )
         }
@@ -335,8 +398,10 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             item(key = "anki-workspace") {
               Box(modifier = Modifier.fillParentMaxSize()) {
                 AnkiWorkspace(
-                  cards = uiState.ankiCards,
+                  cards = visibleAnkiCards,
+                  isDueReviewMode = uiState.isDueReviewMode,
                   onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
+                  onExitDueReviewMode = viewModel::closeDueReviewMode,
                   onUpdateCard = viewModel::updateAnkiCard,
                   onDeleteCard = viewModel::deleteAnkiCard,
                   onSetCardMastery = viewModel::setAnkiCardMastery
@@ -349,11 +414,43 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
         if (uiState.activePage == WorkspacePage.CHAT) {
           ComposerBar(
             input = uiState.input,
+            pendingImagePreviews = pendingImageDrafts.map { draft -> draft.bytes },
             isLoading = uiState.isLoading,
             onInputChanged = viewModel::onInputChanged,
-            onSend = viewModel::sendQuestion,
+            onSend = {
+              if (pendingImageDrafts.isEmpty()) {
+                viewModel.sendQuestion()
+              } else {
+                val mergedImages = mergeImagesForUpload(pendingImageDrafts.map { draft -> draft.bytes })
+                if (mergedImages.isEmpty()) {
+                  viewModel.showImageReadFailed("图片处理失败")
+                } else {
+                  val note = uiState.input.trim().ifBlank { null }
+                  val source = if (pendingImageDrafts.size > 1) {
+                    "多图搜题"
+                  } else {
+                    pendingImageDrafts.first().source
+                  }
+                  viewModel.submitImageQuestion(
+                    imageBytes = mergedImages,
+                    source = source,
+                    note = note,
+                    imageCount = pendingImageDrafts.size,
+                    previewImages = pendingImageDrafts.map { draft -> draft.bytes }
+                  )
+                  pendingImageDrafts = emptyList()
+                  if (uiState.input.isNotBlank()) {
+                    viewModel.onInputChanged("")
+                  }
+                }
+              }
+            },
             onCameraSearch = onCameraQuestionSearch,
-            onGallerySearch = onGalleryQuestionSearch
+            onGallerySearch = onGalleryQuestionSearch,
+            onRemovePendingImage = { index ->
+              pendingImageDrafts = pendingImageDrafts.filterIndexed { i, _ -> i != index }
+            },
+            onClearPendingImages = { pendingImageDrafts = emptyList() }
           )
         }
 
@@ -369,7 +466,8 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
           cards = uiState.ankiCards,
           onClose = { isDeckArchiveOpen = false },
           onRenameDeck = viewModel::renameAnkiDeck,
-          onArchiveDeck = viewModel::archiveAnkiDeck
+          onArchiveDeck = viewModel::archiveAnkiDeck,
+          onUpdateCard = viewModel::updateAnkiCard
         )
       }
     }
@@ -407,6 +505,8 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
 
 @Composable
 private fun HeaderBar(
+  dueReviewCount: Int,
+  onOpenDueReview: () -> Unit,
   onNewChat: () -> Unit,
   onOpenSettings: () -> Unit,
   onOpenSessions: () -> Unit
@@ -443,6 +543,14 @@ private fun HeaderBar(
       }
 
       OutlinedButton(
+        onClick = onOpenDueReview,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+        modifier = Modifier.heightIn(min = 32.dp)
+      ) {
+        Text(text = "待复习 $dueReviewCount", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+      }
+
+      OutlinedButton(
         onClick = onNewChat,
         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
         modifier = Modifier.heightIn(min = 32.dp)
@@ -457,6 +565,9 @@ private fun HeaderBar(
 private fun AnkiHeaderBar(
   cardCount: Int,
   deckCount: Int,
+  isDueReviewMode: Boolean,
+  dueReviewCount: Int,
+  onExitDueReviewMode: () -> Unit,
   onOpenDeckManager: () -> Unit
 ) {
   Row(
@@ -472,18 +583,29 @@ private fun AnkiHeaderBar(
         fontWeight = FontWeight.Bold
       )
       Text(
-        text = "AI 自动制卡 · ${deckCount}组 / ${cardCount}张",
+        text = if (isDueReviewMode) {
+          "今日待复习 · 剩余 $cardCount 张（共 $dueReviewCount 张）"
+        } else {
+          "AI 自动制卡 · ${deckCount}组 / ${cardCount}张"
+        },
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF5F756D)
       )
     }
 
-    IconButton(onClick = onOpenDeckManager) {
-      Icon(
-        imageVector = Icons.Rounded.Archive,
-        contentDescription = "管理卡组",
-        tint = Color(0xFF2C6756)
-      )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      if (isDueReviewMode) {
+        TextButton(onClick = onExitDueReviewMode) {
+          Text(text = "退出待复习", style = MaterialTheme.typography.labelSmall)
+        }
+      }
+      IconButton(onClick = onOpenDeckManager) {
+        Icon(
+          imageVector = Icons.Rounded.Archive,
+          contentDescription = "管理卡组",
+          tint = Color(0xFF2C6756)
+        )
+      }
     }
   }
 }

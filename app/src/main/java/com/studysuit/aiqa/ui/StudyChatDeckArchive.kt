@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -47,11 +48,25 @@ internal fun AnkiDeckArchiveScreen(
   cards: List<AnkiCard>,
   onClose: () -> Unit,
   onRenameDeck: (deckName: String, newDeckName: String) -> Unit,
-  onArchiveDeck: (deckName: String) -> Unit
+  onArchiveDeck: (deckName: String) -> Unit,
+  onUpdateCard: (cardId: String, front: String, back: String, tags: List<String>) -> Unit
 ) {
   var selectedDeckName by remember { mutableStateOf<String?>(null) }
   var renameTargetDeck by remember { mutableStateOf<String?>(null) }
   var renameInput by remember { mutableStateOf("") }
+  var editingCard by remember { mutableStateOf<AnkiCard?>(null) }
+  var editFront by remember { mutableStateOf("") }
+  var editBack by remember { mutableStateOf("") }
+  var editTagsText by remember { mutableStateOf("") }
+
+  val hasDeckDialog = renameTargetDeck != null || editingCard != null
+  BackHandler(enabled = !hasDeckDialog) {
+    if (selectedDeckName != null) {
+      selectedDeckName = null
+    } else {
+      onClose()
+    }
+  }
 
   Surface(
     modifier = Modifier.fillMaxSize(),
@@ -177,7 +192,15 @@ internal fun AnkiDeckArchiveScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp)
           ) {
             items(deckCards, key = { card -> card.id }) { card ->
-              DeckCardListItem(card = card)
+              DeckCardListItem(
+                card = card,
+                onEdit = {
+                  editingCard = card
+                  editFront = card.front
+                  editBack = card.back
+                  editTagsText = card.tags.joinToString(separator = "，")
+                }
+              )
             }
           }
         }
@@ -224,6 +247,79 @@ internal fun AnkiDeckArchiveScreen(
       },
       dismissButton = {
         TextButton(onClick = { renameTargetDeck = null }) {
+          Text(text = "取消", color = Color(0xFF4A665C))
+        }
+      }
+    )
+  }
+
+  val activeEditingCard = editingCard
+  if (activeEditingCard != null) {
+    AlertDialog(
+      onDismissRequest = { editingCard = null },
+      containerColor = Color(0xFFF6FBF7),
+      shape = RoundedCornerShape(16.dp),
+      title = {
+        Text(
+          text = "编辑 Anki 卡片",
+          style = MaterialTheme.typography.titleMedium,
+          color = Color(0xFF255E4D)
+        )
+      },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          OutlinedTextField(
+            value = editFront,
+            onValueChange = { value -> editFront = value },
+            label = { Text("题面（Q）", style = MaterialTheme.typography.labelSmall) },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 2,
+            maxLines = 5,
+            shape = RoundedCornerShape(10.dp),
+            textStyle = MaterialTheme.typography.bodySmall
+          )
+          OutlinedTextField(
+            value = editBack,
+            onValueChange = { value -> editBack = value },
+            label = { Text("答案（A）", style = MaterialTheme.typography.labelSmall) },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
+            maxLines = 7,
+            shape = RoundedCornerShape(10.dp),
+            textStyle = MaterialTheme.typography.bodySmall
+          )
+          OutlinedTextField(
+            value = editTagsText,
+            onValueChange = { value -> editTagsText = value },
+            label = { Text("标签（可选）", style = MaterialTheme.typography.labelSmall) },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 1,
+            maxLines = 3,
+            shape = RoundedCornerShape(10.dp),
+            textStyle = MaterialTheme.typography.bodySmall
+          )
+          Text(
+            text = "标签支持中文逗号/英文逗号分隔",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF617771)
+          )
+        }
+      },
+      confirmButton = {
+        TextButton(onClick = {
+          onUpdateCard(
+            activeEditingCard.id,
+            editFront,
+            editBack,
+            parseDeckArchiveTagsInput(editTagsText)
+          )
+          editingCard = null
+        }) {
+          Text(text = "保存", color = Color(0xFF2D6F5D))
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { editingCard = null }) {
           Text(text = "取消", color = Color(0xFF4A665C))
         }
       }
@@ -277,7 +373,10 @@ private fun DeckWaterfallCard(
 }
 
 @Composable
-private fun DeckCardListItem(card: AnkiCard) {
+private fun DeckCardListItem(
+  card: AnkiCard,
+  onEdit: () -> Unit
+) {
   Surface(
     color = Color(0xFFFBFEFC),
     shape = RoundedCornerShape(12.dp),
@@ -316,13 +415,29 @@ private fun DeckCardListItem(card: AnkiCard) {
           overflow = TextOverflow.Ellipsis,
           modifier = Modifier.weight(1f)
         )
-        Text(
-          text = card.mastery.label,
-          style = MaterialTheme.typography.labelSmall,
-          color = Color(0xFF53756A),
-          modifier = Modifier.padding(start = 8.dp)
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Text(
+            text = card.mastery.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF53756A),
+            modifier = Modifier.padding(start = 8.dp)
+          )
+          TextButton(onClick = onEdit) {
+            Text(text = "编辑", style = MaterialTheme.typography.labelSmall)
+          }
+        }
       }
     }
   }
+}
+
+private fun parseDeckArchiveTagsInput(input: String): List<String> {
+  return input
+    .split(Regex("[,，;；\\n]+"))
+    .asSequence()
+    .map { token -> token.trim() }
+    .filter { token -> token.isNotEmpty() }
+    .distinct()
+    .take(10)
+    .toList()
 }

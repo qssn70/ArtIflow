@@ -11,6 +11,7 @@ internal fun buildIntroGuideContent(): String {
 
 internal fun buildUiStateFromSession(
   session: StoredSession,
+  ankiCards: List<AnkiCard>,
   settings: RuntimeSettings,
   summaries: List<SessionSummary>,
   toastMessage: String?
@@ -23,7 +24,7 @@ internal fun buildUiStateFromSession(
     selectedSpanId = null,
     activePage = session.activePage,
     knowledgePoints = session.knowledgePoints,
-    ankiCards = sortAnkiCardsForReview(session.ankiCards),
+    ankiCards = sortAnkiCardsForReview(ankiCards),
     activeSessionId = session.id,
     sessionSummaries = summaries,
     isSessionsOpen = false,
@@ -59,6 +60,7 @@ internal fun toStoredSessionSnapshot(
 internal fun createInitialSessionState(
   sessionId: String,
   introMessage: ChatMessage.Assistant,
+  ankiCards: List<AnkiCard>,
   settings: RuntimeSettings,
   settingsDraft: RuntimeSettings,
   showIntroToast: Boolean
@@ -71,7 +73,7 @@ internal fun createInitialSessionState(
     selectedSpanId = null,
     activePage = WorkspacePage.CHAT,
     knowledgePoints = emptyMap(),
-    ankiCards = emptyList(),
+    ankiCards = sortAnkiCardsForReview(ankiCards),
     activeSessionId = sessionId,
     sessionSummaries = emptyList(),
     isSessionsOpen = false,

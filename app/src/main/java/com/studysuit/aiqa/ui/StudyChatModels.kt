@@ -153,6 +153,7 @@ data class ChatUiState(
   val activePage: WorkspacePage = WorkspacePage.CHAT,
   val knowledgePoints: Map<String, Int> = emptyMap(),
   val ankiCards: List<AnkiCard> = emptyList(),
+  val isDueReviewMode: Boolean = false,
   val activeSessionId: String = "",
   val sessionSummaries: List<SessionSummary> = emptyList(),
   val isSessionsOpen: Boolean = false,
@@ -186,7 +187,8 @@ sealed interface ChatMessage {
     override val id: String,
     override val time: String,
     val text: String,
-    val imagePreviewBytes: ByteArray? = null
+    val imagePreviewBytes: ByteArray? = null,
+    val imagePreviewList: List<ByteArray> = emptyList()
   ) : ChatMessage
 
   data class Assistant(
@@ -222,6 +224,9 @@ data class AnkiCard(
   val tags: List<String>,
   val source: String,
   val createdAt: Long,
+  val nextReviewAt: Long = createdAt,
+  val reviewCount: Int = 0,
+  val lastReviewedAt: Long? = null,
   val mastery: CardMasteryLevel = CardMasteryLevel.UNRATED,
   val deckName: String = DEFAULT_ANKI_DECK_NAME
 )

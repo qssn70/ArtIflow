@@ -134,6 +134,152 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun applySrsReview_updatesReviewCountersAndNextSchedule() {
+    val dayMillis = 24L * 60L * 60L * 1000L
+    val base = AnkiCard(
+      id = "card-1",
+      front = "Q",
+      back = "A",
+      tags = emptyList(),
+      source = "s",
+      createdAt = 1L
+    )
+
+    val reviewed = applySrsReview(
+      card = base,
+      mastery = CardMasteryLevel.NEEDS_WORK,
+      reviewedAt = 2000L
+    )
+
+    assertEquals(CardMasteryLevel.NEEDS_WORK, reviewed.mastery)
+    assertEquals(1, reviewed.reviewCount)
+    assertEquals(2000L, reviewed.lastReviewedAt)
+    assertEquals(2000L + dayMillis, reviewed.nextReviewAt)
+
+    val reviewedAgain = applySrsReview(
+      card = reviewed,
+      mastery = CardMasteryLevel.PROFICIENT,
+      reviewedAt = 5000L
+    )
+
+    assertEquals(CardMasteryLevel.PROFICIENT, reviewedAgain.mastery)
+    assertEquals(2, reviewedAgain.reviewCount)
+    assertEquals(5000L, reviewedAgain.lastReviewedAt)
+    assertEquals(5000L + 7L * dayMillis, reviewedAgain.nextReviewAt)
+  }
+
+  @Test
+  fun dueReviewCards_filtersFutureCardsAndSortsByDueTime() {
+    val now = 1_000_000L
+    val cards = listOf(
+      AnkiCard(
+        id = "card-1",
+        front = "Q1",
+        back = "A1",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 10L,
+        nextReviewAt = 900_000L,
+        mastery = CardMasteryLevel.FAMILIAR
+      ),
+      AnkiCard(
+        id = "card-2",
+        front = "Q2",
+        back = "A2",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 20L,
+        nextReviewAt = 800_000L,
+        mastery = CardMasteryLevel.NEEDS_WORK
+      ),
+      AnkiCard(
+        id = "card-3",
+        front = "Q3",
+        back = "A3",
+        tags = emptyList(),
+        source = "s",
+        createdAt = 30L,
+        nextReviewAt = 1_200_000L,
+        mastery = CardMasteryLevel.UNRATED
+      )
+    )
+
+    val due = dueReviewCards(cards, now = now)
+
+    assertEquals(listOf("card-2", "card-1"), due.map { card -> card.id })
+    assertEquals(2, countDueReviewCards(cards, now = now))
+  }
+
+  @Test
+  fun mergeGlobalAnkiCards_mergesAcrossSessionsByCardContent() {
+    val now = 10_000L
+    val sessionA = StoredSession(
+      id = "session-a",
+      title = "A",
+      createdAt = 1L,
+      updatedAt = 2L,
+      messages = emptyList(),
+      histories = emptyMap(),
+      profile = ProfileState(level = "高二 · 进阶冲刺"),
+      input = "",
+      activePage = WorkspacePage.CHAT,
+      knowledgePoints = emptyMap(),
+      ankiCards = listOf(
+        AnkiCard(
+          id = "card-1",
+          front = "同一题",
+          back = "同一答",
+          tags = listOf("函数"),
+          source = "s",
+          createdAt = now,
+          reviewCount = 1,
+          lastReviewedAt = now,
+          deckName = "函数"
+        )
+      )
+    )
+    val sessionB = StoredSession(
+      id = "session-b",
+      title = "B",
+      createdAt = 3L,
+      updatedAt = 4L,
+      messages = emptyList(),
+      histories = emptyMap(),
+      profile = ProfileState(level = "高二 · 进阶冲刺"),
+      input = "",
+      activePage = WorkspacePage.CHAT,
+      knowledgePoints = emptyMap(),
+      ankiCards = listOf(
+        AnkiCard(
+          id = "card-2",
+          front = "同一题",
+          back = "同一答",
+          tags = listOf("导数"),
+          source = "s",
+          createdAt = now + 100,
+          reviewCount = 3,
+          lastReviewedAt = now + 100,
+          deckName = "导数"
+        ),
+        AnkiCard(
+          id = "card-3",
+          front = "另一题",
+          back = "另一答",
+          tags = emptyList(),
+          source = "s",
+          createdAt = now + 200
+        )
+      )
+    )
+
+    val merged = mergeGlobalAnkiCards(listOf(sessionA, sessionB))
+
+    assertEquals(2, merged.size)
+    assertTrue(merged.any { card -> card.front == "同一题" && card.reviewCount == 3 && card.deckName == "导数" })
+    assertTrue(merged.any { card -> card.front == "另一题" })
+  }
+
+  @Test
   fun resolveDeckNameForAutoCard_prefersExistingDeckBySuggestionOrTagOverlap() {
     val existing = listOf(
       AnkiCard(

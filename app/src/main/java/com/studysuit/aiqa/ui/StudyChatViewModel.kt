@@ -65,7 +65,13 @@ class StudyChatViewModel : ViewModel() {
     )
   }
 
-  fun submitImageQuestion(imageBytes: ByteArray, source: String) {
+  fun submitImageQuestion(
+    imageBytes: ByteArray,
+    source: String,
+    note: String? = null,
+    imageCount: Int = 1,
+    previewImages: List<ByteArray> = emptyList()
+  ) {
     if (imageBytes.isEmpty()) {
       postToast("图片为空，无法搜题")
       return
@@ -73,12 +79,18 @@ class StudyChatViewModel : ViewModel() {
 
     val requestConversationToken = conversationToken
     val settings = _uiState.value.settings
-    val question = "$source：请识别并讲解这道题"
+    val normalizedNote = note?.trim().orEmpty()
+    val question = when {
+      normalizedNote.isNotBlank() -> "$source：$normalizedNote"
+      imageCount > 1 -> "$source：请识别并讲解这${imageCount}张题目图片"
+      else -> "$source：请识别并讲解这道题"
+    }
     val userMessage = ChatMessage.User(
       id = nextMessageId(),
       time = currentTime(),
       text = question,
-      imagePreviewBytes = imageBytes
+      imagePreviewBytes = previewImages.firstOrNull() ?: imageBytes,
+      imagePreviewList = previewImages.take(6).ifEmpty { listOf(imageBytes) }
     )
 
     startRequest(toastMessage = "$source 处理中...") { current ->
@@ -92,7 +104,14 @@ class StudyChatViewModel : ViewModel() {
 
     launchTokenAwareRequest(
       requestConversationToken = requestConversationToken,
-      request = { requestCoordinator.replyForImageQuestion(imageBytes = imageBytes, settings = settings) },
+      request = {
+        requestCoordinator.replyForImageQuestion(
+          imageBytes = imageBytes,
+          settings = settings,
+          note = normalizedNote,
+          imageCount = imageCount
+        )
+      },
       onStale = { finishRequest() },
       onSuccess = { reply ->
         val assistantMessage = createAssistantMessage(reply, question)
@@ -134,10 +153,40 @@ class StudyChatViewModel : ViewModel() {
 
   fun switchWorkspacePage(page: WorkspacePage) {
     updateUiState(persistSession = true) { current ->
-      if (current.activePage == page) {
+      val target = current.copy(
+        activePage = page,
+        isDueReviewMode = false
+      )
+      if (current.activePage == page && !current.isDueReviewMode) {
         current
       } else {
-        current.copy(activePage = page)
+        target
+      }
+    }
+  }
+
+  fun openDueReviewQueue() {
+    val dueCount = countDueReviewCards(_uiState.value.ankiCards)
+    if (dueCount <= 0) {
+      postToast("今日暂无待复习")
+      return
+    }
+
+    updateUiState(persistSession = true) { current ->
+      current.copy(
+        activePage = WorkspacePage.ANKI,
+        isDueReviewMode = true,
+        toastMessage = "进入今日待复习（$dueCount 张）"
+      )
+    }
+  }
+
+  fun closeDueReviewMode() {
+    updateUiState { current ->
+      if (!current.isDueReviewMode) {
+        current
+      } else {
+        current.copy(isDueReviewMode = false)
       }
     }
   }
@@ -148,8 +197,10 @@ class StudyChatViewModel : ViewModel() {
     sessionRegistry.put(target.copy(updatedAt = now), moveToFront = true)
     val latestTarget = sessionRegistry.get(sessionId) ?: target
     val settings = _uiState.value.settings
+    val sharedAnkiCards = _uiState.value.ankiCards
     activateSession(
       session = latestTarget,
+      ankiCards = sharedAnkiCards,
       settings = settings,
       toastMessage = "已切换到历史会话",
       persistSession = true
@@ -159,6 +210,7 @@ class StudyChatViewModel : ViewModel() {
   fun deleteSession(sessionId: String) {
     val activeId = _uiState.value.activeSessionId
     val isActive = sessionId == activeId
+    val sharedAnkiCards = _uiState.value.ankiCards
 
     sessionRegistry.remove(sessionId)
 
@@ -180,7 +232,15 @@ class StudyChatViewModel : ViewModel() {
     }
 
     val fallbackId = sessionRegistry.firstIdOrNull() ?: return
-    switchSession(fallbackId)
+    val fallback = sessionRegistry.get(fallbackId) ?: return
+    val settings = _uiState.value.settings
+    activateSession(
+      session = fallback,
+      ankiCards = sharedAnkiCards,
+      settings = settings,
+      toastMessage = "会话已删除",
+      persistSession = true
+    )
     postToast("会话已删除")
   }
 
@@ -259,8 +319,12 @@ class StudyChatViewModel : ViewModel() {
       } else {
         val updatedCards = current.ankiCards.toMutableList()
         val card = updatedCards[index]
-        updatedCards[index] = card.copy(mastery = mastery)
-        current.copy(ankiCards = sortAnkiCardsForReview(updatedCards))
+        val reviewedCard = applySrsReview(card, mastery)
+        updatedCards[index] = reviewedCard
+        current.copy(
+          ankiCards = sortAnkiCardsForReview(updatedCards),
+          toastMessage = "已标记${mastery.label}，下次复习 ${formatSessionTime(reviewedCard.nextReviewAt)}"
+        )
       }
     }
   }
@@ -645,8 +709,9 @@ class StudyChatViewModel : ViewModel() {
     messageSeed = 0
     spanSeed = 0
     detailSeed = 0
-    cardSeed = 0
     sessionSeed += 1
+    val sharedAnkiCards = sortAnkiCardsForReview(_uiState.value.ankiCards)
+    cardSeed = deriveCardSeed(sharedAnkiCards)
 
     val now = System.currentTimeMillis()
     val sessionId = "session-$now-$sessionSeed"
@@ -657,6 +722,7 @@ class StudyChatViewModel : ViewModel() {
     val initialState = createInitialSessionState(
       sessionId = sessionId,
       introMessage = introMessage,
+      ankiCards = sharedAnkiCards,
       settings = settings,
       settingsDraft = settingsDraft,
       showIntroToast = showIntroToast
@@ -761,8 +827,10 @@ class StudyChatViewModel : ViewModel() {
     }
 
     val settings = restored.settings
+    val sharedAnkiCards = mergeGlobalAnkiCards(restored.sessions)
     activateSession(
       session = active,
+      ankiCards = sharedAnkiCards,
       settings = settings,
       toastMessage = null,
       persistSession = false
@@ -772,9 +840,16 @@ class StudyChatViewModel : ViewModel() {
   private fun persistSessionsAsync() {
     val store = sessionStorage ?: return
     val state = _uiState.value
+    val unifiedSessions = sessionRegistry.orderedSessions().map { session ->
+      if (session.ankiCards == state.ankiCards) {
+        session
+      } else {
+        session.copy(ankiCards = state.ankiCards)
+      }
+    }
     val payload = buildPersistedSessionsPayload(
       state = state,
-      sessions = sessionRegistry.orderedSessions()
+      sessions = unifiedSessions
     ) ?: return
 
     viewModelScope.launch(Dispatchers.IO) {
@@ -873,14 +948,17 @@ class StudyChatViewModel : ViewModel() {
 
   private fun activateSession(
     session: StoredSession,
+    ankiCards: List<AnkiCard>,
     settings: RuntimeSettings,
     toastMessage: String?,
     persistSession: Boolean
   ) {
     applySessionSeeds(session)
+    cardSeed = maxOf(cardSeed, deriveCardSeed(ankiCards))
     resetRequestTracking()
     _uiState.value = buildUiStateFromSession(
       session = session,
+      ankiCards = ankiCards,
       settings = settings,
       summaries = sessionRegistry.summaries(),
       toastMessage = toastMessage
@@ -965,6 +1043,12 @@ class StudyChatViewModel : ViewModel() {
   private fun nextCardId(): String {
     cardSeed += 1
     return "card-$cardSeed"
+  }
+
+  private fun deriveCardSeed(cards: List<AnkiCard>): Int {
+    return cards
+      .mapNotNull { card -> card.id.removePrefix("card-").toIntOrNull() }
+      .maxOrNull() ?: 0
   }
 
   private fun currentTime(): String {
