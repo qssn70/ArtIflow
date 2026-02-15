@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -64,6 +65,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -328,45 +330,49 @@ private fun InteractiveSpanCard(
     }
   )
 
-  Card(
-    shape = RoundedCornerShape(10.dp),
-    colors = CardDefaults.cardColors(
-      containerColor = if (recording) Color(0xFFFFF4EA) else Color(0xFFFCFAF4)
-    ),
-    modifier = Modifier
-      .fillMaxWidth()
-      .graphicsLayer { translationX = animatedOffset }
-      .border(1.dp, borderColor, RoundedCornerShape(10.dp))
-  ) {
-    Box(modifier = Modifier.fillMaxWidth().then(dragModifier)) {
-      if (historyCount > 0) {
-        DetailDiamondBadge(
-          count = historyCount,
-          onClick = { onOpenDetails(span.id) },
-          modifier = Modifier
-            .align(Alignment.TopStart)
-            .padding(start = 8.dp, top = 2.dp)
-        )
-      }
-
-      Column(
-        modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(5.dp)
-      ) {
-        MarkdownBodyText(markdown = span.content)
-
-        AnimatedVisibility(
-          visible = recording,
-          enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
-          exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 })
+  Box(modifier = Modifier.fillMaxWidth()) {
+    Card(
+      shape = RoundedCornerShape(10.dp),
+      colors = CardDefaults.cardColors(
+        containerColor = if (recording) Color(0xFFFFF4EA) else Color(0xFFFCFAF4)
+      ),
+      modifier = Modifier
+        .fillMaxWidth()
+        .graphicsLayer { translationX = animatedOffset }
+        .border(1.dp, borderColor, RoundedCornerShape(10.dp))
+    ) {
+      Box(modifier = Modifier.fillMaxWidth().then(dragModifier)) {
+        Column(
+          modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
+          verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-          Text(
-            text = "录音中... 松手提交，回滑取消",
-            style = MaterialTheme.typography.labelMedium,
-            color = Color(0xFFB45932)
-          )
+          MarkdownBodyText(markdown = span.content)
+
+          AnimatedVisibility(
+            visible = recording,
+            enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 })
+          ) {
+            Text(
+              text = "录音中... 松手提交，回滑取消",
+              style = MaterialTheme.typography.labelMedium,
+              color = Color(0xFFB45932)
+            )
+          }
         }
       }
+    }
+
+    if (historyCount > 0) {
+      DetailDiamondBadge(
+        count = historyCount,
+        onClick = { onOpenDetails(span.id) },
+        modifier = Modifier
+          .align(Alignment.TopStart)
+          .padding(start = 8.dp)
+          .offset(y = (-3).dp)
+          .zIndex(1f)
+      )
     }
   }
 }
@@ -395,7 +401,11 @@ private fun DetailDiamondBadge(
     verticalArrangement = Arrangement.spacedBy(2.dp)
   ) {
     rows.forEach { diamonds ->
-      Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.heightIn(min = 8.dp)
+      ) {
         repeat(diamonds) {
           Surface(
             color = markerColor,
