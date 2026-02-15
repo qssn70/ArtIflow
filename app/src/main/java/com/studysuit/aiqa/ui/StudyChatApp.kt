@@ -523,6 +523,12 @@ private fun HeaderBar(
         color = Color(0xFF235E4E),
         fontWeight = FontWeight.Bold
       )
+      Text(
+        text = "左滑讲解 · 长按语音 · 右滑详解",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF60756E),
+        maxLines = 1
+      )
     }
 
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -41,7 +41,6 @@ import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -64,7 +63,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -210,8 +208,8 @@ internal fun AssistantBubble(
         .border(1.dp, Color(0x1F3D564E), RoundedCornerShape(16.dp))
     ) {
       Column(
-        modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
       ) {
         message.spans.forEach { span ->
           val historyCount = histories[span.id]?.size ?: 0
@@ -331,19 +329,29 @@ private fun InteractiveSpanCard(
   )
 
   Card(
-    shape = RoundedCornerShape(12.dp),
+    shape = RoundedCornerShape(10.dp),
     colors = CardDefaults.cardColors(
       containerColor = if (recording) Color(0xFFFFF4EA) else Color(0xFFFCFAF4)
     ),
     modifier = Modifier
       .fillMaxWidth()
       .graphicsLayer { translationX = animatedOffset }
-      .border(1.dp, borderColor, RoundedCornerShape(12.dp))
+      .border(1.dp, borderColor, RoundedCornerShape(10.dp))
   ) {
     Box(modifier = Modifier.fillMaxWidth().then(dragModifier)) {
+      if (historyCount > 0) {
+        DetailDiamondBadge(
+          count = historyCount,
+          onClick = { onOpenDetails(span.id) },
+          modifier = Modifier
+            .align(Alignment.TopStart)
+            .padding(start = 8.dp, top = 2.dp)
+        )
+      }
+
       Column(
-        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(7.dp)
+        modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
       ) {
         MarkdownBodyText(markdown = span.content)
 
@@ -358,28 +366,44 @@ private fun InteractiveSpanCard(
             color = Color(0xFFB45932)
           )
         }
+      }
+    }
+  }
+}
 
-        HorizontalDivider(color = Color(0x14324F45))
+@Composable
+private fun DetailDiamondBadge(
+  count: Int,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier
+) {
+  val markerColor = Color(0xFF2F6F5D)
+  val rows = remember(count) {
+    val normalized = count.coerceAtLeast(0)
+    if (normalized == 0) {
+      emptyList()
+    } else {
+      List((normalized - 1) / 8 + 1) { rowIndex ->
+        val remaining = normalized - rowIndex * 8
+        remaining.coerceAtMost(8)
+      }
+    }
+  }
 
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Text(
-            text = "左滑讲解 / 长按语音 / 右滑详解",
-            style = MaterialTheme.typography.labelSmall,
-            color = Color(0xFF647670),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth(0.76f)
-          )
-
-          Text(
-            text = "详解 $historyCount 条",
-            style = MaterialTheme.typography.labelSmall,
-            color = Color(0xFF4F625B)
-          )
+  Column(
+    modifier = modifier.clickable(onClick = onClick),
+    verticalArrangement = Arrangement.spacedBy(2.dp)
+  ) {
+    rows.forEach { diamonds ->
+      Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        repeat(diamonds) {
+          Surface(
+            color = markerColor,
+            shape = RoundedCornerShape(1.dp),
+            modifier = Modifier
+              .size(6.dp)
+              .graphicsLayer { rotationZ = 45f }
+          ) {}
         }
       }
     }
