@@ -368,6 +368,55 @@ internal fun DeckManagerDialog(
 }
 
 @Composable
+internal fun DeckPracticeSummaryDialog(
+  summary: DeckPracticeSummary,
+  onRestart: () -> Unit,
+  onDismiss: () -> Unit,
+  onExit: () -> Unit
+) {
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    containerColor = Color(0xFFF6FBF7),
+    shape = RoundedCornerShape(18.dp),
+    title = {
+      Text(
+        text = "专练完成 · ${summary.deckName}",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF255E4D)
+      )
+    },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+          text = "本轮已复习 ${summary.reviewedCards}/${summary.totalCards} 张",
+          style = MaterialTheme.typography.bodySmall,
+          color = Color(0xFF536A62)
+        )
+        Text(
+          text = "生疏 ${summary.needsWorkCount} · 一般 ${summary.familiarCount} · 熟练 ${summary.proficientCount}",
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF5F756D)
+        )
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = {
+        onRestart()
+      }) {
+        Text(text = "再来一轮", color = Color(0xFF2D6F5D))
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = {
+        onExit()
+      }) {
+        Text(text = "返回卡组", color = Color(0xFF4A665C))
+      }
+    }
+  )
+}
+
+@Composable
 internal fun SpanDetailDialog(
   span: SpanData,
   history: List<SpanDetail>,
@@ -390,87 +439,94 @@ internal fun SpanDetailDialog(
       )
     },
     text = {
-      Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-          text = "原始段落",
-          style = MaterialTheme.typography.labelMedium,
-          color = Color(0xFF4B6058)
-        )
-        Surface(
-          modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .border(1.dp, Color(0x183A5A4F), RoundedCornerShape(10.dp)),
-          color = Color(0xFFF4F9F3)
-        ) {
-          MarkdownFormattedText(
-            markdown = span.content,
-            textStyle = MaterialTheme.typography.bodySmall,
-            textColor = Color(0xFF2F433C),
-            textAlign = TextAlign.Start,
-            modifier = Modifier.padding(10.dp),
+      LazyColumn(
+        modifier = Modifier.heightIn(max = 420.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        item(key = "source-title") {
+          Text(
+            text = "原始段落",
+            style = MaterialTheme.typography.labelMedium,
+            color = Color(0xFF4B6058)
           )
         }
 
-        Text(
-          text = "追问/讲解记录",
-          style = MaterialTheme.typography.labelMedium,
-          color = Color(0xFF4B6058)
-        )
+        item(key = "source-content") {
+          Surface(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(10.dp))
+              .border(1.dp, Color(0x183A5A4F), RoundedCornerShape(10.dp)),
+            color = Color(0xFFF4F9F3)
+          ) {
+            MarkdownFormattedText(
+              markdown = span.content,
+              textStyle = MaterialTheme.typography.bodySmall,
+              textColor = Color(0xFF2F433C),
+              textAlign = TextAlign.Start,
+              modifier = Modifier.padding(10.dp),
+            )
+          }
+        }
+
+        item(key = "history-title") {
+          Text(
+            text = "追问/讲解记录",
+            style = MaterialTheme.typography.labelMedium,
+            color = Color(0xFF4B6058)
+          )
+        }
 
         if (history.isEmpty()) {
-          Text(
-            text = "这段还没有记录。左滑松手自动讲解，长按松手语音追问，右滑查看。",
-            style = MaterialTheme.typography.bodySmall,
-            color = Color(0xFF5D7069)
-          )
+          item(key = "history-empty") {
+            Text(
+              text = "这段还没有记录。左滑松手自动讲解，长按松手语音追问，右滑查看。",
+              style = MaterialTheme.typography.bodySmall,
+              color = Color(0xFF5D7069)
+            )
+          }
         } else {
-          LazyColumn(
-            modifier = Modifier.heightIn(max = 280.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-          ) {
-            items(history, key = { it.id }) { detail ->
-              Surface(
-                color = Color(0xFFFBFEFC),
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(10.dp))
+          items(history, key = { it.id }) { detail ->
+            Surface(
+              color = Color(0xFFFBFEFC),
+              shape = RoundedCornerShape(10.dp),
+              modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(10.dp))
+            ) {
+              Column(
+                modifier = Modifier.padding(9.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
               ) {
-                Column(
-                  modifier = Modifier.padding(9.dp),
-                  verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
+                Text(
+                  text = "${detail.mode} · ${detail.time}",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = Color(0xFF67817A)
+                )
+                detail.question?.takeIf { question -> question.isNotBlank() }?.let { question ->
                   Text(
-                    text = "${detail.mode} · ${detail.time}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF67817A)
-                  )
-                  detail.question?.takeIf { question -> question.isNotBlank() }?.let { question ->
-                    Text(
-                      text = "追问",
-                      style = MaterialTheme.typography.labelSmall,
-                      color = Color(0xFF5F7A71)
-                    )
-                    MarkdownFormattedText(
-                      markdown = question,
-                      textStyle = MaterialTheme.typography.bodySmall,
-                      textColor = Color(0xFF355249),
-                      textAlign = TextAlign.Start
-                    )
-                  }
-                  Text(
-                    text = if (detail.question.isNullOrBlank()) "讲解" else "回答",
+                    text = "追问",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFF5F7A71)
                   )
                   MarkdownFormattedText(
-                    markdown = detail.answer,
+                    markdown = question,
                     textStyle = MaterialTheme.typography.bodySmall,
-                    textColor = Color(0xFF2F433C),
+                    textColor = Color(0xFF355249),
                     textAlign = TextAlign.Start
                   )
                 }
+                Text(
+                  text = if (detail.question.isNullOrBlank()) "讲解" else "回答",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = Color(0xFF5F7A71)
+                )
+                MarkdownFormattedText(
+                  markdown = detail.answer,
+                  textStyle = MaterialTheme.typography.bodySmall,
+                  textColor = Color(0xFF2F433C),
+                  textAlign = TextAlign.Start
+                )
               }
             }
           }

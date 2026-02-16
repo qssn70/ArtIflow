@@ -318,6 +318,22 @@ internal fun buildAnkiDeckSummaries(cards: List<AnkiCard>): List<AnkiDeckSummary
     .sortedWith(compareByDescending<AnkiDeckSummary> { it.cardCount }.thenBy { it.name })
 }
 
+internal fun buildDeckPracticeSummary(
+  deckName: String,
+  cards: List<AnkiCard>,
+  selections: Map<String, CardMasteryLevel>
+): DeckPracticeSummary {
+  val reviewed = selections.values.toList()
+  return DeckPracticeSummary(
+    deckName = deckName,
+    totalCards = cards.size,
+    reviewedCards = reviewed.size,
+    needsWorkCount = reviewed.count { mastery -> mastery == CardMasteryLevel.NEEDS_WORK },
+    familiarCount = reviewed.count { mastery -> mastery == CardMasteryLevel.FAMILIAR },
+    proficientCount = reviewed.count { mastery -> mastery == CardMasteryLevel.PROFICIENT }
+  )
+}
+
 internal fun resolveDeckNameForAutoCard(
   suggestedDeck: String?,
   tags: List<String>,

@@ -209,6 +209,13 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       else -> uiState.ankiCards
     }
   }
+  val deckPracticeSummary = remember(uiState.focusedDeckName, uiState.ankiCards, uiState.deckPracticeSelections) {
+    val deckName = uiState.focusedDeckName ?: return@remember null
+    val deckCards = uiState.ankiCards.filter { card ->
+      (normalizeDeckName(card.deckName) ?: DEFAULT_ANKI_DECK_NAME) == deckName
+    }
+    buildDeckPracticeSummary(deckName, deckCards, uiState.deckPracticeSelections)
+  }
 
   val hasModalDialog = uiState.isSettingsOpen || uiState.isSessionsOpen || selectedSpan != null
   BackHandler(enabled = !hasModalDialog) {
@@ -218,7 +225,9 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       }
 
       uiState.activePage != WorkspacePage.CHAT -> {
-        viewModel.switchWorkspacePage(WorkspacePage.CHAT)
+        viewModel.switchWorkspacePage(
+          if (uiState.activePage == WorkspacePage.PROFILE) WorkspacePage.ANKI else WorkspacePage.CHAT
+        )
       }
 
       else -> {
@@ -359,23 +368,25 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       ) {
         if (uiState.activePage == WorkspacePage.CHAT) {
           HeaderBar(
-            dueReviewCount = dueCardsToday.size,
-            onOpenDueReview = viewModel::openDueReviewQueue,
             onNewChat = viewModel::startNewChat,
             onOpenSettings = viewModel::openSettings,
             onOpenSessions = viewModel::openSessions
           )
-        } else {
+        } else if (uiState.activePage == WorkspacePage.ANKI) {
           AnkiHeaderBar(
             cardCount = visibleAnkiCards.size,
             deckCount = ankiDeckSummaries.size,
             isDueReviewMode = uiState.isDueReviewMode,
             focusedDeckName = uiState.focusedDeckName,
             dueReviewCount = dueCardsToday.size,
+            onOpenDueReview = viewModel::openDueReviewQueue,
             onExitDueReviewMode = viewModel::closeDueReviewMode,
             onExitDeckFocusedPractice = viewModel::closeDeckFocusedPractice,
+            onOpenDeckPracticeSummary = viewModel::openDeckPracticeSummary,
             onOpenDeckManager = { isDeckArchiveOpen = true }
           )
+        } else {
+          ProfileHeaderBar(onOpenSettings = viewModel::openSettings)
         }
 
         LazyColumn(
@@ -406,7 +417,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                 AssistantLoadingBubble()
               }
             }
-          } else {
+          } else if (uiState.activePage == WorkspacePage.ANKI) {
             item(key = "anki-workspace") {
               Box(modifier = Modifier.fillParentMaxSize()) {
                 AnkiWorkspace(
@@ -419,6 +430,19 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                   onUpdateCard = viewModel::updateAnkiCard,
                   onDeleteCard = viewModel::deleteAnkiCard,
                   onSetCardMastery = viewModel::setAnkiCardMastery
+                )
+              }
+            }
+          } else {
+            item(key = "profile-workspace") {
+              Box(modifier = Modifier.fillParentMaxSize()) {
+                ProfileWorkspace(
+                  profile = uiState.profile,
+                  cards = uiState.ankiCards,
+                  dueCount = dueCardsToday.size,
+                  onOpenDueReview = viewModel::openDueReviewQueue,
+                  onOpenDeckArchive = { viewModel.switchWorkspacePage(WorkspacePage.ANKI); isDeckArchiveOpen = true },
+                  onOpenSettings = viewModel::openSettings
                 )
               }
             }
@@ -527,12 +551,53 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     )
   }
 
+  if (uiState.showDeckPracticeSummary && deckPracticeSummary != null) {
+    DeckPracticeSummaryDialog(
+      summary = deckPracticeSummary,
+      onRestart = viewModel::restartDeckPracticeRound,
+      onDismiss = viewModel::dismissDeckPracticeSummary,
+      onExit = viewModel::closeDeckFocusedPractice
+    )
+  }
+
+}
+
+@Composable
+private fun ProfileHeaderBar(
+  onOpenSettings: () -> Unit
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text(
+        text = "用户中心",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF235E4E),
+        fontWeight = FontWeight.Bold
+      )
+      Text(
+        text = "学习数据与复习入口",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF60756E),
+        maxLines = 1
+      )
+    }
+
+    IconButton(onClick = onOpenSettings) {
+      Icon(
+        imageVector = Icons.Rounded.Settings,
+        contentDescription = "打开设置",
+        tint = Color(0xFF2C6756)
+      )
+    }
+  }
 }
 
 @Composable
 private fun HeaderBar(
-  dueReviewCount: Int,
-  onOpenDueReview: () -> Unit,
   onNewChat: () -> Unit,
   onOpenSettings: () -> Unit,
   onOpenSessions: () -> Unit
@@ -575,14 +640,6 @@ private fun HeaderBar(
       }
 
       OutlinedButton(
-        onClick = onOpenDueReview,
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-        modifier = Modifier.heightIn(min = 32.dp)
-      ) {
-        Text(text = "待复习 $dueReviewCount", style = MaterialTheme.typography.labelSmall, maxLines = 1)
-      }
-
-      OutlinedButton(
         onClick = onNewChat,
         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
         modifier = Modifier.heightIn(min = 32.dp)
@@ -600,8 +657,10 @@ private fun AnkiHeaderBar(
   isDueReviewMode: Boolean,
   focusedDeckName: String?,
   dueReviewCount: Int,
+  onOpenDueReview: () -> Unit,
   onExitDueReviewMode: () -> Unit,
   onExitDeckFocusedPractice: () -> Unit,
+  onOpenDeckPracticeSummary: () -> Unit,
   onOpenDeckManager: () -> Unit
 ) {
   Row(
@@ -630,11 +689,19 @@ private fun AnkiHeaderBar(
     }
 
     Row(verticalAlignment = Alignment.CenterVertically) {
+      if (!isDueReviewMode) {
+        TextButton(onClick = onOpenDueReview) {
+          Text(text = "待复习 $dueReviewCount", style = MaterialTheme.typography.labelSmall)
+        }
+      }
       if (isDueReviewMode) {
         TextButton(onClick = onExitDueReviewMode) {
           Text(text = "退出待复习", style = MaterialTheme.typography.labelSmall)
         }
       } else if (!focusedDeckName.isNullOrBlank()) {
+        TextButton(onClick = onOpenDeckPracticeSummary) {
+          Text(text = "小结", style = MaterialTheme.typography.labelSmall)
+        }
         TextButton(onClick = onExitDeckFocusedPractice) {
           Text(text = "退出专练", style = MaterialTheme.typography.labelSmall)
         }

@@ -174,6 +174,13 @@ internal fun AnkiWorkspace(
           }
 
           Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            if (!focusedDeckName.isNullOrBlank()) {
+              Text(
+                text = "专练进度：${cards.indexOfFirst { card -> card.id == activeCard.id }.coerceAtLeast(0) + 1}/${cards.size}",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF5E746D)
+              )
+            }
             Text(
               text = "${activeCard.source} · ${formatSessionTime(activeCard.createdAt)}",
               style = MaterialTheme.typography.labelSmall,
@@ -408,9 +415,27 @@ internal fun WorkspaceSwipeStrip(
           dragOffset += delta
         },
         onDragStopped = {
-          when {
-            dragOffset <= -threshold -> onSwitch(WorkspacePage.ANKI)
-            dragOffset >= threshold -> onSwitch(WorkspacePage.CHAT)
+          when (activePage) {
+            WorkspacePage.CHAT -> {
+              when {
+                dragOffset <= -threshold -> onSwitch(WorkspacePage.ANKI)
+                dragOffset >= threshold -> onSwitch(WorkspacePage.PROFILE)
+              }
+            }
+
+            WorkspacePage.ANKI -> {
+              when {
+                dragOffset <= -threshold -> onSwitch(WorkspacePage.PROFILE)
+                dragOffset >= threshold -> onSwitch(WorkspacePage.CHAT)
+              }
+            }
+
+            WorkspacePage.PROFILE -> {
+              when {
+                dragOffset <= -threshold -> onSwitch(WorkspacePage.CHAT)
+                dragOffset >= threshold -> onSwitch(WorkspacePage.ANKI)
+              }
+            }
           }
           dragOffset = 0f
         }
@@ -418,7 +443,11 @@ internal fun WorkspaceSwipeStrip(
   ) {
     Box(contentAlignment = Alignment.Center) {
       Text(
-        text = if (activePage == WorkspacePage.CHAT) "在此左右滑动切换到 Anki 复习区" else "在此左右滑动返回聊天区",
+        text = when (activePage) {
+          WorkspacePage.CHAT -> "左滑到 Anki · 右滑到用户中心"
+          WorkspacePage.ANKI -> "左滑到用户中心 · 右滑到聊天"
+          WorkspacePage.PROFILE -> "左滑到聊天 · 右滑到 Anki"
+        },
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF5A7169)
       )

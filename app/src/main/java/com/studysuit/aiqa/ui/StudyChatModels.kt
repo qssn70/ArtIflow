@@ -155,6 +155,8 @@ data class ChatUiState(
   val ankiCards: List<AnkiCard> = emptyList(),
   val isDueReviewMode: Boolean = false,
   val focusedDeckName: String? = null,
+  val deckPracticeSelections: Map<String, CardMasteryLevel> = emptyMap(),
+  val showDeckPracticeSummary: Boolean = false,
   val activeSessionId: String = "",
   val sessionSummaries: List<SessionSummary> = emptyList(),
   val isSessionsOpen: Boolean = false,
@@ -164,6 +166,15 @@ data class ChatUiState(
   val isSettingsOpen: Boolean = false,
   val settings: RuntimeSettings = RuntimeSettings.defaults(),
   val settingsDraft: RuntimeSettings = RuntimeSettings.defaults()
+)
+
+data class DeckPracticeSummary(
+  val deckName: String,
+  val totalCards: Int,
+  val reviewedCards: Int,
+  val needsWorkCount: Int,
+  val familiarCount: Int,
+  val proficientCount: Int
 )
 
 data class SessionSummary(
@@ -215,7 +226,8 @@ data class SpanDetail(
 
 enum class WorkspacePage {
   CHAT,
-  ANKI
+  ANKI,
+  PROFILE
 }
 
 data class AnkiCard(

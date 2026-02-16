@@ -203,6 +203,8 @@ class StudyChatViewModel : ViewModel() {
         activePage = WorkspacePage.ANKI,
         isDueReviewMode = false,
         focusedDeckName = normalizedDeck,
+        deckPracticeSelections = emptyMap(),
+        showDeckPracticeSummary = false,
         toastMessage = "进入卡组专练：$normalizedDeck"
       )
     }
@@ -223,7 +225,45 @@ class StudyChatViewModel : ViewModel() {
       if (current.focusedDeckName == null) {
         current
       } else {
-        current.copy(focusedDeckName = null)
+        current.copy(
+          focusedDeckName = null,
+          deckPracticeSelections = emptyMap(),
+          showDeckPracticeSummary = false
+        )
+      }
+    }
+  }
+
+  fun dismissDeckPracticeSummary() {
+    updateUiState { current ->
+      if (!current.showDeckPracticeSummary) {
+        current
+      } else {
+        current.copy(showDeckPracticeSummary = false)
+      }
+    }
+  }
+
+  fun openDeckPracticeSummary() {
+    updateUiState { current ->
+      if (current.focusedDeckName.isNullOrBlank()) {
+        current
+      } else {
+        current.copy(showDeckPracticeSummary = true)
+      }
+    }
+  }
+
+  fun restartDeckPracticeRound() {
+    updateUiState { current ->
+      if (current.focusedDeckName.isNullOrBlank()) {
+        current
+      } else {
+        current.copy(
+          deckPracticeSelections = emptyMap(),
+          showDeckPracticeSummary = false,
+          toastMessage = "已开始新一轮卡组专练"
+        )
       }
     }
   }
@@ -358,8 +398,28 @@ class StudyChatViewModel : ViewModel() {
         val card = updatedCards[index]
         val reviewedCard = applySrsReview(card, mastery)
         updatedCards[index] = reviewedCard
+        val normalizedDeck = current.focusedDeckName
+        val practiceSelections = if (!normalizedDeck.isNullOrBlank() &&
+          (normalizeDeckName(card.deckName) ?: DEFAULT_ANKI_DECK_NAME) == normalizedDeck
+        ) {
+          current.deckPracticeSelections + (card.id to mastery)
+        } else {
+          current.deckPracticeSelections
+        }
+
+        val deckTotal = if (normalizedDeck.isNullOrBlank()) {
+          0
+        } else {
+          updatedCards.count { each ->
+            (normalizeDeckName(each.deckName) ?: DEFAULT_ANKI_DECK_NAME) == normalizedDeck
+          }
+        }
+        val shouldShowSummary = !normalizedDeck.isNullOrBlank() && deckTotal > 0 && practiceSelections.size >= deckTotal
+
         current.copy(
           ankiCards = sortAnkiCardsForReview(updatedCards),
+          deckPracticeSelections = practiceSelections,
+          showDeckPracticeSummary = shouldShowSummary,
           toastMessage = "已标记${mastery.label}，下次复习 ${formatSessionTime(reviewedCard.nextReviewAt)}"
         )
       }
