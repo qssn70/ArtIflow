@@ -33,10 +33,12 @@ internal fun queueSpanFollowupState(
   current: ChatUiState,
   spanId: String,
   question: String,
-  isVoice: Boolean
+  isVoice: Boolean,
+  clearInput: Boolean = false
 ): ChatUiState {
   return markSpanProcessing(
     current.copy(
+      input = if (clearInput) "" else current.input,
       profile = current.profile.updateWith(text = question, isFollowup = true, isVoice = isVoice),
       knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(question))
     ),

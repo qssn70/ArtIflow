@@ -47,15 +47,17 @@ class StudyChatStateReducersTest {
 
   @Test
   fun queueSpanFollowupState_marksProcessingAndVoiceCounters() {
-    val base = ChatUiState()
+    val base = ChatUiState(input = "待发送输入")
 
     val updated = queueSpanFollowupState(
       current = base,
       spanId = "span-9",
       question = "这个力学题为什么这么列式",
-      isVoice = true
+      isVoice = true,
+      clearInput = true
     )
 
+    assertEquals("", updated.input)
     assertTrue(updated.processingSpanIds.contains("span-9"))
     assertEquals(1, updated.profile.followups)
     assertEquals(1, updated.profile.voiceFollowups)

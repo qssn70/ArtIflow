@@ -16,6 +16,8 @@ internal data class StoredSession(
   val profile: ProfileState,
   val input: String,
   val activePage: WorkspacePage,
+  val quickFollowupSpanId: String? = null,
+  val quickFollowupDetailId: String? = null,
   val knowledgePoints: Map<String, Int>,
   val ankiCards: List<AnkiCard>
 )
@@ -96,9 +98,15 @@ private fun RuntimeSettings.toJson(): JSONObject {
 
 private fun JSONObject.toRuntimeSettings(): RuntimeSettings {
   val defaults = RuntimeSettings.defaults()
+  val rawArkModel = optString("arkModel", defaults.arkModel).trim()
+  val normalizedArkModel = when {
+    rawArkModel.isBlank() -> defaults.arkModel
+    rawArkModel == LEGACY_ARK_MODEL -> defaults.arkModel
+    else -> rawArkModel
+  }
   return RuntimeSettings(
     arkApiKey = optString("arkApiKey", defaults.arkApiKey),
-    arkModel = optString("arkModel", defaults.arkModel),
+    arkModel = normalizedArkModel,
     arkBaseUrl = optString("arkBaseUrl", defaults.arkBaseUrl),
     arkEndpoint = optString("arkEndpoint", defaults.arkEndpoint),
     arkSystemPrompt = optString("arkSystemPrompt", defaults.arkSystemPrompt),
@@ -111,6 +119,8 @@ private fun JSONObject.toRuntimeSettings(): RuntimeSettings {
   )
 }
 
+private const val LEGACY_ARK_MODEL = "doubao-seed-1-8-251228"
+
 private fun StoredSession.toJson(): JSONObject {
   return JSONObject()
     .put("id", id)
@@ -119,6 +129,8 @@ private fun StoredSession.toJson(): JSONObject {
     .put("updatedAt", updatedAt)
     .put("input", input)
     .put("activePage", activePage.name)
+    .put("quickFollowupSpanId", quickFollowupSpanId ?: JSONObject.NULL)
+    .put("quickFollowupDetailId", quickFollowupDetailId ?: JSONObject.NULL)
     .put("profile", profile.toJson())
     .put("messages", JSONArray().apply {
       messages.forEach { message -> put(message.toJson()) }
@@ -143,6 +155,8 @@ private fun JSONObject.toStoredSession(): StoredSession? {
   val messages = optJSONArray("messages")?.toChatMessages().orEmpty()
   val histories = optJSONObject("histories")?.toHistories().orEmpty()
   val activePage = optString("activePage").toWorkspacePageOrDefault()
+  val quickFollowupSpanId = optString("quickFollowupSpanId").trim().ifBlank { null }
+  val quickFollowupDetailId = optString("quickFollowupDetailId").trim().ifBlank { null }
   val knowledgePoints = optJSONObject("knowledgePoints")?.toKnowledgePoints().orEmpty()
   val ankiCards = optJSONArray("ankiCards")?.toAnkiCards().orEmpty()
 
@@ -156,6 +170,8 @@ private fun JSONObject.toStoredSession(): StoredSession? {
     profile = profile,
     input = input,
     activePage = activePage,
+    quickFollowupSpanId = quickFollowupSpanId,
+    quickFollowupDetailId = quickFollowupDetailId,
     knowledgePoints = knowledgePoints,
     ankiCards = ankiCards
   )
@@ -325,6 +341,7 @@ private fun Map<String, List<SpanDetail>>.toJson(): JSONObject {
                 .put("time", detail.time)
                 .put("question", detail.question ?: JSONObject.NULL)
                 .put("answer", detail.answer)
+                .put("parentDetailId", detail.parentDetailId ?: JSONObject.NULL)
             )
           }
         }
@@ -348,7 +365,8 @@ private fun JSONObject.toHistories(): Map<String, List<SpanDetail>> {
             mode = detailObj.optString("mode"),
             time = detailObj.optString("time"),
             question = detailObj.optString("question").takeIf { it.isNotBlank() && it != "null" },
-            answer = detailObj.optString("answer")
+            answer = detailObj.optString("answer"),
+            parentDetailId = detailObj.optString("parentDetailId").takeIf { it.isNotBlank() && it != "null" }
           )
         )
       }

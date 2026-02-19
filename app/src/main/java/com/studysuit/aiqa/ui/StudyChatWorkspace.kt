@@ -419,6 +419,13 @@ internal fun WorkspaceSwipeStrip(
             WorkspacePage.CHAT -> {
               when {
                 dragOffset <= -threshold -> onSwitch(WorkspacePage.ANKI)
+                dragOffset >= threshold -> onSwitch(WorkspacePage.QUICK_FOLLOWUP)
+              }
+            }
+
+            WorkspacePage.QUICK_FOLLOWUP -> {
+              when {
+                dragOffset <= -threshold -> onSwitch(WorkspacePage.CHAT)
                 dragOffset >= threshold -> onSwitch(WorkspacePage.PROFILE)
               }
             }
@@ -432,7 +439,7 @@ internal fun WorkspaceSwipeStrip(
 
             WorkspacePage.PROFILE -> {
               when {
-                dragOffset <= -threshold -> onSwitch(WorkspacePage.CHAT)
+                dragOffset <= -threshold -> onSwitch(WorkspacePage.QUICK_FOLLOWUP)
                 dragOffset >= threshold -> onSwitch(WorkspacePage.ANKI)
               }
             }
@@ -444,9 +451,10 @@ internal fun WorkspaceSwipeStrip(
     Box(contentAlignment = Alignment.Center) {
       Text(
         text = when (activePage) {
-          WorkspacePage.CHAT -> "左滑到 Anki · 右滑到用户中心"
+          WorkspacePage.CHAT -> "左滑到 Anki · 右滑到快捷追问"
+          WorkspacePage.QUICK_FOLLOWUP -> "左滑到聊天 · 右滑到用户中心"
           WorkspacePage.ANKI -> "左滑到用户中心 · 右滑到聊天"
-          WorkspacePage.PROFILE -> "左滑到聊天 · 右滑到 Anki"
+          WorkspacePage.PROFILE -> "左滑到快捷追问 · 右滑到 Anki"
         },
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF5A7169)

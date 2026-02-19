@@ -5,7 +5,7 @@ internal fun buildIntroGuideContent(): String {
     "你好，我是你的学习搭子。这个界面看起来是普通 AI Chat，但每一段都能左滑右滑交互。",
     "左滑松手会自动讲解当前段落，不会把讲解追加到底部，而是存进段落详解记录。",
     "左滑后不松手会进入语音追问模式，松手即提交追问并更新你的学习画像。",
-    "右滑可拉出详解弹窗，回看该段追问与回答；追问内容不会追加到底部聊天。"
+    "右滑松手会打开该段详解弹窗；右滑并停留会进入快捷追问子界面，支持嵌套追问。"
   ).joinToString(separator = "\n\n")
 }
 
@@ -22,6 +22,9 @@ internal fun buildUiStateFromSession(
     profile = session.profile,
     input = session.input,
     selectedSpanId = null,
+    selectedDetailId = null,
+    quickFollowupSpanId = session.quickFollowupSpanId,
+    quickFollowupDetailId = session.quickFollowupDetailId,
     activePage = session.activePage,
     knowledgePoints = session.knowledgePoints,
     ankiCards = sortAnkiCardsForReview(ankiCards),
@@ -52,6 +55,8 @@ internal fun toStoredSessionSnapshot(
     profile = state.profile,
     input = state.input,
     activePage = state.activePage,
+    quickFollowupSpanId = state.quickFollowupSpanId,
+    quickFollowupDetailId = state.quickFollowupDetailId,
     knowledgePoints = state.knowledgePoints,
     ankiCards = state.ankiCards
   )
@@ -71,6 +76,9 @@ internal fun createInitialSessionState(
     profile = ProfileState(level = "高二 · 进阶冲刺"),
     input = "",
     selectedSpanId = null,
+    selectedDetailId = null,
+    quickFollowupSpanId = null,
+    quickFollowupDetailId = null,
     activePage = WorkspacePage.CHAT,
     knowledgePoints = emptyMap(),
     ankiCards = sortAnkiCardsForReview(ankiCards),

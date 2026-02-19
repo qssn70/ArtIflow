@@ -442,6 +442,36 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun storedSessionSnapshot_andBuildUiState_keepQuickFollowupSpanId() {
+    val state = ChatUiState(
+      activeSessionId = "session-quick",
+      activePage = WorkspacePage.QUICK_FOLLOWUP,
+      quickFollowupSpanId = "span-9",
+      quickFollowupDetailId = "detail-4"
+    )
+
+    val snapshot = toStoredSessionSnapshot(
+      state = state,
+      title = "快捷追问",
+      createdAt = 11L,
+      updatedAt = 12L
+    )
+    val rebuilt = buildUiStateFromSession(
+      session = snapshot,
+      ankiCards = emptyList(),
+      settings = RuntimeSettings.defaults(),
+      summaries = emptyList(),
+      toastMessage = null
+    )
+
+    assertEquals("span-9", snapshot.quickFollowupSpanId)
+    assertEquals("detail-4", snapshot.quickFollowupDetailId)
+    assertEquals(WorkspacePage.QUICK_FOLLOWUP, rebuilt.activePage)
+    assertEquals("span-9", rebuilt.quickFollowupSpanId)
+    assertEquals("detail-4", rebuilt.quickFollowupDetailId)
+  }
+
+  @Test
   fun deriveSessionSeeds_returnsMaxNumericSuffixes() {
     val state = ChatUiState(
       messages = listOf(

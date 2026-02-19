@@ -480,7 +480,7 @@ internal fun SpanDetailDialog(
         if (history.isEmpty()) {
           item(key = "history-empty") {
             Text(
-              text = "这段还没有记录。左滑松手自动讲解，长按松手语音追问，右滑查看。",
+              text = "这段还没有记录。左滑松手自动讲解，长按松手语音追问，右滑松手看弹窗，右滑停留进快捷追问。",
               style = MaterialTheme.typography.bodySmall,
               color = Color(0xFF5D7069)
             )

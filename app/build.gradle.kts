@@ -29,7 +29,7 @@ android {
 
   defaultConfig {
     val arkApiKey = localValue("ARK_API_KEY")
-    val arkModel = localValue("ARK_MODEL", "doubao-seed-1-8-251228")
+    val arkModel = localValue("ARK_MODEL", "doubao-seed-2-0-pro-260215")
     val arkBaseUrl = localValue("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
     val arkEndpoint = localValue("ARK_ENDPOINT", "responses")
     val arkSystemPrompt = localValue(
@@ -123,6 +123,9 @@ dependencies {
   implementation("androidx.compose.foundation:foundation")
   implementation("androidx.compose.material:material-icons-extended")
   implementation("androidx.compose.material3:material3")
+  implementation("io.noties.markwon:core:4.6.2")
+  implementation("io.noties.markwon:inline-parser:4.6.2")
+  implementation("io.noties.markwon:ext-latex:4.6.2")
   implementation("com.google.android.material:material:1.12.0")
   implementation("com.squareup.okhttp3:okhttp:4.12.0")
 

@@ -21,6 +21,41 @@ internal fun findSpanById(messages: List<ChatMessage>, spanId: String?): SpanDat
   return null
 }
 
+internal fun findLatestAssistantSpan(messages: List<ChatMessage>): SpanData? {
+  messages.asReversed().forEach { message ->
+    if (message is ChatMessage.Assistant) {
+      message.spans.lastOrNull()?.let { span ->
+        return span
+      }
+    }
+  }
+
+  return null
+}
+
+internal fun findDetailById(details: List<SpanDetail>, detailId: String?): SpanDetail? {
+  if (detailId == null) {
+    return null
+  }
+
+  return details.firstOrNull { detail -> detail.id == detailId }
+}
+
+internal fun buildDetailPath(details: List<SpanDetail>, detailId: String?): List<SpanDetail> {
+  val targetId = detailId ?: return emptyList()
+  val detailById = details.associateBy { detail -> detail.id }
+  val path = mutableListOf<SpanDetail>()
+  val visited = mutableSetOf<String>()
+  var current: SpanDetail? = detailById[targetId]
+
+  while (current != null && visited.add(current.id)) {
+    path += current
+    current = current.parentDetailId?.let { parentId -> detailById[parentId] }
+  }
+
+  return path.asReversed()
+}
+
 internal fun ProfileState.updateWith(text: String, isFollowup: Boolean, isVoice: Boolean): ProfileState {
   val hits = topicHits.toMutableMap()
   val topics = detectTopicsForProfile(text)
@@ -150,6 +185,9 @@ data class ChatUiState(
   val profile: ProfileState = ProfileState(level = "高二 · 进阶冲刺"),
   val input: String = "",
   val selectedSpanId: String? = null,
+  val selectedDetailId: String? = null,
+  val quickFollowupSpanId: String? = null,
+  val quickFollowupDetailId: String? = null,
   val activePage: WorkspacePage = WorkspacePage.CHAT,
   val knowledgePoints: Map<String, Int> = emptyMap(),
   val ankiCards: List<AnkiCard> = emptyList(),
@@ -213,7 +251,8 @@ sealed interface ChatMessage {
 data class SpanData(
   val id: String,
   val content: String,
-  val sourceQuestion: String
+  val sourceQuestion: String,
+  val detailId: String? = null
 )
 
 data class SpanDetail(
@@ -221,11 +260,13 @@ data class SpanDetail(
   val mode: String,
   val time: String,
   val question: String? = null,
-  val answer: String
+  val answer: String,
+  val parentDetailId: String? = null
 )
 
 enum class WorkspacePage {
   CHAT,
+  QUICK_FOLLOWUP,
   ANKI,
   PROFILE
 }

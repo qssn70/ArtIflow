@@ -1,11 +1,19 @@
 package com.studysuit.aiqa.ui
 
+import android.text.method.LinkMovementMethod
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.widget.TextView
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -17,8 +25,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import io.noties.markwon.Markwon
+import io.noties.markwon.ext.latex.JLatexMathPlugin
+import io.noties.markwon.ext.latex.JLatexMathTheme
+import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 @Composable
 internal fun MarkdownCardText(markdown: String, modifier: Modifier = Modifier) {
@@ -54,6 +69,24 @@ internal fun MarkdownFormattedText(
   val renderedStyle = remember(textStyle, effectiveLineHeight) {
     textStyle.copy(lineHeight = effectiveLineHeight)
   }
+
+  val useLatexRenderer = remember(markdown) {
+    containsLatexMarkdown(markdown)
+  }
+  if (useLatexRenderer) {
+    val normalizedLatexMarkdown = remember(markdown) {
+      normalizeLatexForMarkwon(markdown)
+    }
+    LatexMarkdownText(
+      markdown = normalizedLatexMarkdown,
+      textStyle = renderedStyle,
+      textColor = textColor,
+      textAlign = textAlign,
+      modifier = modifier
+    )
+    return
+  }
+
   val annotated = remember(markdown, textStyle.fontSize) {
     markdownToAnnotatedString(markdown, baseFontSize = textStyle.fontSize)
   }
@@ -64,6 +97,113 @@ internal fun MarkdownFormattedText(
     textAlign = textAlign,
     modifier = modifier
   )
+}
+
+@Composable
+private fun LatexMarkdownText(
+  markdown: String,
+  textStyle: TextStyle,
+  textColor: Color,
+  textAlign: TextAlign,
+  modifier: Modifier = Modifier
+) {
+  val context = LocalContext.current
+  val density = LocalDensity.current
+
+  val fontSizePx = remember(textStyle.fontSize, density) {
+    with(density) {
+      val fontSize = if (textStyle.fontSize == TextUnit.Unspecified) 16.sp else textStyle.fontSize
+      fontSize.toPx()
+    }
+  }
+  val inlineBaselineNudgePx = remember(density) {
+    with(density) {
+      1.dp.toPx().roundToInt().coerceAtLeast(1)
+    }
+  }
+
+  val markwon = remember(context, fontSizePx) {
+    Markwon.builder(context)
+      .usePlugin(MarkwonInlineParserPlugin.create())
+      .usePlugin(
+        JLatexMathPlugin.create(
+          fontSizePx * 0.9f,
+          fontSizePx,
+          object : JLatexMathPlugin.BuilderConfigure {
+            override fun configureBuilder(builder: JLatexMathPlugin.Builder) {
+              builder.inlinesEnabled(true)
+              builder.theme().inlinePadding(JLatexMathTheme.Padding.of(0, 0, 0, inlineBaselineNudgePx))
+            }
+          }
+        )
+      )
+      .build()
+  }
+
+  AndroidView(
+    modifier = modifier,
+    factory = { viewContext ->
+      TextView(viewContext).apply {
+        setTextIsSelectable(false)
+        includeFontPadding = false
+        movementMethod = LinkMovementMethod.getInstance()
+      }
+    },
+    update = { textView ->
+      textView.setTextColor(textColor.toArgb())
+      textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, fontSizePx)
+      textView.textAlignment = View.TEXT_ALIGNMENT_GRAVITY
+      textView.gravity = gravityForTextAlign(textAlign)
+      markwon.setMarkdown(textView, markdown)
+    }
+  )
+}
+
+internal fun containsLatexMarkdown(markdown: String): Boolean {
+  if (markdown.isBlank()) {
+    return false
+  }
+
+  return markdownDoubleDollarBlockRegex.containsMatchIn(markdown) ||
+    markdownDoubleDollarInlineRegex.containsMatchIn(markdown) ||
+    markdownBracketBlockRegex.containsMatchIn(markdown) ||
+    markdownParenInlineRegex.containsMatchIn(markdown) ||
+    markdownSingleDollarInlineRegex.containsMatchIn(markdown)
+}
+
+internal fun normalizeLatexForMarkwon(markdown: String): String {
+  if (markdown.isBlank()) {
+    return markdown
+  }
+
+  var normalized = markdownBracketBlockRegex.replace(markdown) { match ->
+    val equation = match.groupValues[1].trim()
+    "$$\n$equation\n$$"
+  }
+  normalized = markdownParenInlineRegex.replace(normalized) { match ->
+    val equation = match.groupValues[1].trim()
+    "$$$equation$$"
+  }
+  normalized = markdownSingleDollarInlineRegex.replace(normalized) { match ->
+    "$$${match.groupValues[1]}$$"
+  }
+  return normalized
+}
+
+private fun gravityForTextAlign(textAlign: TextAlign): Int {
+  val horizontalGravity = when (textAlign) {
+    TextAlign.Center -> Gravity.CENTER_HORIZONTAL
+    TextAlign.End,
+    TextAlign.Right -> Gravity.END
+
+    TextAlign.Start,
+    TextAlign.Left,
+    TextAlign.Justify,
+    TextAlign.Unspecified -> Gravity.START
+
+    else -> Gravity.START
+  }
+  return horizontalGravity or Gravity.TOP
 }
 
 private fun markdownToAnnotatedString(markdown: String, baseFontSize: TextUnit): AnnotatedString {
@@ -276,3 +416,8 @@ private fun appendMarkdownInline(builder: AnnotatedString.Builder, text: String)
 
 private val markdownBulletRegex = Regex("^[-*+]\\s+")
 private val markdownOrderedRegex = Regex("^(\\d+)\\.\\s+")
+private val markdownDoubleDollarBlockRegex = Regex("(?s)(^|\\n)\\$\\$\\s*.+?\\s*\\$\\$($|\\n)")
+private val markdownDoubleDollarInlineRegex = Regex("(?<!\\\\)\\$\\$[^\\n]+?\\$\\$")
+private val markdownSingleDollarInlineRegex = Regex("(?<!\\\\)(?<!\\$)\\$([^$\\n]+)\\$(?!\\$)")
+private val markdownBracketBlockRegex = Regex("(?s)\\\\\\[\\s*(.+?)\\s*\\\\\\]")
+private val markdownParenInlineRegex = Regex("(?s)\\\\\\((.+?)\\\\\\)")

@@ -182,18 +182,78 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     viewModel.consumeToast()
   }
 
-  val selectedSpan = remember(uiState.messages, uiState.selectedSpanId) {
+  val quickFollowupSpan = remember(uiState.messages, uiState.quickFollowupSpanId) {
+    findSpanById(uiState.messages, uiState.quickFollowupSpanId)
+      ?: findLatestAssistantSpan(uiState.messages)
+  }
+  val quickFollowupHistory = remember(uiState.histories, quickFollowupSpan) {
+    if (quickFollowupSpan == null) {
+      emptyList()
+    } else {
+      uiState.histories[quickFollowupSpan.id].orEmpty()
+    }
+  }
+  val quickFollowupHistoryForTree = remember(quickFollowupHistory) {
+    normalizeHistoryForTree(quickFollowupHistory)
+  }
+  val quickFollowupHistoriesForUi = remember(quickFollowupSpan, quickFollowupHistoryForTree) {
+    buildQuickFollowupHistories(quickFollowupSpan, quickFollowupHistoryForTree)
+  }
+  val quickFollowupMessages = remember(
+    quickFollowupSpan,
+    quickFollowupHistoryForTree,
+    uiState.quickFollowupDetailId
+  ) {
+    buildQuickFollowupMessages(
+      span = quickFollowupSpan,
+      history = quickFollowupHistoryForTree,
+      activeDetailId = uiState.quickFollowupDetailId
+    )
+  }
+  val selectedSpan = remember(uiState.messages, quickFollowupMessages, uiState.selectedSpanId) {
     findSpanById(uiState.messages, uiState.selectedSpanId)
+      ?: findSpanById(quickFollowupMessages, uiState.selectedSpanId)
   }
 
-  val selectedHistory = remember(uiState.histories, selectedSpan) {
+  val selectedHistory = remember(
+    uiState.histories,
+    quickFollowupHistoriesForUi,
+    selectedSpan,
+    uiState.selectedDetailId
+  ) {
     if (selectedSpan == null) {
       emptyList()
     } else {
-      uiState.histories[selectedSpan.id].orEmpty()
+      val allHistory = uiState.histories[selectedSpan.id].orEmpty().ifEmpty {
+        quickFollowupHistoriesForUi[selectedSpan.id].orEmpty()
+      }
+
+      val selectedDetailId = uiState.selectedDetailId
+      if (selectedDetailId.isNullOrBlank()) {
+        allHistory
+      } else {
+        allHistory.filter { detail -> detail.id == selectedDetailId }
+      }
     }
   }
+  val selectedSpanForDialog = remember(selectedSpan, selectedHistory, uiState.selectedDetailId) {
+    if (selectedSpan == null) {
+      null
+    } else {
+      val selectedDetailId = uiState.selectedDetailId
+      val detail = if (selectedDetailId.isNullOrBlank()) {
+        null
+      } else {
+        selectedHistory.firstOrNull { item -> item.id == selectedDetailId }
+      }
 
+      if (detail == null) {
+        selectedSpan
+      } else {
+        selectedSpan.copy(content = detail.answer)
+      }
+    }
+  }
   val ankiDeckSummaries = remember(uiState.ankiCards) {
     buildAnkiDeckSummaries(uiState.ankiCards)
   }
@@ -218,6 +278,8 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   }
 
   val hasModalDialog = uiState.isSettingsOpen || uiState.isSessionsOpen || selectedSpan != null
+  val isChatLikePage = uiState.activePage == WorkspacePage.CHAT ||
+    uiState.activePage == WorkspacePage.QUICK_FOLLOWUP
   BackHandler(enabled = !hasModalDialog) {
     when {
       isDeckArchiveOpen -> {
@@ -225,9 +287,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       }
 
       uiState.activePage != WorkspacePage.CHAT -> {
-        viewModel.switchWorkspacePage(
-          if (uiState.activePage == WorkspacePage.PROFILE) WorkspacePage.ANKI else WorkspacePage.CHAT
-        )
+        viewModel.switchWorkspacePage(WorkspacePage.CHAT)
       }
 
       else -> {
@@ -366,11 +426,21 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
           .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
       ) {
-        if (uiState.activePage == WorkspacePage.CHAT) {
+        if (isChatLikePage) {
           HeaderBar(
             onNewChat = viewModel::startNewChat,
             onOpenSettings = viewModel::openSettings,
-            onOpenSessions = viewModel::openSessions
+            onOpenSessions = viewModel::openSessions,
+            title = if (uiState.activePage == WorkspacePage.QUICK_FOLLOWUP) {
+              "StudySuit · 快捷追问"
+            } else {
+              "StudySuit · AI学习问答"
+            },
+            subtitle = if (uiState.activePage == WorkspacePage.QUICK_FOLLOWUP) {
+              "主界面同款 · 仅当前追问链路"
+            } else {
+              "左滑讲解 · 长按语音 · 右滑弹窗（停留进追问）"
+            }
           )
         } else if (uiState.activePage == WorkspacePage.ANKI) {
           AnkiHeaderBar(
@@ -405,7 +475,9 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                   processingSpanIds = uiState.processingSpanIds,
                   onAutoExplain = viewModel::autoExplain,
                   onVoiceFollowup = onVoiceCaptureSubmit,
-                  onOpenDetails = viewModel::openDetails,
+                  onRightSwipeOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
+                  onRightSwipeHoldFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
+                  onOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
                   onVoiceCaptureStart = onVoiceCaptureStart,
                   onVoiceCaptureCancel = onVoiceCaptureCancel
                 )
@@ -414,6 +486,36 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
 
             if (uiState.isLoading) {
               item(key = "assistant-loading") {
+                AssistantLoadingBubble()
+              }
+            }
+          } else if (uiState.activePage == WorkspacePage.QUICK_FOLLOWUP) {
+            if (quickFollowupMessages.isEmpty()) {
+              item(key = "quick-followup-empty") {
+                AssistantLoadingBubble()
+              }
+            } else {
+              items(quickFollowupMessages, key = { it.id }) { message ->
+                when (message) {
+                  is ChatMessage.User -> UserBubble(message)
+                  is ChatMessage.Assistant -> AssistantBubble(
+                    message = message,
+                    histories = quickFollowupHistoriesForUi,
+                    processingSpanIds = uiState.processingSpanIds,
+                    onAutoExplain = viewModel::autoExplain,
+                    onVoiceFollowup = onVoiceCaptureSubmit,
+                    onRightSwipeOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
+                    onRightSwipeHoldFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
+                    onOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
+                    onVoiceCaptureStart = onVoiceCaptureStart,
+                    onVoiceCaptureCancel = onVoiceCaptureCancel
+                  )
+                }
+              }
+            }
+
+            if (uiState.isLoading) {
+              item(key = "quick-followup-loading") {
                 AssistantLoadingBubble()
               }
             }
@@ -449,7 +551,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
           }
         }
 
-        if (uiState.activePage == WorkspacePage.CHAT) {
+        if (isChatLikePage) {
           Box(
             modifier = Modifier
               .fillMaxWidth()
@@ -523,9 +625,9 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     }
   }
 
-  if (selectedSpan != null) {
+  if (selectedSpanForDialog != null) {
     SpanDetailDialog(
-      span = selectedSpan,
+      span = selectedSpanForDialog,
       history = selectedHistory,
       onDismiss = viewModel::closeDetails
     )
@@ -600,7 +702,9 @@ private fun ProfileHeaderBar(
 private fun HeaderBar(
   onNewChat: () -> Unit,
   onOpenSettings: () -> Unit,
-  onOpenSessions: () -> Unit
+  onOpenSessions: () -> Unit,
+  title: String,
+  subtitle: String
 ) {
   Row(
     modifier = Modifier.fillMaxWidth(),
@@ -609,13 +713,13 @@ private fun HeaderBar(
   ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
       Text(
-        text = "StudySuit · AI学习问答",
+        text = title,
         style = MaterialTheme.typography.titleMedium,
         color = Color(0xFF235E4E),
         fontWeight = FontWeight.Bold
       )
       Text(
-        text = "左滑讲解 · 长按语音 · 右滑详解",
+        text = subtitle,
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF60756E),
         maxLines = 1
@@ -648,6 +752,90 @@ private fun HeaderBar(
       }
     }
   }
+}
+
+private fun normalizeHistoryForTree(history: List<SpanDetail>): List<SpanDetail> {
+  return history
+}
+
+private fun buildQuickFollowupMessages(
+  span: SpanData?,
+  history: List<SpanDetail>,
+  activeDetailId: String?
+): List<ChatMessage> {
+  if (span == null) {
+    return emptyList()
+  }
+
+  val parentDetail = findDetailById(history, activeDetailId)
+  val parentSpan = if (parentDetail == null) {
+    span.copy(detailId = null)
+  } else {
+    span.copy(
+      content = parentDetail.answer,
+      sourceQuestion = parentDetail.question ?: span.sourceQuestion,
+      detailId = parentDetail.id
+    )
+  }
+  val parentId = parentDetail?.id
+  val children = history.asReversed().filter { detail -> detail.parentDetailId == parentId }
+
+  return buildList {
+    parentDetail?.question?.takeIf { question -> question.isNotBlank() }?.let { question ->
+      add(
+        ChatMessage.User(
+          id = "quick-parent-user-${parentDetail.id}",
+          time = parentDetail.time,
+          text = question
+        )
+      )
+    }
+
+    add(
+      ChatMessage.Assistant(
+        id = "quick-parent-assistant-${parentId ?: span.id}",
+        time = parentDetail?.time ?: if (history.isEmpty()) "追问起点" else history.last().time,
+        spans = listOf(parentSpan)
+      )
+    )
+
+    children.forEach { detail ->
+      detail.question?.takeIf { question -> question.isNotBlank() }?.let { question ->
+        add(
+          ChatMessage.User(
+            id = "quick-user-${detail.id}",
+            time = detail.time,
+            text = question
+          )
+        )
+      }
+
+      add(
+        ChatMessage.Assistant(
+          id = "quick-assistant-${detail.id}",
+          time = detail.time,
+          spans = listOf(
+            span.copy(
+              content = detail.answer,
+              sourceQuestion = detail.question ?: parentSpan.sourceQuestion,
+              detailId = detail.id
+            )
+          )
+        )
+      )
+    }
+  }
+}
+
+private fun buildQuickFollowupHistories(
+  span: SpanData?,
+  history: List<SpanDetail>
+): Map<String, List<SpanDetail>> {
+  if (span == null) {
+    return emptyMap()
+  }
+
+  return mapOf(span.id to history)
 }
 
 @Composable

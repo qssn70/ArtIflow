@@ -43,6 +43,58 @@ class StudyChatModelsTest {
   }
 
   @Test
+  fun findLatestAssistantSpan_returnsLastSpanFromLatestAssistantMessage() {
+    val messages = listOf(
+      ChatMessage.Assistant(
+        id = "msg-1",
+        time = "10:00",
+        spans = listOf(
+          SpanData(id = "span-1", content = "第一段", sourceQuestion = "q1")
+        )
+      ),
+      ChatMessage.User(id = "msg-2", time = "10:01", text = "继续"),
+      ChatMessage.Assistant(
+        id = "msg-3",
+        time = "10:02",
+        spans = listOf(
+          SpanData(id = "span-2", content = "第二段", sourceQuestion = "q2"),
+          SpanData(id = "span-3", content = "第三段", sourceQuestion = "q2")
+        )
+      )
+    )
+
+    val latest = findLatestAssistantSpan(messages)
+
+    assertEquals("span-3", latest?.id)
+  }
+
+  @Test
+  fun findDetailById_returnsMatchingDetail() {
+    val details = listOf(
+      SpanDetail(id = "detail-1", mode = "自动讲解", time = "10:00", answer = "a1"),
+      SpanDetail(id = "detail-2", mode = "快捷追问", time = "10:01", question = "q2", answer = "a2")
+    )
+
+    val found = findDetailById(details, "detail-2")
+
+    assertEquals("detail-2", found?.id)
+    assertEquals("q2", found?.question)
+  }
+
+  @Test
+  fun buildDetailPath_returnsRootToTargetPath() {
+    val details = listOf(
+      SpanDetail(id = "detail-3", mode = "快捷追问", time = "10:02", question = "q3", answer = "a3", parentDetailId = "detail-2"),
+      SpanDetail(id = "detail-2", mode = "快捷追问", time = "10:01", question = "q2", answer = "a2", parentDetailId = "detail-1"),
+      SpanDetail(id = "detail-1", mode = "自动讲解", time = "10:00", answer = "a1")
+    )
+
+    val path = buildDetailPath(details, "detail-3")
+
+    assertEquals(listOf("detail-1", "detail-2", "detail-3"), path.map { detail -> detail.id })
+  }
+
+  @Test
   fun updateWith_incrementsTopicAndBehaviorCounters() {
     val profile = ProfileState(level = "高二")
 

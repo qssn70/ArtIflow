@@ -53,8 +53,14 @@ class StudyChatViewModel : ViewModel() {
   }
 
   fun sendQuestion() {
-    val question = _uiState.value.input.trim()
+    val current = _uiState.value
+    val question = current.input.trim()
     if (question.isEmpty()) {
+      return
+    }
+
+    if (current.activePage == WorkspacePage.QUICK_FOLLOWUP) {
+      sendQuickFollowupQuestion(question)
       return
     }
 
@@ -153,8 +159,26 @@ class StudyChatViewModel : ViewModel() {
 
   fun switchWorkspacePage(page: WorkspacePage) {
     updateUiState(persistSession = true) { current ->
+      val quickSpanId = if (page == WorkspacePage.QUICK_FOLLOWUP) {
+        findSpanById(current.messages, current.quickFollowupSpanId)?.id
+          ?: findLatestAssistantSpan(current.messages)?.id
+      } else {
+        current.quickFollowupSpanId
+      }
+      val quickDetailId = if (page == WorkspacePage.QUICK_FOLLOWUP) {
+        val candidate = current.quickFollowupDetailId
+        if (candidate != null && current.histories[quickSpanId].orEmpty().any { detail -> detail.id == candidate }) {
+          candidate
+        } else {
+          null
+        }
+      } else {
+        current.quickFollowupDetailId
+      }
       val target = current.copy(
         activePage = page,
+        quickFollowupSpanId = quickSpanId,
+        quickFollowupDetailId = quickDetailId,
         isDueReviewMode = false,
         focusedDeckName = null
       )
@@ -162,6 +186,46 @@ class StudyChatViewModel : ViewModel() {
         current
       } else {
         target
+      }
+    }
+  }
+
+  fun openQuickFollowup(spanId: String? = null, detailId: String? = null) {
+    updateUiState(persistSession = true) { current ->
+      val normalizedSpanId = findSpanById(current.messages, spanId)?.id
+      val fallbackSpanId = findSpanById(current.messages, current.quickFollowupSpanId)?.id
+      val latestSpanId = findLatestAssistantSpan(current.messages)?.id
+      val targetSpanId = normalizedSpanId ?: fallbackSpanId ?: latestSpanId
+
+      if (targetSpanId == null) {
+        current.copy(toastMessage = "当前没有可追问段落")
+      } else {
+        val availableHistory = current.histories[targetSpanId].orEmpty()
+        val normalizedDetailId = detailId?.let { id ->
+          if (availableHistory.any { detail -> detail.id == id }) id else null
+        }
+        val shouldKeepCurrent = current.activePage == WorkspacePage.QUICK_FOLLOWUP &&
+          !current.isDueReviewMode &&
+          current.focusedDeckName == null &&
+          current.quickFollowupSpanId == targetSpanId &&
+          current.quickFollowupDetailId == normalizedDetailId
+
+        if (shouldKeepCurrent) {
+          current
+        } else {
+          current.copy(
+            activePage = WorkspacePage.QUICK_FOLLOWUP,
+            quickFollowupSpanId = targetSpanId,
+            quickFollowupDetailId = normalizedDetailId,
+            isDueReviewMode = false,
+            focusedDeckName = null,
+            toastMessage = when {
+              normalizedDetailId != null -> "已进入该条追问分支"
+              normalizedSpanId != null -> "已切换追问段落"
+              else -> "已进入快捷追问"
+            }
+          )
+        }
       }
     }
   }
@@ -529,7 +593,7 @@ class StudyChatViewModel : ViewModel() {
             current = current,
             spanId = spanId,
             detail = detail,
-            toastMessage = "已生成该段讲解，右滑可查看详解"
+            toastMessage = "已生成该段讲解，右滑停留可进快捷追问"
           )
         }
         generateAnkiCardByAiAsync(
@@ -558,15 +622,15 @@ class StudyChatViewModel : ViewModel() {
     runVoiceFollowupByOpenSpeech(span = span, audioBytes = audioBytes)
   }
 
-  fun openDetails(spanId: String) {
+  fun openDetails(spanId: String, detailId: String? = null) {
     updateUiState { current ->
-      current.copy(selectedSpanId = spanId)
+      current.copy(selectedSpanId = spanId, selectedDetailId = detailId)
     }
   }
 
   fun closeDetails() {
     updateUiState { current ->
-      current.copy(selectedSpanId = null)
+      current.copy(selectedSpanId = null, selectedDetailId = null)
     }
   }
 
@@ -679,7 +743,10 @@ class StudyChatViewModel : ViewModel() {
     span: SpanData,
     followupQuestion: String,
     isVoice: Boolean,
-    mode: String
+    mode: String,
+    clearInput: Boolean = false,
+    keepQuickFollowupSpan: Boolean = false,
+    parentDetailId: String? = null
   ) {
     val normalizedQuestion = followupQuestion.trim()
     if (normalizedQuestion.isBlank()) {
@@ -689,13 +756,36 @@ class StudyChatViewModel : ViewModel() {
 
     val requestConversationToken = conversationToken
     val settings = _uiState.value.settings
+    val derivedParentDetailId = parentDetailId ?: run {
+      val state = _uiState.value
+      if (keepQuickFollowupSpan || state.activePage == WorkspacePage.QUICK_FOLLOWUP) {
+        val targetFromState = state.quickFollowupDetailId
+        if (targetFromState != null && state.histories[span.id].orEmpty().any { detail -> detail.id == targetFromState }) {
+          targetFromState
+        } else {
+          state.histories[span.id].orEmpty().firstOrNull()?.id
+        }
+      } else {
+        null
+      }
+    }
     startRequest(clearToast = true) { current ->
-      queueSpanFollowupState(
+      val queued = queueSpanFollowupState(
         current = current,
         spanId = span.id,
         question = normalizedQuestion,
-        isVoice = isVoice
+        isVoice = isVoice,
+        clearInput = clearInput
       )
+
+      if (keepQuickFollowupSpan || current.activePage == WorkspacePage.QUICK_FOLLOWUP) {
+        queued.copy(
+          quickFollowupSpanId = span.id,
+          quickFollowupDetailId = derivedParentDetailId
+        )
+      } else {
+        queued
+      }
     }
 
     val detailsSnapshot = _uiState.value.histories[span.id].orEmpty()
@@ -722,14 +812,24 @@ class StudyChatViewModel : ViewModel() {
             mode = mode,
             time = currentDateTime(),
             question = normalizedQuestion,
-            answer = reply
+            answer = reply,
+            parentDetailId = derivedParentDetailId
           )
-          appendSpanDetailHistory(
+          val updated = appendSpanDetailHistory(
             current = current,
             spanId = span.id,
             detail = detail,
-            toastMessage = "追问已保存，右滑查看本段详解"
+            toastMessage = "追问已保存，可继续右滑深入追问"
           )
+
+          if (keepQuickFollowupSpan || current.activePage == WorkspacePage.QUICK_FOLLOWUP) {
+            updated.copy(
+              quickFollowupSpanId = span.id,
+              quickFollowupDetailId = derivedParentDetailId
+            )
+          } else {
+            updated
+          }
         }
         generateAnkiCardByAiAsync(
           requestConversationToken = requestConversationToken,
@@ -750,6 +850,30 @@ class StudyChatViewModel : ViewModel() {
         )
       }
     )
+  }
+
+  private fun sendQuickFollowupQuestion(question: String) {
+    val current = _uiState.value
+    val span = resolveQuickFollowupSpan(current)
+    if (span == null) {
+      postToast("请先在回答段落上右滑并停留进入快捷追问")
+      return
+    }
+
+    enqueueSpanFollowupAndFetch(
+      span = span,
+      followupQuestion = question,
+      isVoice = false,
+      mode = "快捷追问",
+      clearInput = true,
+      keepQuickFollowupSpan = true,
+      parentDetailId = current.quickFollowupDetailId
+    )
+  }
+
+  private fun resolveQuickFollowupSpan(state: ChatUiState): SpanData? {
+    return findSpanById(state.messages, state.quickFollowupSpanId)
+      ?: findLatestAssistantSpan(state.messages)
   }
 
   private fun enqueueQuestionAndFetch(

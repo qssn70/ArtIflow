@@ -223,13 +223,13 @@ class ArkApiClient(
       val userContent = JSONArray()
         .put(
           JSONObject()
-            .put("type", "input_text")
-            .put("text", prompt)
+            .put("type", "input_image")
+            .put("image_url", dataUrl)
         )
         .put(
           JSONObject()
-            .put("type", "input_image")
-            .put("image_url", dataUrl)
+            .put("type", "input_text")
+            .put("text", prompt)
         )
 
       input.put(

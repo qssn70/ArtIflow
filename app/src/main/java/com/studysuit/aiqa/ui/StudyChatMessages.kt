@@ -71,7 +71,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
-internal fun UserBubble(message: ChatMessage.User) {
+internal fun UserBubble(
+  message: ChatMessage.User,
+  modifier: Modifier = Modifier
+) {
   val previewByteList = remember(message.imagePreviewList, message.imagePreviewBytes) {
     if (message.imagePreviewList.isNotEmpty()) {
       message.imagePreviewList
@@ -89,7 +92,7 @@ internal fun UserBubble(message: ChatMessage.User) {
   }
 
   Row(
-    modifier = Modifier.fillMaxWidth(),
+    modifier = modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.End
   ) {
     Surface(
@@ -193,12 +196,15 @@ internal fun AssistantBubble(
   processingSpanIds: Set<String>,
   onAutoExplain: (String) -> Unit,
   onVoiceFollowup: (String) -> Unit,
-  onOpenDetails: (String) -> Unit,
+  onRightSwipeOpenDetails: (String, String?) -> Unit,
+  onRightSwipeHoldFollowup: (String, String?) -> Unit,
+  onOpenDetails: (String, String?) -> Unit,
   onVoiceCaptureStart: (String) -> Unit,
-  onVoiceCaptureCancel: (String) -> Unit
+  onVoiceCaptureCancel: (String) -> Unit,
+  modifier: Modifier = Modifier
 ) {
   Row(
-    modifier = Modifier.fillMaxWidth(),
+    modifier = modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.Start
   ) {
     Surface(
@@ -214,13 +220,28 @@ internal fun AssistantBubble(
         verticalArrangement = Arrangement.spacedBy(6.dp)
       ) {
         message.spans.forEach { span ->
-          val historyCount = histories[span.id]?.size ?: 0
+          val history = histories[span.id].orEmpty()
+          val hasParentLinks = history.any { detail -> !detail.parentDetailId.isNullOrBlank() }
+          val historyCount = when {
+            span.detailId == null -> {
+              if (hasParentLinks) {
+                history.count { detail -> detail.parentDetailId.isNullOrBlank() }
+              } else {
+                history.size
+              }
+            }
+
+            hasParentLinks -> history.count { detail -> detail.parentDetailId == span.detailId }
+            else -> 0
+          }
           InteractiveSpanCard(
             span = span,
             historyCount = historyCount,
             isProcessing = processingSpanIds.contains(span.id),
             onAutoExplain = onAutoExplain,
             onVoiceFollowup = onVoiceFollowup,
+            onRightSwipeOpenDetails = onRightSwipeOpenDetails,
+            onRightSwipeHoldFollowup = onRightSwipeHoldFollowup,
             onOpenDetails = onOpenDetails,
             onVoiceCaptureStart = onVoiceCaptureStart,
             onVoiceCaptureCancel = onVoiceCaptureCancel
@@ -245,7 +266,9 @@ private fun InteractiveSpanCard(
   isProcessing: Boolean,
   onAutoExplain: (String) -> Unit,
   onVoiceFollowup: (String) -> Unit,
-  onOpenDetails: (String) -> Unit,
+  onRightSwipeOpenDetails: (String, String?) -> Unit,
+  onRightSwipeHoldFollowup: (String, String?) -> Unit,
+  onOpenDetails: (String, String?) -> Unit,
   onVoiceCaptureStart: (String) -> Unit,
   onVoiceCaptureCancel: (String) -> Unit
 ) {
@@ -254,12 +277,16 @@ private fun InteractiveSpanCard(
   var isDragging by remember(span.id) { mutableStateOf(false) }
   var recording by remember(span.id) { mutableStateOf(false) }
   var recordingCanceledInGesture by remember(span.id) { mutableStateOf(false) }
-  var holdJob by remember(span.id) { mutableStateOf<Job?>(null) }
+  var rightHoldTriggered by remember(span.id) { mutableStateOf(false) }
+  var voiceHoldJob by remember(span.id) { mutableStateOf<Job?>(null) }
+  var rightHoldJob by remember(span.id) { mutableStateOf<Job?>(null) }
   val scope = rememberCoroutineScope()
 
   val holdStartThreshold = -108f
   val holdCancelThreshold = -46f
   val recordingCancelThreshold = -58f
+  val openDetailsThreshold = 40f
+  val openQuickFollowupHoldDuration = 420L
   val processingPulse by rememberInfiniteTransition(label = "span_processing_transition").animateFloat(
     initialValue = 0f,
     targetValue = 1f,
@@ -281,8 +308,8 @@ private fun InteractiveSpanCard(
     state = rememberDraggableState { delta ->
       offsetX = (offsetX + delta).coerceIn(-220f, 170f)
 
-      if (offsetX <= holdStartThreshold && holdJob == null && !recording && !recordingCanceledInGesture) {
-        holdJob = scope.launch {
+      if (offsetX <= holdStartThreshold && voiceHoldJob == null && !recording && !recordingCanceledInGesture) {
+        voiceHoldJob = scope.launch {
           delay(620)
           recording = true
           onVoiceCaptureStart(span.id)
@@ -290,16 +317,40 @@ private fun InteractiveSpanCard(
       }
 
       if (offsetX > holdCancelThreshold && !recording) {
-        holdJob?.cancel()
-        holdJob = null
+        voiceHoldJob?.cancel()
+        voiceHoldJob = null
       }
 
       if (recording && offsetX > recordingCancelThreshold) {
         recording = false
         recordingCanceledInGesture = true
-        holdJob?.cancel()
-        holdJob = null
+        voiceHoldJob?.cancel()
+        voiceHoldJob = null
         onVoiceCaptureCancel(span.id)
+      }
+
+      if (!rightHoldTriggered && offsetX >= openDetailsThreshold && rightHoldJob == null) {
+        rightHoldJob = scope.launch {
+          delay(openQuickFollowupHoldDuration)
+          rightHoldTriggered = true
+          voiceHoldJob?.cancel()
+          voiceHoldJob = null
+          recording = false
+          recordingCanceledInGesture = false
+          onRightSwipeHoldFollowup(span.id, span.detailId)
+        }
+      }
+
+      if (offsetX < openDetailsThreshold && !rightHoldTriggered) {
+        rightHoldJob?.cancel()
+        rightHoldJob = null
+      }
+
+      if (rightHoldTriggered) {
+        voiceHoldJob?.cancel()
+        voiceHoldJob = null
+        recording = false
+        recordingCanceledInGesture = false
       }
     },
     orientation = Orientation.Horizontal,
@@ -307,25 +358,34 @@ private fun InteractiveSpanCard(
       isDragging = true
       recording = false
       recordingCanceledInGesture = false
-      holdJob?.cancel()
-      holdJob = null
+      rightHoldTriggered = false
+      voiceHoldJob?.cancel()
+      rightHoldJob?.cancel()
+      voiceHoldJob = null
+      rightHoldJob = null
     },
     onDragStopped = {
       val finalOffset = offsetX
       val shouldSendVoiceFollowup = recording
-      holdJob?.cancel()
-      holdJob = null
+      val didEnterQuickFollowup = rightHoldTriggered
+      voiceHoldJob?.cancel()
+      rightHoldJob?.cancel()
+      voiceHoldJob = null
+      rightHoldJob = null
       isDragging = false
       offsetX = 0f
       recording = false
       recordingCanceledInGesture = false
+      rightHoldTriggered = false
 
-      if (shouldSendVoiceFollowup) {
+      if (didEnterQuickFollowup) {
+        Unit
+      } else if (shouldSendVoiceFollowup) {
         onVoiceFollowup(span.id)
       } else if (finalOffset <= -132f) {
         onAutoExplain(span.id)
-      } else if (finalOffset >= 96f) {
-        onOpenDetails(span.id)
+      } else if (finalOffset >= openDetailsThreshold) {
+        onRightSwipeOpenDetails(span.id, span.detailId)
       }
     }
   )
@@ -366,7 +426,7 @@ private fun InteractiveSpanCard(
     if (historyCount > 0) {
       DetailDiamondBadge(
         count = historyCount,
-        onClick = { onOpenDetails(span.id) },
+        onClick = { onOpenDetails(span.id, span.detailId) },
         modifier = Modifier
           .align(Alignment.TopStart)
           .padding(start = 8.dp)
