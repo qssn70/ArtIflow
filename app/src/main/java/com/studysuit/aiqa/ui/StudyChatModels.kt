@@ -138,7 +138,10 @@ data class RuntimeSettings(
   val openSpeechResourceId: String,
   val openSpeechSubmitUrl: String,
   val openSpeechQueryUrl: String,
-  val openSpeechUid: String
+  val openSpeechUid: String,
+  val flowStudyServerUrl: String,
+  val flowStudyDeviceId: String,
+  val flowStudyDeviceToken: String
 ) {
   companion object {
     fun defaults(): RuntimeSettings {
@@ -153,7 +156,10 @@ data class RuntimeSettings(
         openSpeechResourceId = BuildConfig.OPENSPEECH_RESOURCE_ID,
         openSpeechSubmitUrl = BuildConfig.OPENSPEECH_SUBMIT_URL,
         openSpeechQueryUrl = BuildConfig.OPENSPEECH_QUERY_URL,
-        openSpeechUid = BuildConfig.OPENSPEECH_UID
+        openSpeechUid = BuildConfig.OPENSPEECH_UID,
+        flowStudyServerUrl = "",
+        flowStudyDeviceId = "",
+        flowStudyDeviceToken = ""
       )
     }
   }
@@ -261,7 +267,15 @@ data class SpanDetail(
   val time: String,
   val question: String? = null,
   val answer: String,
-  val parentDetailId: String? = null
+  val parentDetailId: String? = null,
+  val summary: String? = null
+)
+
+data class FollowupTreeScope(
+  val spanId: String,
+  val spanContent: String,
+  val sourceQuestion: String,
+  val details: List<SpanDetail>
 )
 
 enum class WorkspacePage {

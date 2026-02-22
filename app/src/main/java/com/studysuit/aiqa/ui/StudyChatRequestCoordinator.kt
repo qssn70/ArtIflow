@@ -56,11 +56,38 @@ internal class StudyChatRequestCoordinator(
     return arkApiClient.generateReply(requestMessages, config = settings.toArkRuntimeConfig())
   }
 
+  suspend fun replyForAutoExplainStream(
+    spanContent: String,
+    settings: RuntimeSettings,
+    onDelta: (String) -> Unit
+  ): Result<String> {
+    val requestMessages = listOf(
+      ArkRequestMessage(role = "user", text = buildAutoExplainPrompt(spanContent))
+    )
+    return arkApiClient.generateReplyStream(
+      messages = requestMessages,
+      config = settings.toArkRuntimeConfig(),
+      onDelta = onDelta
+    )
+  }
+
   suspend fun replyForConversation(
     messages: List<ChatMessage>,
     settings: RuntimeSettings
   ): Result<String> {
     return arkApiClient.generateReply(toArkMessages(messages), config = settings.toArkRuntimeConfig())
+  }
+
+  suspend fun replyForConversationStream(
+    messages: List<ChatMessage>,
+    settings: RuntimeSettings,
+    onDelta: (String) -> Unit
+  ): Result<String> {
+    return arkApiClient.generateReplyStream(
+      messages = toArkMessages(messages),
+      config = settings.toArkRuntimeConfig(),
+      onDelta = onDelta
+    )
   }
 
   suspend fun replyForSpanFollowup(
@@ -75,6 +102,25 @@ internal class StudyChatRequestCoordinator(
       details = details
     )
     return arkApiClient.generateReply(historyForRequest, config = settings.toArkRuntimeConfig())
+  }
+
+  suspend fun replyForSpanFollowupStream(
+    span: SpanData,
+    followupQuestion: String,
+    details: List<SpanDetail>,
+    settings: RuntimeSettings,
+    onDelta: (String) -> Unit
+  ): Result<String> {
+    val historyForRequest = toSpanFollowupMessages(
+      span = span,
+      followupQuestion = followupQuestion,
+      details = details
+    )
+    return arkApiClient.generateReplyStream(
+      messages = historyForRequest,
+      config = settings.toArkRuntimeConfig(),
+      onDelta = onDelta
+    )
   }
 
   fun canTranscribe(settings: RuntimeSettings): Boolean {

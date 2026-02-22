@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.studysuit.aiqa.data.ArkApiClient
+import com.studysuit.aiqa.data.FlowStudySyncClient
 import com.studysuit.aiqa.data.OpenSpeechAsrClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -27,6 +29,7 @@ class StudyChatViewModel : ViewModel() {
     arkApiClient = ArkApiClient(),
     openSpeechAsrClient = OpenSpeechAsrClient()
   )
+  private val flowStudySyncClient = FlowStudySyncClient()
   private var sessionStorage: SessionStorage? = null
   private val sessionRegistry = SessionRegistry()
 
@@ -44,6 +47,182 @@ class StudyChatViewModel : ViewModel() {
 
     sessionStorage = SessionStorage(context.applicationContext)
     restoreSessionsFromStorage()
+  }
+
+  fun pairFlowStudy(pairCode: String) {
+    val normalized = pairCode.trim()
+    if (normalized.isBlank()) {
+      updateUiState(persistSession = false) { current ->
+        current.copy(toastMessage = "配对码为空")
+      }
+      return
+    }
+
+    startRequest(toastMessage = "FlowStudy 配对中...") { current -> current }
+    viewModelScope.launch {
+      val state = _uiState.value
+      val settings = ensureFlowStudyDeviceId(state.settingsDraft)
+
+      val result = flowStudySyncClient.pairDevice(
+        serverUrl = settings.flowStudyServerUrl,
+        pairCode = normalized,
+        deviceId = settings.flowStudyDeviceId
+      )
+
+      result.fold(
+        onSuccess = { resp ->
+          val updated = settings.copy(flowStudyDeviceToken = resp.deviceToken)
+          updateUiState(persistSession = true) { current ->
+            current.copy(
+              settings = updated,
+              settingsDraft = updated,
+              toastMessage = "配对成功"
+            )
+          }
+        },
+        onFailure = { err ->
+          updateUiState(persistSession = false) { current ->
+            current.copy(toastMessage = "配对失败：${err.message ?: "未知错误"}")
+          }
+        }
+      )
+
+      finishRequest { current -> current.copy(toastMessage = current.toastMessage) }
+    }
+  }
+
+  fun pushSessionsToFlowStudy(recentLimit: Int? = null) {
+    startRequest(toastMessage = "上传会话中...") { current -> current }
+    viewModelScope.launch {
+      val store = sessionStorage
+      if (store == null) {
+        updateUiState(persistSession = false) { current ->
+          current.copy(toastMessage = "未初始化存储")
+        }
+        finishRequest()
+        return@launch
+      }
+
+      val current = _uiState.value
+      val settings = ensureFlowStudyDeviceId(current.settings)
+      if (settings.flowStudyServerUrl.isBlank()) {
+        updateUiState(persistSession = false) { state ->
+          state.copy(toastMessage = "FlowStudy 地址为空")
+        }
+        finishRequest()
+        return@launch
+      }
+      if (settings.flowStudyDeviceToken.isBlank()) {
+        updateUiState(persistSession = false) { state ->
+          state.copy(toastMessage = "请先配对获取设备 token")
+        }
+        finishRequest()
+        return@launch
+      }
+
+      val unifiedSessions = sessionRegistry.orderedSessions().map { session ->
+        if (session.ankiCards == current.ankiCards) {
+          session
+        } else {
+          session.copy(ankiCards = current.ankiCards)
+        }
+      }
+
+      val limitedSessions = if (recentLimit == null) {
+        unifiedSessions
+      } else {
+        val recent = unifiedSessions.take(recentLimit)
+        val activeId = current.activeSessionId
+        val active = unifiedSessions.firstOrNull { it.id == activeId }
+        if (active == null || recent.any { it.id == active.id }) {
+          recent
+        } else {
+          listOf(active) + recent
+        }
+      }
+
+      val payload = buildPersistedSessionsPayload(
+        state = current.copy(settings = settings, settingsDraft = settings),
+        sessions = limitedSessions
+      )
+
+      if (payload == null) {
+        updateUiState(persistSession = false) { state ->
+          state.copy(toastMessage = "没有可上传的会话")
+        }
+        finishRequest()
+        return@launch
+      }
+
+      val uploadSessions = payload.sessions
+      val batchSize = 1
+      val batches = uploadSessions.chunked(batchSize)
+      var insertedTotal = 0
+      var updatedTotal = 0
+      var skippedTotal = 0
+
+      for ((index, batchSessions) in batches.withIndex()) {
+        updateUiState(persistSession = false) { state ->
+          state.copy(toastMessage = "上传中 ${index + 1}/${batches.size}...")
+        }
+
+        val batchPayload = PersistedSessions(
+          activeSessionId = payload.activeSessionId,
+          settings = payload.settings,
+          sessions = batchSessions
+        )
+
+        val payloadJson = store.exportPayloadJson(batchPayload)
+        val result = flowStudySyncClient.pushSessions(
+          serverUrl = settings.flowStudyServerUrl,
+          deviceToken = settings.flowStudyDeviceToken,
+          deviceId = settings.flowStudyDeviceId,
+          payloadJson = payloadJson
+        )
+
+        val ok = result.getOrNull()
+        if (ok == null) {
+          val err = result.exceptionOrNull()
+          updateUiState(persistSession = false) { state ->
+            state.copy(toastMessage = "上传失败：${err?.message ?: "未知错误"}")
+          }
+          finishRequest()
+          return@launch
+        }
+
+        insertedTotal += ok.insertedSessions
+        updatedTotal += ok.updatedSessions
+        skippedTotal += ok.skippedSessions
+      }
+
+      updateUiState(persistSession = true) { state ->
+        state.copy(
+          settings = settings,
+          settingsDraft = settings,
+          toastMessage = "上传完成：+${insertedTotal} 更新${updatedTotal}"
+        )
+      }
+
+      finishRequest()
+    }
+  }
+
+  private fun ensureFlowStudyDeviceId(settings: RuntimeSettings): RuntimeSettings {
+    val existing = settings.flowStudyDeviceId.trim()
+    if (existing.isNotBlank()) {
+      return settings.copy(flowStudyDeviceId = existing)
+    }
+
+    val generated = "artiflow_${UUID.randomUUID()}"
+    val updated = settings.copy(flowStudyDeviceId = generated)
+    updateUiState(persistSession = true) { current ->
+      if (current.settingsDraft.flowStudyDeviceId.isNotBlank()) {
+        current
+      } else {
+        current.copy(settings = updated, settingsDraft = updated)
+      }
+    }
+    return updated
   }
 
   fun onInputChanged(value: String) {
@@ -134,7 +313,11 @@ class StudyChatViewModel : ViewModel() {
         handleRequestFailure(
           throwable = throwable,
           onError = { current, errorHint ->
-            current.copy(toastMessage = "$source 失败：$errorHint")
+            rollbackQueuedUserMessageState(
+              current = current,
+              messageId = userMessage.id,
+              toastMessage = "$source 失败：$errorHint"
+            )
           }
         )
       }
@@ -208,7 +391,9 @@ class StudyChatViewModel : ViewModel() {
           !current.isDueReviewMode &&
           current.focusedDeckName == null &&
           current.quickFollowupSpanId == targetSpanId &&
-          current.quickFollowupDetailId == normalizedDetailId
+          current.quickFollowupDetailId == normalizedDetailId &&
+          current.selectedSpanId == null &&
+          current.selectedDetailId == null
 
         if (shouldKeepCurrent) {
           current
@@ -217,6 +402,8 @@ class StudyChatViewModel : ViewModel() {
             activePage = WorkspacePage.QUICK_FOLLOWUP,
             quickFollowupSpanId = targetSpanId,
             quickFollowupDetailId = normalizedDetailId,
+            selectedSpanId = null,
+            selectedDetailId = null,
             isDueReviewMode = false,
             focusedDeckName = null,
             toastMessage = when {
@@ -568,31 +755,73 @@ class StudyChatViewModel : ViewModel() {
     val span = findSpanById(_uiState.value.messages, spanId) ?: return
     val requestConversationToken = conversationToken
     val settings = _uiState.value.settings
+    val detailId = nextDetailId()
+    val detailTime = currentDateTime()
+    val streamBuffer = StringBuilder()
+    val placeholderDetail = SpanDetail(
+      id = detailId,
+      mode = "自动讲解",
+      time = detailTime,
+      answer = "正在生成讲解...",
+      summary = "正在生成讲解..."
+    )
 
     startRequest(toastMessage = "正在生成该段讲解...") { current ->
-      markSpanProcessing(current, spanId)
+      val marked = markSpanProcessing(current, spanId)
+      upsertSpanDetailHistory(
+        current = marked,
+        spanId = spanId,
+        detail = placeholderDetail
+      )
     }
 
     launchTokenAwareRequest(
       requestConversationToken = requestConversationToken,
-      request = { requestCoordinator.replyForAutoExplain(spanContent = span.content, settings = settings) },
+      request = {
+        requestCoordinator.replyForAutoExplainStream(
+          spanContent = span.content,
+          settings = settings
+        ) { delta ->
+          if (isTokenStale(requestConversationToken, conversationToken) || delta.isBlank()) {
+            return@replyForAutoExplainStream
+          }
+
+          streamBuffer.append(delta)
+          val partialAnswer = streamBuffer.toString().trimStart()
+          val partialDetail = placeholderDetail.copy(
+            answer = partialAnswer.ifBlank { "正在生成讲解..." },
+            summary = buildDetailCardSummary(
+              question = null,
+              answer = partialAnswer.ifBlank { "正在生成讲解..." }
+            )
+          )
+          updateUiState(persistSession = false) { current ->
+            upsertSpanDetailHistory(
+              current = current,
+              spanId = spanId,
+              detail = partialDetail
+            )
+          }
+        }
+      },
       onStale = {
         finishRequest { current ->
-          clearSpanProcessing(current, spanId)
+          val withoutPlaceholder = removeSpanDetailHistory(current, spanId, detailId)
+          clearSpanProcessing(withoutPlaceholder, spanId)
         }
       },
       onSuccess = { reply ->
+        val resolvedReply = reply.ifBlank { streamBuffer.toString().trim() }
         finishRequest { current ->
-          val detail = SpanDetail(
-            id = nextDetailId(),
-            mode = "自动讲解",
-            time = currentDateTime(),
-            answer = reply
+          val detail = placeholderDetail.copy(
+            answer = resolvedReply,
+            summary = buildDetailCardSummary(question = null, answer = resolvedReply)
           )
-          appendSpanDetailHistory(
+          upsertSpanDetailHistory(
             current = current,
             spanId = spanId,
             detail = detail,
+            clearProcessing = true,
             toastMessage = "已生成该段讲解，右滑停留可进快捷追问"
           )
         }
@@ -602,15 +831,19 @@ class StudyChatViewModel : ViewModel() {
           mode = "自动讲解",
           spanContent = span.content,
           question = null,
-          answer = reply
+          answer = resolvedReply
         )
       },
       onFailure = { throwable ->
         handleRequestFailure(
           throwable = throwable,
-          onCancel = { current -> clearSpanProcessing(current, spanId) },
+          onCancel = { current ->
+            val withoutPlaceholder = removeSpanDetailHistory(current, spanId, detailId)
+            clearSpanProcessing(withoutPlaceholder, spanId)
+          },
           onError = { current, errorHint ->
-            clearSpanProcessing(current, spanId, toastMessage = "自动讲解失败：$errorHint")
+            val withoutPlaceholder = removeSpanDetailHistory(current, spanId, detailId)
+            clearSpanProcessing(withoutPlaceholder, spanId, toastMessage = "自动讲解失败：$errorHint")
           }
         )
       }
@@ -756,6 +989,10 @@ class StudyChatViewModel : ViewModel() {
 
     val requestConversationToken = conversationToken
     val settings = _uiState.value.settings
+    val detailsSnapshot = _uiState.value.histories[span.id].orEmpty()
+    val detailId = nextDetailId()
+    val detailTime = currentDateTime()
+    val streamBuffer = StringBuilder()
     val derivedParentDetailId = parentDetailId ?: run {
       val state = _uiState.value
       if (keepQuickFollowupSpan || state.activePage == WorkspacePage.QUICK_FOLLOWUP) {
@@ -769,6 +1006,19 @@ class StudyChatViewModel : ViewModel() {
         null
       }
     }
+    val placeholderDetail = SpanDetail(
+      id = detailId,
+      mode = mode,
+      time = detailTime,
+      question = normalizedQuestion,
+      answer = "正在生成追问回答...",
+      parentDetailId = derivedParentDetailId,
+      summary = buildDetailCardSummary(
+        question = normalizedQuestion,
+        answer = "正在生成追问回答..."
+      )
+    )
+
     startRequest(clearToast = true) { current ->
       val queued = queueSpanFollowupState(
         current = current,
@@ -777,48 +1027,71 @@ class StudyChatViewModel : ViewModel() {
         isVoice = isVoice,
         clearInput = clearInput
       )
+      val withPlaceholder = upsertSpanDetailHistory(
+        current = queued,
+        spanId = span.id,
+        detail = placeholderDetail
+      )
 
       if (keepQuickFollowupSpan || current.activePage == WorkspacePage.QUICK_FOLLOWUP) {
-        queued.copy(
+        withPlaceholder.copy(
           quickFollowupSpanId = span.id,
           quickFollowupDetailId = derivedParentDetailId
         )
       } else {
-        queued
+        withPlaceholder
       }
     }
-
-    val detailsSnapshot = _uiState.value.histories[span.id].orEmpty()
 
     launchTokenAwareRequest(
       requestConversationToken = requestConversationToken,
       request = {
-        requestCoordinator.replyForSpanFollowup(
+        requestCoordinator.replyForSpanFollowupStream(
           span = span,
           followupQuestion = normalizedQuestion,
           details = detailsSnapshot,
           settings = settings
-        )
+        ) { delta ->
+          if (isTokenStale(requestConversationToken, conversationToken) || delta.isBlank()) {
+            return@replyForSpanFollowupStream
+          }
+
+          streamBuffer.append(delta)
+          val partialAnswer = streamBuffer.toString().trimStart()
+          val partialDetail = placeholderDetail.copy(
+            answer = partialAnswer.ifBlank { "正在生成追问回答..." },
+            summary = buildDetailCardSummary(
+              question = normalizedQuestion,
+              answer = partialAnswer.ifBlank { "正在生成追问回答..." }
+            )
+          )
+          updateUiState(persistSession = false) { current ->
+            upsertSpanDetailHistory(
+              current = current,
+              spanId = span.id,
+              detail = partialDetail
+            )
+          }
+        }
       },
       onStale = {
         finishRequest { current ->
-          clearSpanProcessing(current, span.id)
+          val withoutPlaceholder = removeSpanDetailHistory(current, span.id, detailId)
+          clearSpanProcessing(withoutPlaceholder, span.id)
         }
       },
       onSuccess = { reply ->
+        val resolvedReply = reply.ifBlank { streamBuffer.toString().trim() }
         finishRequest { current ->
-          val detail = SpanDetail(
-            id = nextDetailId(),
-            mode = mode,
-            time = currentDateTime(),
-            question = normalizedQuestion,
-            answer = reply,
-            parentDetailId = derivedParentDetailId
+          val detail = placeholderDetail.copy(
+            answer = resolvedReply,
+            summary = buildDetailCardSummary(question = normalizedQuestion, answer = resolvedReply)
           )
-          val updated = appendSpanDetailHistory(
+          val updated = upsertSpanDetailHistory(
             current = current,
             spanId = span.id,
             detail = detail,
+            clearProcessing = true,
             toastMessage = "追问已保存，可继续右滑深入追问"
           )
 
@@ -837,15 +1110,19 @@ class StudyChatViewModel : ViewModel() {
           mode = mode,
           spanContent = span.content,
           question = normalizedQuestion,
-          answer = reply
+          answer = resolvedReply
         )
       },
       onFailure = { throwable ->
         handleRequestFailure(
           throwable = throwable,
-          onCancel = { current -> clearSpanProcessing(current, span.id) },
+          onCancel = { current ->
+            val withoutPlaceholder = removeSpanDetailHistory(current, span.id, detailId)
+            clearSpanProcessing(withoutPlaceholder, span.id)
+          },
           onError = { current, errorHint ->
-            clearSpanProcessing(current, span.id, toastMessage = "追问失败：$errorHint")
+            val withoutPlaceholder = removeSpanDetailHistory(current, span.id, detailId)
+            clearSpanProcessing(withoutPlaceholder, span.id, toastMessage = "追问失败：$errorHint")
           }
         )
       }
@@ -885,9 +1162,19 @@ class StudyChatViewModel : ViewModel() {
     val requestConversationToken = conversationToken
     val settings = _uiState.value.settings
     val userMessage = ChatMessage.User(id = nextMessageId(), time = currentTime(), text = question)
+    val assistantMessageId = nextMessageId()
+    val assistantMessageTime = currentTime()
+    val requestMessages = _uiState.value.messages + userMessage
+    val streamBuffer = StringBuilder()
+    val assistantPlaceholder = createAssistantMessage(
+      content = "正在生成回答...",
+      sourceQuestion = question,
+      messageId = assistantMessageId,
+      messageTime = assistantMessageTime
+    )
 
     startRequest(clearToast = true) { current ->
-      queueQuestionState(
+      val queued = queueQuestionState(
         current = current,
         userMessage = userMessage,
         question = question,
@@ -895,16 +1182,52 @@ class StudyChatViewModel : ViewModel() {
         isVoice = isVoice,
         clearInput = clearInput
       )
+      upsertAssistantMessageState(
+        current = queued,
+        assistantMessage = assistantPlaceholder
+      )
     }
-
-    val messagesSnapshot = _uiState.value.messages
 
     launchTokenAwareRequest(
       requestConversationToken = requestConversationToken,
-      request = { requestCoordinator.replyForConversation(messages = messagesSnapshot, settings = settings) },
+      request = {
+        requestCoordinator.replyForConversationStream(
+          messages = requestMessages,
+          settings = settings
+        ) { delta ->
+          if (isTokenStale(requestConversationToken, conversationToken)) {
+            return@replyForConversationStream
+          }
+
+          if (delta.isBlank()) {
+            return@replyForConversationStream
+          }
+
+          streamBuffer.append(delta)
+          val partial = streamBuffer.toString().trimStart()
+          val partialMessage = createAssistantMessage(
+            content = partial.ifBlank { "正在生成回答..." },
+            sourceQuestion = question,
+            messageId = assistantMessageId,
+            messageTime = assistantMessageTime
+          )
+          updateUiState(persistSession = false) { current ->
+            upsertAssistantMessageState(
+              current = current,
+              assistantMessage = partialMessage
+            )
+          }
+        }
+      },
       onStale = { finishRequest() },
       onSuccess = { reply ->
-        val assistantMessage = createAssistantMessage(reply, question)
+        val resolvedReply = reply.ifBlank { streamBuffer.toString().trim() }
+        val assistantMessage = createAssistantMessage(
+          content = resolvedReply,
+          sourceQuestion = question,
+          messageId = assistantMessageId,
+          messageTime = assistantMessageTime
+        )
 
         finishRequest { current ->
           appendAssistantMessageState(
@@ -918,7 +1241,16 @@ class StudyChatViewModel : ViewModel() {
         handleRequestFailure(
           throwable = throwable,
           onError = { current, errorHint ->
-            current.copy(toastMessage = "回答失败：$errorHint")
+            val rolledBackPlaceholder = rollbackQueuedUserMessageState(
+              current = current,
+              messageId = assistantMessageId
+            )
+            rollbackQueuedUserMessageState(
+              current = rolledBackPlaceholder,
+              messageId = userMessage.id,
+              restoredInput = question,
+              toastMessage = "回答失败：$errorHint（问题已保留，可重发）"
+            )
           }
         )
       }
@@ -1078,14 +1410,19 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
-  private fun createAssistantMessage(content: String, sourceQuestion: String): ChatMessage.Assistant {
+  private fun createAssistantMessage(
+    content: String,
+    sourceQuestion: String,
+    messageId: String = nextMessageId(),
+    messageTime: String = currentTime()
+  ): ChatMessage.Assistant {
     val spans = splitParagraphs(content).map { paragraph ->
       SpanData(id = nextSpanId(), content = paragraph, sourceQuestion = sourceQuestion)
     }
 
     return ChatMessage.Assistant(
-      id = nextMessageId(),
-      time = currentTime(),
+      id = messageId,
+      time = messageTime,
       spans = spans
     )
   }

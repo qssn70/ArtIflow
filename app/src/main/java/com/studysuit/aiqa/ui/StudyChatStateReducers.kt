@@ -59,8 +59,49 @@ internal fun appendAssistantMessageState(
   }
 
   return current.copy(
-    messages = current.messages + assistantMessage,
+    messages = upsertAssistantMessage(current.messages, assistantMessage),
     knowledgePoints = updatedKnowledge,
+    toastMessage = toastMessage
+  )
+}
+
+internal fun upsertAssistantMessageState(
+  current: ChatUiState,
+  assistantMessage: ChatMessage.Assistant
+): ChatUiState {
+  return current.copy(messages = upsertAssistantMessage(current.messages, assistantMessage))
+}
+
+private fun upsertAssistantMessage(
+  messages: List<ChatMessage>,
+  assistantMessage: ChatMessage.Assistant
+): List<ChatMessage> {
+  val index = messages.indexOfFirst { message -> message.id == assistantMessage.id }
+  if (index < 0) {
+    return messages + assistantMessage
+  }
+
+  return messages.toMutableList().also { mutable ->
+    mutable[index] = assistantMessage
+  }
+}
+
+internal fun rollbackQueuedUserMessageState(
+  current: ChatUiState,
+  messageId: String,
+  restoredInput: String? = null,
+  toastMessage: String? = null
+): ChatUiState {
+  val remainingMessages = current.messages.filterNot { message -> message.id == messageId }
+  val nextInput = if (restoredInput.isNullOrBlank() || current.input.isNotBlank()) {
+    current.input
+  } else {
+    restoredInput
+  }
+
+  return current.copy(
+    messages = remainingMessages,
+    input = nextInput,
     toastMessage = toastMessage
   )
 }

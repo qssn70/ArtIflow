@@ -2,6 +2,8 @@ package com.studysuit.aiqa.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.widget.Toast
@@ -13,25 +15,25 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountTree
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -51,6 +53,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -63,6 +66,19 @@ private data class ComposerImageDraft(
   val source: String,
   val bytes: ByteArray
 )
+
+private data class FollowupTreeExportDraft(
+  val fileName: String,
+  val content: String
+)
+
+private fun writeFollowupTreeExportToUri(context: Context, uri: Uri, content: String): Boolean {
+  return runCatching {
+    context.contentResolver.openOutputStream(uri)?.use { stream ->
+      stream.write(content.toByteArray(Charsets.UTF_8))
+    } != null
+  }.getOrDefault(false)
+}
 
 @Composable
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
@@ -77,8 +93,10 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   var pendingPermissionSpanId by remember { mutableStateOf<String?>(null) }
   var pendingCameraCapture by remember { mutableStateOf(false) }
   var isDeckArchiveOpen by remember { mutableStateOf(false) }
+  var isFollowupTreeOpen by remember { mutableStateOf(false) }
   var lastBackPressedAt by remember { mutableLongStateOf(0L) }
   var pendingImageDrafts by remember { mutableStateOf<List<ComposerImageDraft>>(emptyList()) }
+  var pendingFollowupTreeExport by remember { mutableStateOf<FollowupTreeExportDraft?>(null) }
 
   val appendPendingImage: (String, ByteArray) -> Unit = { source, imageBytes ->
     if (imageBytes.isEmpty()) {
@@ -126,6 +144,28 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       } else {
         appendPendingImage("相册搜题", imageBytes)
       }
+    }
+  }
+
+  val followupTreeExportLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.CreateDocument("text/markdown")
+  ) { uri ->
+    val exportDraft = pendingFollowupTreeExport
+    pendingFollowupTreeExport = null
+    if (exportDraft == null) {
+      return@rememberLauncherForActivityResult
+    }
+
+    if (uri == null) {
+      Toast.makeText(context, "已取消导出", Toast.LENGTH_SHORT).show()
+      return@rememberLauncherForActivityResult
+    }
+
+    val exported = writeFollowupTreeExportToUri(context, uri, exportDraft.content)
+    if (exported) {
+      Toast.makeText(context, "图谱已导出为文件", Toast.LENGTH_SHORT).show()
+    } else {
+      Toast.makeText(context, "导出失败，请重试", Toast.LENGTH_SHORT).show()
     }
   }
 
@@ -198,6 +238,26 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   }
   val quickFollowupHistoriesForUi = remember(quickFollowupSpan, quickFollowupHistoryForTree) {
     buildQuickFollowupHistories(quickFollowupSpan, quickFollowupHistoryForTree)
+  }
+  val followupTreeScopes = remember(uiState.messages, uiState.histories) {
+    buildFollowupTreeScopes(uiState.messages, uiState.histories)
+  }
+  val triggerFollowupTreeExport: () -> Unit = {
+    if (followupTreeScopes.isEmpty()) {
+      Toast.makeText(context, "暂无可导出的图谱", Toast.LENGTH_SHORT).show()
+    } else {
+      val exportDraft = FollowupTreeExportDraft(
+        fileName = buildFollowupTreeExportFileName(),
+        content = buildFollowupTreeExportMarkdown(followupTreeScopes)
+      )
+      pendingFollowupTreeExport = exportDraft
+      runCatching {
+        followupTreeExportLauncher.launch(exportDraft.fileName)
+      }.onFailure {
+        pendingFollowupTreeExport = null
+        Toast.makeText(context, "导出入口不可用", Toast.LENGTH_SHORT).show()
+      }
+    }
   }
   val quickFollowupMessages = remember(
     quickFollowupSpan,
@@ -277,7 +337,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     buildDeckPracticeSummary(deckName, deckCards, uiState.deckPracticeSelections)
   }
 
-  val hasModalDialog = uiState.isSettingsOpen || uiState.isSessionsOpen || selectedSpan != null
+  val hasModalDialog = uiState.isSettingsOpen || uiState.isSessionsOpen || selectedSpan != null || isFollowupTreeOpen
   val isChatLikePage = uiState.activePage == WorkspacePage.CHAT ||
     uiState.activePage == WorkspacePage.QUICK_FOLLOWUP
   BackHandler(enabled = !hasModalDialog) {
@@ -429,8 +489,8 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
         if (isChatLikePage) {
           HeaderBar(
             onNewChat = viewModel::startNewChat,
-            onOpenSettings = viewModel::openSettings,
             onOpenSessions = viewModel::openSessions,
+            onOpenFollowupTree = { isFollowupTreeOpen = true },
             title = if (uiState.activePage == WorkspacePage.QUICK_FOLLOWUP) {
               "StudySuit · 快捷追问"
             } else {
@@ -636,9 +696,13 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   if (uiState.isSettingsOpen) {
     SettingsDialog(
       settings = uiState.settingsDraft,
+      isFollowupTreeExportEnabled = followupTreeScopes.isNotEmpty(),
       onDismiss = viewModel::closeSettings,
       onSave = viewModel::saveSettings,
       onReset = viewModel::resetSettingsDraft,
+      onExportFollowupTree = triggerFollowupTreeExport,
+      onPairFlowStudy = viewModel::pairFlowStudy,
+      onPushSessionsToFlowStudy = viewModel::pushSessionsToFlowStudy,
       onSettingsChanged = viewModel::setSettingsDraft
     )
   }
@@ -650,6 +714,19 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       onDismiss = viewModel::closeSessions,
       onSelect = viewModel::switchSession,
       onDelete = viewModel::deleteSession
+    )
+  }
+
+  if (isFollowupTreeOpen) {
+    FollowupTreeDialog(
+      scopes = followupTreeScopes,
+      activeSpanId = uiState.quickFollowupSpanId,
+      activeDetailId = uiState.quickFollowupDetailId,
+      onDismiss = { isFollowupTreeOpen = false },
+      onOpenBranch = { spanId, detailId ->
+        isFollowupTreeOpen = false
+        viewModel.openQuickFollowup(spanId, detailId)
+      }
     )
   }
 
@@ -701,8 +778,8 @@ private fun ProfileHeaderBar(
 @Composable
 private fun HeaderBar(
   onNewChat: () -> Unit,
-  onOpenSettings: () -> Unit,
   onOpenSessions: () -> Unit,
+  onOpenFollowupTree: () -> Unit,
   title: String,
   subtitle: String
 ) {
@@ -711,23 +788,39 @@ private fun HeaderBar(
     horizontalArrangement = Arrangement.SpaceBetween,
     verticalAlignment = Alignment.CenterVertically
   ) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(
+      modifier = Modifier
+        .weight(1f)
+        .padding(end = 4.dp),
+      verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
       Text(
         text = title,
         style = MaterialTheme.typography.titleMedium,
         color = Color(0xFF235E4E),
-        fontWeight = FontWeight.Bold
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
       )
       Text(
         text = subtitle,
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF60756E),
-        maxLines = 1
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
       )
     }
 
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-      IconButton(onClick = onOpenSessions) {
+    Row(horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
+      IconButton(onClick = onOpenFollowupTree, modifier = Modifier.size(40.dp)) {
+        Icon(
+          imageVector = Icons.Rounded.AccountTree,
+          contentDescription = "追问图谱",
+          tint = Color(0xFF2C6756)
+        )
+      }
+
+      IconButton(onClick = onOpenSessions, modifier = Modifier.size(40.dp)) {
         Icon(
           imageVector = Icons.Rounded.History,
           contentDescription = "会话",
@@ -735,27 +828,25 @@ private fun HeaderBar(
         )
       }
 
-      IconButton(onClick = onOpenSettings) {
+      IconButton(onClick = onNewChat, modifier = Modifier.size(40.dp)) {
         Icon(
-          imageVector = Icons.Rounded.Settings,
-          contentDescription = "设置",
+          imageVector = Icons.Rounded.Add,
+          contentDescription = "新对话",
           tint = Color(0xFF2C6756)
         )
-      }
-
-      OutlinedButton(
-        onClick = onNewChat,
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-        modifier = Modifier.heightIn(min = 32.dp)
-      ) {
-        Text(text = "新对话", style = MaterialTheme.typography.labelSmall, maxLines = 1)
       }
     }
   }
 }
 
 private fun normalizeHistoryForTree(history: List<SpanDetail>): List<SpanDetail> {
-  return history
+  return history.map { detail ->
+    if (detail.summary.isNullOrBlank()) {
+      detail.copy(summary = buildDetailCardSummary(question = detail.question, answer = detail.answer))
+    } else {
+      detail
+    }
+  }
 }
 
 private fun buildQuickFollowupMessages(
@@ -836,6 +927,48 @@ private fun buildQuickFollowupHistories(
   }
 
   return mapOf(span.id to history)
+}
+
+private fun buildFollowupTreeScopes(
+  messages: List<ChatMessage>,
+  histories: Map<String, List<SpanDetail>>
+): List<FollowupTreeScope> {
+  if (histories.isEmpty()) {
+    return emptyList()
+  }
+
+  val spanById = LinkedHashMap<String, SpanData>()
+  messages.asReversed().forEach { message ->
+    if (message !is ChatMessage.Assistant) {
+      return@forEach
+    }
+    message.spans.asReversed().forEach { span ->
+      spanById.putIfAbsent(span.id, span)
+    }
+  }
+
+  val spanOrder = mutableListOf<String>()
+  spanById.keys.forEach { spanId ->
+    if (!histories[spanId].isNullOrEmpty()) {
+      spanOrder += spanId
+    }
+  }
+  histories.keys
+    .filter { spanId -> spanId !in spanById && !histories[spanId].isNullOrEmpty() }
+    .sorted()
+    .forEach { spanId -> spanOrder += spanId }
+
+  return spanOrder.map { spanId ->
+    val details = normalizeHistoryForTree(histories[spanId].orEmpty())
+    val span = spanById[spanId]
+    val fallbackSource = details.firstOrNull()?.question.orEmpty().ifBlank { "历史追问" }
+    FollowupTreeScope(
+      spanId = spanId,
+      spanContent = span?.content ?: details.firstOrNull()?.answer.orEmpty().ifBlank { "历史段落" },
+      sourceQuestion = span?.sourceQuestion ?: fallbackSource,
+      details = details
+    )
+  }
 }
 
 @Composable

@@ -57,6 +57,70 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun buildDetailCardSummary_mergesQuestionAndAnswerSnippet() {
+    val summary = buildDetailCardSummary(
+      question = "为什么这里要先配方再求顶点？",
+      answer = "先配方可以直接得到顶点式。```kotlin\nval x = 1\n```再根据顶点坐标判断最值。"
+    )
+
+    assertTrue(summary.startsWith("为什么这里要先配方再求顶点"))
+    assertTrue(summary.contains("先配方可以直接得到顶点式"))
+    assertFalse(summary.contains("```"))
+  }
+
+  @Test
+  fun buildFollowupTreeExportMarkdown_containsHierarchyAndFallbackSummary() {
+    val scopes = listOf(
+      FollowupTreeScope(
+        spanId = "span-1",
+        spanContent = "二次函数最值判断",
+        sourceQuestion = "这题怎么做",
+        details = listOf(
+          SpanDetail(
+            id = "detail-2",
+            mode = "快捷追问",
+            time = "10:02",
+            question = "那a<0时怎么办？",
+            answer = "当 a<0 时开口向下，所以最大值在顶点。",
+            parentDetailId = "detail-1"
+          ),
+          SpanDetail(
+            id = "detail-1",
+            mode = "自动讲解",
+            time = "10:01",
+            answer = "先配方得到顶点式，再读出最值。",
+            summary = "配方后看顶点"
+          )
+        )
+      )
+    )
+
+    val markdown = buildFollowupTreeExportMarkdown(scopes, exportedAtMillis = 0L)
+
+    assertTrue(markdown.contains("# 追问图谱导出"))
+    assertTrue(markdown.contains("段落ID：span-1"))
+    assertTrue(markdown.contains("追问节点数：2"))
+    assertTrue(markdown.contains("- 自动讲解 · 10:01"))
+    assertTrue(markdown.contains("- 快捷追问 · 10:02"))
+    assertTrue(markdown.contains("摘要：配方后看顶点"))
+    assertTrue(markdown.contains("父节点：detail-1"))
+  }
+
+  @Test
+  fun buildFollowupTreeExportMarkdown_returnsHintWhenNoScope() {
+    val markdown = buildFollowupTreeExportMarkdown(emptyList(), exportedAtMillis = 0L)
+
+    assertEquals("暂无追问图谱可导出。", markdown)
+  }
+
+  @Test
+  fun buildFollowupTreeExportFileName_usesTimestampPatternAndMarkdownSuffix() {
+    val fileName = buildFollowupTreeExportFileName(exportedAtMillis = 0L)
+
+    assertTrue(fileName.matches(Regex("追问图谱-\\d{8}-\\d{6}\\.md")))
+  }
+
+  @Test
   fun splitParagraphs_prefersBlankLineBlocks() {
     val content = "第一段\n\n第二段\n\n第三段"
 
@@ -532,6 +596,31 @@ class StudyChatViewModelSupportTest {
     assertEquals("done", appended.toastMessage)
     assertTrue(cleared.processingSpanIds.isEmpty())
     assertEquals("cleared", cleared.toastMessage)
+  }
+
+  @Test
+  fun upsertAndRemoveSpanDetailHistory_replaceAndDeleteById() {
+    val base = ChatUiState(
+      histories = mapOf(
+        "span-1" to listOf(
+          SpanDetail(id = "detail-1", mode = "自动讲解", time = "10:00", answer = "old")
+        )
+      )
+    )
+
+    val replaced = upsertSpanDetailHistory(
+      current = base,
+      spanId = "span-1",
+      detail = SpanDetail(id = "detail-1", mode = "自动讲解", time = "10:01", answer = "new")
+    )
+    val removed = removeSpanDetailHistory(
+      current = replaced,
+      spanId = "span-1",
+      detailId = "detail-1"
+    )
+
+    assertEquals("new", replaced.histories["span-1"]?.firstOrNull()?.answer)
+    assertTrue(removed.histories["span-1"].isNullOrEmpty())
   }
 
   @Test

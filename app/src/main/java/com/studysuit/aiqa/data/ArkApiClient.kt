@@ -8,6 +8,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -73,6 +74,57 @@ class ArkApiClient(
     }
   }
 
+  suspend fun generateReplyStream(
+    messages: List<ArkRequestMessage>,
+    config: ArkRuntimeConfig = ArkRuntimeConfig(),
+    onDelta: (String) -> Unit
+  ): Result<String> {
+    if (messages.isEmpty()) {
+      return Result.failure(IllegalArgumentException("消息列表为空"))
+    }
+
+    if (!isConfigured(config)) {
+      return Result.failure(IllegalStateException("请先在 local.properties 配置 ARK_API_KEY"))
+    }
+
+    return withContext(Dispatchers.IO) {
+      runCatching {
+        val endpoint = normalizedEndpoint(config)
+        val requestBody = buildRequestBody(
+          endpoint = endpoint,
+          messages = messages,
+          config = config,
+          stream = true
+        )
+        val request = Request.Builder()
+          .url(endpointUrl(endpoint, config))
+          .post(requestBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
+          .header("Authorization", "Bearer ${config.apiKey}")
+          .header("Content-Type", "application/json")
+          .build()
+
+        httpClient.newCall(request).execute().use { response ->
+          val body = response.body
+          if (!response.isSuccessful) {
+            val message = extractErrorMessage(body?.string().orEmpty())
+            throw IllegalStateException("ARK 请求失败 (${response.code}): $message")
+          }
+
+          if (body == null) {
+            throw IllegalStateException("ARK 流式返回为空，请稍后重试")
+          }
+
+          val text = parseAssistantTextStream(endpoint = endpoint, body = body, onDelta = onDelta)
+          if (text.isBlank()) {
+            throw IllegalStateException("ARK 返回为空，请稍后重试")
+          }
+
+          text
+        }
+      }
+    }
+  }
+
   suspend fun generateReplyWithImage(
     prompt: String,
     imageBytes: ByteArray,
@@ -131,7 +183,8 @@ class ArkApiClient(
   private fun buildRequestBody(
     endpoint: String,
     messages: List<ArkRequestMessage>,
-    config: ArkRuntimeConfig
+    config: ArkRuntimeConfig,
+    stream: Boolean = false
   ): String {
     val normalized = messages
       .mapNotNull { message ->
@@ -173,6 +226,7 @@ class ArkApiClient(
         .put("model", config.model)
         .put("input", inputArray)
         .put("temperature", 0.7)
+        .put("stream", stream)
         .toString()
     } else {
       val chatMessages = JSONArray()
@@ -188,6 +242,7 @@ class ArkApiClient(
         .put("model", config.model)
         .put("messages", chatMessages)
         .put("temperature", 0.7)
+        .put("stream", stream)
         .toString()
     }
   }
@@ -327,6 +382,98 @@ class ArkApiClient(
     return ""
   }
 
+  private fun parseAssistantTextStream(
+    endpoint: String,
+    body: ResponseBody,
+    onDelta: (String) -> Unit
+  ): String {
+    val aggregate = StringBuilder()
+    var fallbackText = ""
+
+    body.charStream().buffered().useLines { lines ->
+      lines.forEach { lineRaw ->
+        val line = lineRaw.trimEnd()
+        val payload = when {
+          line.startsWith("data:") -> line.removePrefix("data:").trimStart()
+          line.startsWith("event:") || line.startsWith(":") || line.isBlank() -> ""
+          else -> line
+        }
+
+        if (payload.isBlank() || payload == "[DONE]") {
+          return@forEach
+        }
+
+        val parsed = parseStreamPayload(endpoint = endpoint, payload = payload)
+        if (parsed.delta.isNotEmpty()) {
+          aggregate.append(parsed.delta)
+          onDelta(parsed.delta)
+        }
+
+        if (parsed.fallbackText.isNotBlank()) {
+          fallbackText = parsed.fallbackText
+        }
+      }
+    }
+
+    return aggregate.toString().ifBlank { fallbackText }
+  }
+
+  private data class StreamPayloadParseResult(
+    val delta: String,
+    val fallbackText: String
+  )
+
+  private fun parseStreamPayload(endpoint: String, payload: String): StreamPayloadParseResult {
+    val root = runCatching { JSONObject(payload) }.getOrNull()
+      ?: return StreamPayloadParseResult(delta = "", fallbackText = "")
+
+    return if (endpoint == RESPONSES_ENDPOINT) {
+      parseResponsesStreamPayload(root)
+    } else {
+      parseChatCompletionsStreamPayload(root)
+    }
+  }
+
+  private fun parseResponsesStreamPayload(root: JSONObject): StreamPayloadParseResult {
+    val type = root.optString("type")
+
+    val delta = when (type) {
+      "response.output_text.delta" -> root.optString("delta")
+      else -> ""
+    }
+
+    val responseObject = root.optJSONObject("response")
+    val fallback = when {
+      type == "response.output_text.done" -> root.optString("text")
+      type == "response.completed" -> root.optString("output_text")
+      responseObject?.optString("output_text").isNullOrBlank().not() -> responseObject?.optString("output_text").orEmpty()
+      else -> ""
+    }
+
+    return StreamPayloadParseResult(delta = delta, fallbackText = fallback)
+  }
+
+  private fun parseChatCompletionsStreamPayload(root: JSONObject): StreamPayloadParseResult {
+    val choices = root.optJSONArray("choices")
+    if (choices == null || choices.length() == 0) {
+      return StreamPayloadParseResult(delta = "", fallbackText = "")
+    }
+
+    val firstChoice = choices.optJSONObject(0)
+      ?: return StreamPayloadParseResult(delta = "", fallbackText = "")
+    val deltaObj = firstChoice.optJSONObject("delta")
+    val deltaValue = deltaObj?.opt("content")
+
+    val delta = when (deltaValue) {
+      is String -> deltaValue
+      is JSONArray -> deltaValue.extractTextFromContentArray()
+      else -> ""
+    }
+
+    val fallback = firstChoice.optString("text")
+    return StreamPayloadParseResult(delta = delta, fallbackText = fallback)
+  }
+
   private fun JSONArray.extractTextFromContentArray(): String {
     val chunks = mutableListOf<String>()
     for (index in 0 until length()) {
@@ -383,7 +530,7 @@ class ArkApiClient(
     private fun defaultHttpClient(): OkHttpClient {
       return OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
     }

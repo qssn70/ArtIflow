@@ -145,7 +145,10 @@ class StudyChatModelsTest {
       openSpeechResourceId = "resource",
       openSpeechSubmitUrl = "https://submit",
       openSpeechQueryUrl = "https://query",
-      openSpeechUid = "uid"
+      openSpeechUid = "uid",
+      flowStudyServerUrl = "",
+      flowStudyDeviceId = "",
+      flowStudyDeviceToken = ""
     )
 
     val config = settings.toArkRuntimeConfig()

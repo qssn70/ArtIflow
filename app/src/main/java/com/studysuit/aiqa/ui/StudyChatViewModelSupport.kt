@@ -3,6 +3,8 @@ package com.studysuit.aiqa.ui
 import com.studysuit.aiqa.data.ArkRequestMessage
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 private val fencedJsonRegex = Regex(
@@ -150,6 +152,167 @@ internal fun buildAutoExplainPrompt(spanContent: String): String {
     append("1) 用中文；2) 先1句结论；3) 再给2~3条关键点；4) 总字数尽量控制在120字内；5) 不要套话。")
     append("\n\n段落内容：")
     append(spanContent)
+  }
+}
+
+internal fun buildDetailCardSummary(question: String?, answer: String): String {
+  val questionSnippet = normalizeInlineText(question.orEmpty()).take(28)
+  val answerSnippet = extractAnswerSnippetForSummary(answer)
+
+  return when {
+    questionSnippet.isBlank() && answerSnippet.isBlank() -> "讲解摘要"
+    questionSnippet.isBlank() -> answerSnippet
+    answerSnippet.isBlank() -> questionSnippet
+    else -> "$questionSnippet · $answerSnippet"
+  }
+}
+
+private fun extractAnswerSnippetForSummary(answer: String): String {
+  val plainAnswer = answer
+    .replace(Regex("```[\\s\\S]*?```"), " ")
+    .replace(Regex("[#>*`_\\[\\]()|]"), " ")
+    .let(::normalizeInlineText)
+
+  if (plainAnswer.isBlank()) {
+    return ""
+  }
+
+  val firstSentence = Regex("[^。！？!?；;]{1,54}[。！？!?；;]?")
+    .find(plainAnswer)
+    ?.value
+    .orEmpty()
+    .trim()
+
+  return if (firstSentence.isNotBlank()) {
+    firstSentence.take(54)
+  } else {
+    plainAnswer.take(54)
+  }
+}
+
+private fun normalizeInlineText(text: String): String {
+  return text.replace(Regex("\\s+"), " ").trim()
+}
+
+internal fun buildFollowupTreeExportMarkdown(
+  scopes: List<FollowupTreeScope>,
+  exportedAtMillis: Long = System.currentTimeMillis()
+): String {
+  if (scopes.isEmpty()) {
+    return "暂无追问图谱可导出。"
+  }
+
+  val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.SIMPLIFIED_CHINESE)
+  val exportedAt = formatter.format(Date(exportedAtMillis))
+  val nodeCount = scopes.sumOf { scope -> scope.details.size }
+
+  return buildString {
+    append("# 追问图谱导出\n\n")
+    append("- 导出时间：").append(exportedAt).append('\n')
+    append("- 段落数：").append(scopes.size).append('\n')
+    append("- 追问节点数：").append(nodeCount).append('\n')
+
+    scopes.forEachIndexed { index, scope ->
+      val normalizedSpanContent = normalizeInlineText(scope.spanContent)
+      val normalizedSourceQuestion = normalizeInlineText(scope.sourceQuestion)
+      append("\n## 段落 ").append(index + 1).append('\n')
+      append("- 段落ID：").append(scope.spanId).append('\n')
+      append("- 段落内容：").append(normalizedSpanContent.ifBlank { "（空）" }).append('\n')
+      append("- 来源问题：").append(normalizedSourceQuestion.ifBlank { "（空）" }).append('\n')
+
+      if (scope.details.isEmpty()) {
+        append("- 追问节点：暂无\n")
+        return@forEachIndexed
+      }
+
+      append("- 追问节点：\n")
+      buildFollowupTreeExportEntries(scope.details).forEach { (depth, detail) ->
+        val indent = "  ".repeat(depth)
+        val summary = detail.summary
+          ?.trim()
+          ?.takeIf { summaryText -> summaryText.isNotEmpty() }
+          ?: buildDetailCardSummary(question = detail.question, answer = detail.answer)
+        append("  ").append(indent).append("- ")
+          .append(detail.mode)
+          .append(" · ")
+          .append(detail.time)
+          .append('\n')
+        append("  ").append(indent).append("  - 问题：")
+          .append(normalizeInlineText(detail.question.orEmpty()).ifBlank { "（无问题文本）" })
+          .append('\n')
+        append("  ").append(indent).append("  - 摘要：")
+          .append(normalizeInlineText(summary).ifBlank { "讲解摘要" })
+          .append('\n')
+        append("  ").append(indent).append("  - 回答预览：")
+          .append(buildFollowupTreeAnswerPreview(detail.answer))
+          .append('\n')
+        detail.parentDetailId?.takeIf { parentId -> parentId.isNotBlank() }?.let { parentId ->
+          append("  ").append(indent).append("  - 父节点：").append(parentId).append('\n')
+        }
+      }
+    }
+  }.trimEnd()
+}
+
+internal fun buildFollowupTreeExportFileName(exportedAtMillis: Long = System.currentTimeMillis()): String {
+  val formatter = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.SIMPLIFIED_CHINESE)
+  val timestamp = formatter.format(Date(exportedAtMillis))
+  return "追问图谱-$timestamp.md"
+}
+
+private fun buildFollowupTreeExportEntries(details: List<SpanDetail>): List<Pair<Int, SpanDetail>> {
+  if (details.isEmpty()) {
+    return emptyList()
+  }
+
+  val chronological = details.asReversed()
+  val allIds = chronological.map { detail -> detail.id }.toSet()
+  val childrenByParent = LinkedHashMap<String?, MutableList<SpanDetail>>()
+
+  chronological.forEach { detail ->
+    val normalizedParent = detail.parentDetailId?.takeIf { parentId -> parentId in allIds }
+    childrenByParent.getOrPut(normalizedParent) { mutableListOf() }.add(detail)
+  }
+
+  val flattened = mutableListOf<Pair<Int, SpanDetail>>()
+  val visited = mutableSetOf<String>()
+
+  fun appendNode(detail: SpanDetail, depth: Int, lineage: Set<String>) {
+    if (detail.id in lineage || !visited.add(detail.id)) {
+      return
+    }
+
+    flattened += depth to detail
+    val nextLineage = lineage + detail.id
+    childrenByParent[detail.id].orEmpty().forEach { child ->
+      appendNode(child, depth = depth + 1, lineage = nextLineage)
+    }
+  }
+
+  val roots = childrenByParent[null].orEmpty().ifEmpty { chronological }
+  roots.forEach { root ->
+    appendNode(root, depth = 0, lineage = emptySet())
+  }
+
+  chronological.forEach { detail ->
+    if (detail.id !in visited) {
+      appendNode(detail, depth = 0, lineage = emptySet())
+    }
+  }
+
+  return flattened
+}
+
+private fun buildFollowupTreeAnswerPreview(answer: String): String {
+  val normalized = normalizeInlineText(answer)
+  if (normalized.isBlank()) {
+    return "（无回答内容）"
+  }
+
+  return if (normalized.length <= 160) {
+    normalized
+  } else {
+    normalized.take(160) + "..."
   }
 }
 
@@ -575,6 +738,57 @@ internal fun appendSpanDetailHistory(
     processingSpanIds = current.processingSpanIds - spanId,
     toastMessage = toastMessage
   )
+}
+
+internal fun upsertSpanDetailHistory(
+  current: ChatUiState,
+  spanId: String,
+  detail: SpanDetail,
+  clearProcessing: Boolean = false,
+  toastMessage: String? = current.toastMessage
+): ChatUiState {
+  val updatedHistory = current.histories.toMutableMap()
+  val existing = current.histories[spanId].orEmpty()
+  val index = existing.indexOfFirst { item -> item.id == detail.id }
+  updatedHistory[spanId] = if (index >= 0) {
+    existing.toMutableList().also { mutable ->
+      mutable[index] = detail
+    }
+  } else {
+    listOf(detail) + existing
+  }
+
+  val nextProcessing = if (clearProcessing) {
+    current.processingSpanIds - spanId
+  } else {
+    current.processingSpanIds
+  }
+
+  return current.copy(
+    histories = updatedHistory,
+    processingSpanIds = nextProcessing,
+    toastMessage = toastMessage
+  )
+}
+
+internal fun removeSpanDetailHistory(
+  current: ChatUiState,
+  spanId: String,
+  detailId: String
+): ChatUiState {
+  val existing = current.histories[spanId].orEmpty()
+  if (existing.none { detail -> detail.id == detailId }) {
+    return current
+  }
+
+  val updatedHistory = current.histories.toMutableMap()
+  val remaining = existing.filterNot { detail -> detail.id == detailId }
+  if (remaining.isEmpty()) {
+    updatedHistory.remove(spanId)
+  } else {
+    updatedHistory[spanId] = remaining
+  }
+  return current.copy(histories = updatedHistory)
 }
 
 internal fun buildSessionSummaries(

@@ -31,21 +31,29 @@ internal data class PersistedSessions(
 internal class SessionStorage(private val context: Context) {
   private val storageFile = File(context.filesDir, "study_suit_sessions_v1.json")
 
+  fun exportPayloadJson(payload: PersistedSessions): String {
+    return buildRootJson(payload).toString()
+  }
+
   fun save(payload: PersistedSessions) {
     runCatching {
-      val root = JSONObject()
-        .put("version", 1)
-        .put("activeSessionId", payload.activeSessionId)
-        .put("settings", payload.settings.toJson())
-        .put("sessions", JSONArray().apply {
-          payload.sessions.forEach { session ->
-            put(session.toJson())
-          }
-        })
+      val root = buildRootJson(payload)
 
       storageFile.parentFile?.mkdirs()
       storageFile.writeText(root.toString(), Charsets.UTF_8)
     }
+  }
+
+  private fun buildRootJson(payload: PersistedSessions): JSONObject {
+    return JSONObject()
+      .put("version", 1)
+      .put("activeSessionId", payload.activeSessionId)
+      .put("settings", payload.settings.toJson())
+      .put("sessions", JSONArray().apply {
+        payload.sessions.forEach { session ->
+          put(session.toJson())
+        }
+      })
   }
 
   fun load(): PersistedSessions? {
@@ -94,6 +102,9 @@ private fun RuntimeSettings.toJson(): JSONObject {
     .put("openSpeechSubmitUrl", openSpeechSubmitUrl)
     .put("openSpeechQueryUrl", openSpeechQueryUrl)
     .put("openSpeechUid", openSpeechUid)
+    .put("flowStudyServerUrl", flowStudyServerUrl)
+    .put("flowStudyDeviceId", flowStudyDeviceId)
+    .put("flowStudyDeviceToken", flowStudyDeviceToken)
 }
 
 private fun JSONObject.toRuntimeSettings(): RuntimeSettings {
@@ -115,7 +126,10 @@ private fun JSONObject.toRuntimeSettings(): RuntimeSettings {
     openSpeechResourceId = optString("openSpeechResourceId", defaults.openSpeechResourceId),
     openSpeechSubmitUrl = optString("openSpeechSubmitUrl", defaults.openSpeechSubmitUrl),
     openSpeechQueryUrl = optString("openSpeechQueryUrl", defaults.openSpeechQueryUrl),
-    openSpeechUid = optString("openSpeechUid", defaults.openSpeechUid)
+    openSpeechUid = optString("openSpeechUid", defaults.openSpeechUid),
+    flowStudyServerUrl = optString("flowStudyServerUrl", defaults.flowStudyServerUrl),
+    flowStudyDeviceId = optString("flowStudyDeviceId", defaults.flowStudyDeviceId),
+    flowStudyDeviceToken = optString("flowStudyDeviceToken", defaults.flowStudyDeviceToken)
   )
 }
 
@@ -342,6 +356,7 @@ private fun Map<String, List<SpanDetail>>.toJson(): JSONObject {
                 .put("question", detail.question ?: JSONObject.NULL)
                 .put("answer", detail.answer)
                 .put("parentDetailId", detail.parentDetailId ?: JSONObject.NULL)
+                .put("summary", detail.summary ?: JSONObject.NULL)
             )
           }
         }
@@ -366,7 +381,8 @@ private fun JSONObject.toHistories(): Map<String, List<SpanDetail>> {
             time = detailObj.optString("time"),
             question = detailObj.optString("question").takeIf { it.isNotBlank() && it != "null" },
             answer = detailObj.optString("answer"),
-            parentDetailId = detailObj.optString("parentDetailId").takeIf { it.isNotBlank() && it != "null" }
+            parentDetailId = detailObj.optString("parentDetailId").takeIf { it.isNotBlank() && it != "null" },
+            summary = detailObj.optString("summary").takeIf { it.isNotBlank() && it != "null" }
           )
         )
       }
