@@ -174,42 +174,7 @@ class OpenSpeechAsrClient(
   }
 
   private fun parseTranscript(body: String): String {
-    if (body.isBlank()) {
-      return ""
-    }
-
-    return runCatching {
-      val root = JSONObject(body)
-      val result = root.optJSONObject("result")
-      if (result != null) {
-        val text = result.optString("text")
-        if (text.isNotBlank()) {
-          return@runCatching text.trim()
-        }
-
-        val utterances = result.optJSONArray("utterances")
-        if (utterances != null && utterances.length() > 0) {
-          buildString {
-            for (index in 0 until utterances.length()) {
-              val item = utterances.optJSONObject(index) ?: continue
-              val segment = item.optString("text").trim()
-              if (segment.isNotBlank()) {
-                if (isNotEmpty()) {
-                  append('\n')
-                }
-                append(segment)
-              }
-            }
-          }
-        } else {
-          ""
-        }
-      } else {
-        ""
-      }
-    }.getOrElse {
-      ""
-    }
+    return parseOpenSpeechTranscript(body)
   }
 
   companion object {
@@ -233,3 +198,42 @@ private data class QueryResult(
   val message: String,
   val transcript: String
 )
+
+internal fun parseOpenSpeechTranscript(body: String): String {
+  if (body.isBlank()) {
+    return ""
+  }
+
+  return runCatching {
+    val root = JSONObject(body)
+    val result = root.optJSONObject("result")
+    if (result != null) {
+      val text = result.optString("text")
+      if (text.isNotBlank()) {
+        return@runCatching text.trim()
+      }
+
+      val utterances = result.optJSONArray("utterances")
+      if (utterances != null && utterances.length() > 0) {
+        buildString {
+          for (index in 0 until utterances.length()) {
+            val item = utterances.optJSONObject(index) ?: continue
+            val segment = item.optString("text").trim()
+            if (segment.isNotBlank()) {
+              if (isNotEmpty()) {
+                append('\n')
+              }
+              append(segment)
+            }
+          }
+        }
+      } else {
+        ""
+      }
+    } else {
+      ""
+    }
+  }.getOrElse {
+    ""
+  }
+}

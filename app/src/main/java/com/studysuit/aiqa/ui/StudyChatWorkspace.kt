@@ -1,7 +1,9 @@
 package com.studysuit.aiqa.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -395,9 +397,211 @@ private fun MasteryActionButton(
 }
 
 @Composable
+internal fun QuestionArchiveWorkspace(
+  savedQuestions: List<SavedQuestion>,
+  onSwitchToChat: () -> Unit,
+  onRestoreQuestion: (String) -> Unit,
+  onRemoveQuestion: (String) -> Unit
+) {
+  Column(
+    modifier = Modifier
+      .fillMaxSize()
+      .padding(top = 4.dp),
+    verticalArrangement = Arrangement.spacedBy(10.dp)
+  ) {
+    if (savedQuestions.isEmpty()) {
+      Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Text(
+          text = "还没有收藏题目。可以在主聊天里点回复底栏的小星标，把整题收藏到这里。",
+          style = MaterialTheme.typography.bodySmall,
+          color = Color(0xFF5D7069)
+        )
+        OutlinedButton(onClick = onSwitchToChat) {
+          Text(text = "回到聊天去收藏")
+        }
+      }
+    } else {
+      Text(
+        text = "已归档 ${savedQuestions.size} 题 · 点卡片可展开完整答案",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF5E746D)
+      )
+      savedQuestions.forEach { saved ->
+        SavedQuestionCard(
+          saved = saved,
+          onRestoreQuestion = { onRestoreQuestion(saved.id) },
+          onRemoveQuestion = { onRemoveQuestion(saved.id) }
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun SavedQuestionCard(
+  saved: SavedQuestion,
+  onRestoreQuestion: () -> Unit,
+  onRemoveQuestion: () -> Unit
+) {
+  var expanded by remember(saved.id) { mutableStateOf(false) }
+
+  Surface(
+    color = Color(0xFFFBFEFC),
+    shape = RoundedCornerShape(14.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .border(1.dp, Color(0x173B5D52), RoundedCornerShape(14.dp))
+      .clickable { expanded = !expanded }
+  ) {
+    Column(
+      modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+      Text(
+        text = saved.question,
+        style = MaterialTheme.typography.labelMedium,
+        color = Color(0xFF295C4D),
+        maxLines = if (expanded) 4 else 2,
+        overflow = TextOverflow.Ellipsis
+      )
+      Text(
+        text = "原回复 ${saved.sourceTime} · 收藏于 ${formatSessionTime(saved.savedAt)}" +
+          if (saved.followupCount > 0) " · 追问 ${saved.followupCount} 条" else "",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF617771)
+      )
+      if (saved.knowledgeTags.isNotEmpty()) {
+        Text(
+          text = "标签：${saved.knowledgeTags.joinToString(separator = " · ")}",
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF60756E),
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+      Text(
+        text = buildSavedQuestionPreview(saved.answer),
+        style = MaterialTheme.typography.bodySmall,
+        color = Color(0xFF455C55),
+        maxLines = if (expanded) 6 else 2,
+        overflow = TextOverflow.Ellipsis
+      )
+      if (expanded) {
+        MarkdownBodyText(markdown = saved.answer, modifier = Modifier.fillMaxWidth())
+      }
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        TextButton(onClick = onRestoreQuestion) {
+          Text(text = "回填提问")
+        }
+        TextButton(onClick = onRemoveQuestion) {
+          Text(text = "取消收藏", color = Color(0xFF8E4D4D))
+        }
+      }
+    }
+  }
+}
+
+@Composable
+internal fun WorkspaceJumpDialog(
+  activePage: WorkspacePage,
+  onDismiss: () -> Unit,
+  onSwitch: (WorkspacePage) -> Unit
+) {
+  val pages = listOf(
+    WorkspacePage.CHAT,
+    WorkspacePage.QUICK_FOLLOWUP,
+    WorkspacePage.ARCHIVE,
+    WorkspacePage.ANKI,
+    WorkspacePage.PROFILE
+  )
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    containerColor = Color(0xFFF6FBF7),
+    shape = RoundedCornerShape(18.dp),
+    title = {
+      Text(
+        text = "快速跳转",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF255E4D)
+      )
+    },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        pages.forEach { page ->
+          val selected = page == activePage
+          Surface(
+            color = if (selected) Color(0xFFEAF5F0) else Color(0xFFFBFEFC),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .border(1.dp, if (selected) Color(0x332F6F5D) else Color(0x1433564B), RoundedCornerShape(12.dp))
+              .clickable {
+                onSwitch(page)
+                onDismiss()
+              }
+          ) {
+            Column(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+              verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+              Text(
+                text = workspacePageTitle(page),
+                style = MaterialTheme.typography.labelMedium,
+                color = if (selected) Color(0xFF2C6756) else Color(0xFF36574D)
+              )
+              Text(
+                text = workspacePageSummary(page),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF667B74)
+              )
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = onDismiss) {
+        Text(text = "关闭", color = Color(0xFF4A665C))
+      }
+    }
+  )
+}
+
+private fun workspacePageTitle(page: WorkspacePage): String {
+  return when (page) {
+    WorkspacePage.CHAT -> "AI学习问答"
+    WorkspacePage.QUICK_FOLLOWUP -> "精细追问"
+    WorkspacePage.ARCHIVE -> "题目归档"
+    WorkspacePage.ANKI -> "Anki 练习"
+    WorkspacePage.PROFILE -> "用户中心"
+  }
+}
+
+private fun workspacePageSummary(page: WorkspacePage): String {
+  return when (page) {
+    WorkspacePage.CHAT -> "主会话做新题，各题上下文互不共享"
+    WorkspacePage.QUICK_FOLLOWUP -> "只围绕当前题目继续深挖"
+    WorkspacePage.ARCHIVE -> "查看已收藏的题目与答案归档"
+    WorkspacePage.ANKI -> "自动制卡、待复习与卡组练习"
+    WorkspacePage.PROFILE -> "学习画像、薄弱点与模型入口"
+  }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 internal fun WorkspaceSwipeStrip(
   activePage: WorkspacePage,
-  onSwitch: (WorkspacePage) -> Unit
+  onSwitch: (WorkspacePage) -> Unit,
+  onOpenJumpPanel: () -> Unit
 ) {
   var dragOffset by remember { mutableFloatStateOf(0f) }
   val threshold = 68f
@@ -409,6 +613,10 @@ internal fun WorkspaceSwipeStrip(
       .fillMaxWidth()
       .heightIn(min = 28.dp, max = 28.dp)
       .border(1.dp, Color(0x153A5A4F), RoundedCornerShape(999.dp))
+      .combinedClickable(
+        onClick = onOpenJumpPanel,
+        onLongClick = onOpenJumpPanel
+      )
       .draggable(
         orientation = Orientation.Horizontal,
         state = rememberDraggableState { delta ->
@@ -443,6 +651,13 @@ internal fun WorkspaceSwipeStrip(
                 dragOffset >= threshold -> onSwitch(WorkspacePage.ANKI)
               }
             }
+
+            WorkspacePage.ARCHIVE -> {
+              when {
+                dragOffset <= -threshold -> onSwitch(WorkspacePage.CHAT)
+                dragOffset >= threshold -> onSwitch(WorkspacePage.PROFILE)
+              }
+            }
           }
           dragOffset = 0f
         }
@@ -451,10 +666,11 @@ internal fun WorkspaceSwipeStrip(
     Box(contentAlignment = Alignment.Center) {
       Text(
         text = when (activePage) {
-          WorkspacePage.CHAT -> "左滑到 Anki · 右滑到快捷追问"
-          WorkspacePage.QUICK_FOLLOWUP -> "左滑到聊天 · 右滑到用户中心"
-          WorkspacePage.ANKI -> "左滑到用户中心 · 右滑到聊天"
-          WorkspacePage.PROFILE -> "左滑到快捷追问 · 右滑到 Anki"
+          WorkspacePage.CHAT -> "左滑到 Anki · 右滑到精细追问 · 点按快切"
+          WorkspacePage.QUICK_FOLLOWUP -> "左滑到聊天 · 右滑到用户中心 · 点按快切"
+          WorkspacePage.ARCHIVE -> "左滑到聊天 · 右滑到用户中心 · 点按快切"
+          WorkspacePage.ANKI -> "左滑到用户中心 · 右滑到聊天 · 点按快切"
+          WorkspacePage.PROFILE -> "左滑到精细追问 · 右滑到 Anki · 点按快切"
         },
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF5A7169)

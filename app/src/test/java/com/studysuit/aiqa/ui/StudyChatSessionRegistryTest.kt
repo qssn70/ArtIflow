@@ -49,17 +49,6 @@ class StudyChatSessionRegistryTest {
   }
 
   @Test
-  fun summaries_are_sorted_descending_by_update_time() {
-    val registry = SessionRegistry()
-    registry.put(buildSession("a", updatedAt = 100L), moveToFront = false)
-    registry.put(buildSession("b", updatedAt = 200L), moveToFront = false)
-
-    val summaries = registry.summaries()
-
-    assertEquals(listOf("b", "a"), summaries.map { summary -> summary.id })
-  }
-
-  @Test
   fun createdAtOf_returnsValueForExistingSession() {
     val registry = SessionRegistry()
     registry.put(buildSession("a", updatedAt = 100L), moveToFront = false)

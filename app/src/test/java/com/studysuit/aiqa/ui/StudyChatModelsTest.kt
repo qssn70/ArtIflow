@@ -43,6 +43,23 @@ class StudyChatModelsTest {
   }
 
   @Test
+  fun findSpanById_returnsMainSpanWhenRequested() {
+    val messages = listOf(
+      ChatMessage.Assistant(
+        id = "msg-2",
+        time = "10:01",
+        spans = listOf(SpanData(id = "span-1", content = "第一段", sourceQuestion = "q1")),
+        mainSpan = SpanData(id = "span-main", content = "整题回答", sourceQuestion = "q1")
+      )
+    )
+
+    val found = findSpanById(messages, "span-main")
+
+    assertEquals("span-main", found?.id)
+    assertEquals("整题回答", found?.content)
+  }
+
+  @Test
   fun findLatestAssistantSpan_returnsLastSpanFromLatestAssistantMessage() {
     val messages = listOf(
       ChatMessage.Assistant(
@@ -69,10 +86,31 @@ class StudyChatModelsTest {
   }
 
   @Test
+  fun findLatestAssistantQuestionSpan_prefersMainSpanOfLatestAssistantMessage() {
+    val messages = listOf(
+      ChatMessage.Assistant(
+        id = "msg-1",
+        time = "10:00",
+        spans = listOf(SpanData(id = "span-1", content = "第一段", sourceQuestion = "q1"))
+      ),
+      ChatMessage.Assistant(
+        id = "msg-2",
+        time = "10:02",
+        spans = listOf(SpanData(id = "span-2", content = "第二段", sourceQuestion = "q2")),
+        mainSpan = SpanData(id = "span-main-2", content = "第二题整题回答", sourceQuestion = "q2")
+      )
+    )
+
+    val latest = findLatestAssistantQuestionSpan(messages)
+
+    assertEquals("span-main-2", latest?.id)
+  }
+
+  @Test
   fun findDetailById_returnsMatchingDetail() {
     val details = listOf(
       SpanDetail(id = "detail-1", mode = "自动讲解", time = "10:00", answer = "a1"),
-      SpanDetail(id = "detail-2", mode = "快捷追问", time = "10:01", question = "q2", answer = "a2")
+      SpanDetail(id = "detail-2", mode = "精细追问", time = "10:01", question = "q2", answer = "a2")
     )
 
     val found = findDetailById(details, "detail-2")
@@ -84,8 +122,8 @@ class StudyChatModelsTest {
   @Test
   fun buildDetailPath_returnsRootToTargetPath() {
     val details = listOf(
-      SpanDetail(id = "detail-3", mode = "快捷追问", time = "10:02", question = "q3", answer = "a3", parentDetailId = "detail-2"),
-      SpanDetail(id = "detail-2", mode = "快捷追问", time = "10:01", question = "q2", answer = "a2", parentDetailId = "detail-1"),
+      SpanDetail(id = "detail-3", mode = "精细追问", time = "10:02", question = "q3", answer = "a3", parentDetailId = "detail-2"),
+      SpanDetail(id = "detail-2", mode = "精细追问", time = "10:01", question = "q2", answer = "a2", parentDetailId = "detail-1"),
       SpanDetail(id = "detail-1", mode = "自动讲解", time = "10:00", answer = "a1")
     )
 
@@ -155,5 +193,41 @@ class StudyChatModelsTest {
 
     assertEquals("key", config.apiKey)
     assertTrue(config.systemPrompt.contains("先给结论"))
+  }
+
+  @Test
+  fun saveCurrentModelPreset_storesAndReappliesCustomModel() {
+    val base = RuntimeSettings.defaults().copy(
+      customModelBaseUrl = "https://api.openai.com/v1",
+      customModelApiKey = "secret-key",
+      customModelName = "gpt-4o-mini"
+    )
+
+    val saved = base.saveCurrentModelPreset("OpenAI 日常")
+    val preset = saved.customModelPresets.first()
+    val restored = saved.clearCustomModel().applyModelPreset(preset)
+
+    assertEquals(1, saved.customModelPresets.size)
+    assertTrue(saved.hasCompleteCustomModel())
+    assertEquals("OpenAI 日常", preset.name)
+    assertEquals("https://api.openai.com/v1", restored.customModelBaseUrl)
+    assertEquals("secret-key", restored.customModelApiKey)
+    assertEquals("gpt-4o-mini", restored.customModelName)
+  }
+
+  @Test
+  fun toArkRuntimeConfig_prefersCustomModelWhenThreeFieldsProvided() {
+    val settings = RuntimeSettings.defaults().copy(
+      customModelBaseUrl = "https://api.openai.com/v1",
+      customModelApiKey = "custom-key",
+      customModelName = "gpt-4o-mini"
+    )
+
+    val config = settings.toArkRuntimeConfig()
+
+    assertEquals("custom-key", config.apiKey)
+    assertEquals("gpt-4o-mini", config.model)
+    assertEquals("https://api.openai.com/v1", config.baseUrl)
+    assertEquals("chat/completions", config.endpoint)
   }
 }

@@ -9,6 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import kotlinx.coroutines.CancellationException
+import java.net.SocketTimeoutException
 
 class StudyChatViewModelSupportTest {
 
@@ -41,19 +42,74 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun toArkMessages_prefersMainSpanAsAssistantQuestionScopeText() {
+    val messages = listOf(
+      ChatMessage.User(id = "msg-1", time = "10:00", text = "题目"),
+      ChatMessage.Assistant(
+        id = "msg-2",
+        time = "10:01",
+        spans = listOf(
+          SpanData(id = "span-1", content = "第一段", sourceQuestion = "题目"),
+          SpanData(id = "span-2", content = "第二段", sourceQuestion = "题目")
+        ),
+        mainSpan = SpanData(id = "span-main", content = "整题统一回答", sourceQuestion = "题目")
+      )
+    )
+
+    val requestMessages = toArkMessages(messages)
+
+    assertEquals(2, requestMessages.size)
+    assertEquals("整题统一回答", requestMessages[1].text)
+  }
+
+  @Test
   fun toSpanFollowupMessages_containsContextHistoryAndFollowup() {
-    val span = SpanData(id = "span-1", content = "这是段落", sourceQuestion = "q")
+    val span = SpanData(id = "span-1", content = "这是段落", sourceQuestion = "完整题目")
+    val sourceAnswer = ChatMessage.Assistant(
+      id = "msg-2",
+      time = "10:01",
+      spans = listOf(
+        span,
+        SpanData(id = "span-2", content = "补充说明", sourceQuestion = "完整题目")
+      )
+    )
+    val conversation = listOf(
+      ChatMessage.User(id = "msg-1", time = "10:00", text = "完整题目"),
+      sourceAnswer
+    )
     val details = listOf(
       SpanDetail(id = "detail-1", mode = "自动讲解", time = "10:00", question = "q1", answer = "a1"),
       SpanDetail(id = "detail-2", mode = "自动讲解", time = "10:01", question = "q2", answer = "a2")
     )
 
-    val messages = toSpanFollowupMessages(span, "新的追问", details)
+    val messages = toSpanFollowupMessages(span, "新的追问", details, conversation)
 
+    assertTrue(messages.first().text.contains("题目：完整题目"))
+    assertTrue(messages.first().text.contains("该题完整回答：这是段落"))
+    assertTrue(messages.first().text.contains("补充说明"))
     assertTrue(messages.first().text.contains("这是段落"))
+    assertFalse(messages.first().text.contains("只讨论这一段"))
     assertEquals("新的追问", messages.last().text)
     assertTrue(messages.any { message -> message.text == "q1" })
     assertTrue(messages.any { message -> message.text == "a2" })
+  }
+
+  @Test
+  fun toSpanFollowupMessages_usesSourceUserQuestionWhenSpanQuestionBlank() {
+    val span = SpanData(id = "span-1", content = "这是段落", sourceQuestion = "   ")
+    val conversation = listOf(
+      ChatMessage.User(id = "msg-1", time = "10:00", text = "原题：求二次函数的最值"),
+      ChatMessage.Assistant(
+        id = "msg-2",
+        time = "10:01",
+        spans = listOf(span)
+      )
+    )
+
+    val messages = toSpanFollowupMessages(span, "继续追问", details = emptyList(), messages = conversation)
+
+    assertTrue(messages.first().text.contains("题目：原题：求二次函数的最值"))
+    assertFalse(messages.first().text.contains("原题缺失"))
   }
 
   @Test
@@ -78,7 +134,7 @@ class StudyChatViewModelSupportTest {
         details = listOf(
           SpanDetail(
             id = "detail-2",
-            mode = "快捷追问",
+            mode = "精细追问",
             time = "10:02",
             question = "那a<0时怎么办？",
             answer = "当 a<0 时开口向下，所以最大值在顶点。",
@@ -101,7 +157,7 @@ class StudyChatViewModelSupportTest {
     assertTrue(markdown.contains("段落ID：span-1"))
     assertTrue(markdown.contains("追问节点数：2"))
     assertTrue(markdown.contains("- 自动讲解 · 10:01"))
-    assertTrue(markdown.contains("- 快捷追问 · 10:02"))
+    assertTrue(markdown.contains("- 精细追问 · 10:02"))
     assertTrue(markdown.contains("摘要：配方后看顶点"))
     assertTrue(markdown.contains("父节点：detail-1"))
   }
@@ -127,6 +183,37 @@ class StudyChatViewModelSupportTest {
     val blocks = splitParagraphs(content)
 
     assertEquals(listOf("第一段", "第二段", "第三段"), blocks)
+  }
+
+  @Test
+  fun buildKnowledgeGapInsights_detectsRepeatedWeakSignals() {
+    val span = SpanData(
+      id = "span-1",
+      content = "先配方，再根据顶点判断最值。",
+      sourceQuestion = "二次函数最值怎么做"
+    )
+    val messages = listOf(
+      ChatMessage.User(id = "msg-1", time = "10:00", text = "二次函数最值怎么做"),
+      ChatMessage.Assistant(id = "msg-2", time = "10:01", spans = listOf(span), mainSpan = span)
+    )
+    val histories = mapOf(
+      span.id to listOf(
+        SpanDetail(id = "detail-1", mode = "精细追问", time = "10:02", question = "为什么这里要先配方？", answer = "为了更快看出顶点。"),
+        SpanDetail(id = "detail-2", mode = "精细追问", time = "10:03", question = "我还是不会判断顶点为什么是最值点", answer = "看开口方向。", parentDetailId = "detail-1"),
+        SpanDetail(id = "detail-3", mode = "精细追问", time = "10:04", question = "这个判定条件我不明白", answer = "a>0 最小，a<0 最大。", parentDetailId = "detail-2")
+      )
+    )
+
+    val insights = buildKnowledgeGapInsights(
+      messages = messages,
+      histories = histories,
+      knowledgePoints = mapOf("函数与图像" to 2)
+    )
+
+    assertFalse(insights.isEmpty())
+    assertTrue(insights.any { insight -> insight.level == KnowledgeGapLevel.HIGH })
+    assertTrue(insights.any { insight -> insight.point.contains("函数") || insight.point.contains("二次") })
+    assertTrue(insights.any { insight -> insight.evidence.contains("连续深追") })
   }
 
   @Test
@@ -516,7 +603,7 @@ class StudyChatViewModelSupportTest {
 
     val snapshot = toStoredSessionSnapshot(
       state = state,
-      title = "快捷追问",
+      title = "精细追问",
       createdAt = 11L,
       updatedAt = 12L
     )
@@ -524,7 +611,6 @@ class StudyChatViewModelSupportTest {
       session = snapshot,
       ankiCards = emptyList(),
       settings = RuntimeSettings.defaults(),
-      summaries = emptyList(),
       toastMessage = null
     )
 
@@ -742,5 +828,25 @@ class StudyChatViewModelSupportTest {
 
     assertEquals("网络不可用", fallback)
     assertEquals(80, resolved.length)
+  }
+
+  @Test
+  fun resolveErrorHint_mapsSoftwareAbortToFriendlyText() {
+    val resolved = resolveErrorHint(
+      throwable = RuntimeException("Software caused connection abort"),
+      fallback = "网络不可用"
+    )
+
+    assertEquals("网络连接中断，请重试", resolved)
+  }
+
+  @Test
+  fun resolveErrorHint_mapsSocketTimeoutToFriendlyText() {
+    val resolved = resolveErrorHint(
+      throwable = SocketTimeoutException("timeout"),
+      fallback = "网络不可用"
+    )
+
+    assertEquals("网络超时，请稍后重试", resolved)
   }
 }

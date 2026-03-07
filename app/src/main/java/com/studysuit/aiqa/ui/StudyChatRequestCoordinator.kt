@@ -11,6 +11,7 @@ internal data class AnkiGenerationInput(
   val answer: String,
   val profile: ProfileState,
   val knowledgePoints: Map<String, Int>,
+  val knowledgeGapInsights: List<KnowledgeGapInsight>,
   val existingDecks: List<String>,
   val settings: RuntimeSettings
 )
@@ -25,27 +26,41 @@ internal class StudyChatRequestCoordinator(
     note: String?,
     imageCount: Int
   ): Result<String> {
-    val prompt = buildString {
-      append(normalizeImagePrompt(settings.imagePrompt))
-
-      if (imageCount > 1) {
-        append("\n补充要求：本次上传了")
-        append(imageCount)
-        append("张图片，请综合识别后统一作答。")
-      }
-
-      val normalizedNote = note?.trim().orEmpty()
-      if (normalizedNote.isNotBlank()) {
-        append("\n用户补充：")
-        append(normalizedNote)
-      }
-    }
+    val prompt = buildImageQuestionPrompt(
+      imagePrompt = settings.imagePrompt,
+      note = note,
+      imageCount = imageCount
+    )
 
     return arkApiClient.generateReplyWithImage(
       prompt = prompt,
       imageBytes = imageBytes,
       mimeType = "image/jpeg",
       config = settings.toArkRuntimeConfig()
+    )
+  }
+
+  suspend fun replyForImageQuestionStream(
+    imageBytes: ByteArray,
+    settings: RuntimeSettings,
+    note: String?,
+    imageCount: Int,
+    onDelta: (String) -> Unit,
+    onReasoningDelta: ((String) -> Unit)? = null
+  ): Result<String> {
+    val prompt = buildImageQuestionPrompt(
+      imagePrompt = settings.imagePrompt,
+      note = note,
+      imageCount = imageCount
+    )
+
+    return arkApiClient.generateReplyWithImageStream(
+      prompt = prompt,
+      imageBytes = imageBytes,
+      mimeType = "image/jpeg",
+      config = settings.toArkRuntimeConfig(),
+      onDelta = onDelta,
+      onReasoningDelta = onReasoningDelta
     )
   }
 
@@ -81,12 +96,14 @@ internal class StudyChatRequestCoordinator(
   suspend fun replyForConversationStream(
     messages: List<ChatMessage>,
     settings: RuntimeSettings,
-    onDelta: (String) -> Unit
+    onDelta: (String) -> Unit,
+    onReasoningDelta: ((String) -> Unit)? = null
   ): Result<String> {
     return arkApiClient.generateReplyStream(
       messages = toArkMessages(messages),
       config = settings.toArkRuntimeConfig(),
-      onDelta = onDelta
+      onDelta = onDelta,
+      onReasoningDelta = onReasoningDelta
     )
   }
 
@@ -94,12 +111,14 @@ internal class StudyChatRequestCoordinator(
     span: SpanData,
     followupQuestion: String,
     details: List<SpanDetail>,
+    messages: List<ChatMessage>,
     settings: RuntimeSettings
   ): Result<String> {
     val historyForRequest = toSpanFollowupMessages(
       span = span,
       followupQuestion = followupQuestion,
-      details = details
+      details = details,
+      messages = messages
     )
     return arkApiClient.generateReply(historyForRequest, config = settings.toArkRuntimeConfig())
   }
@@ -108,13 +127,15 @@ internal class StudyChatRequestCoordinator(
     span: SpanData,
     followupQuestion: String,
     details: List<SpanDetail>,
+    messages: List<ChatMessage>,
     settings: RuntimeSettings,
     onDelta: (String) -> Unit
   ): Result<String> {
     val historyForRequest = toSpanFollowupMessages(
       span = span,
       followupQuestion = followupQuestion,
-      details = details
+      details = details,
+      messages = messages
     )
     return arkApiClient.generateReplyStream(
       messages = historyForRequest,
@@ -143,6 +164,7 @@ internal class StudyChatRequestCoordinator(
       answer = input.answer,
       profile = input.profile,
       knowledgePoints = input.knowledgePoints,
+      knowledgeGapInsights = input.knowledgeGapInsights,
       existingDecks = input.existingDecks
     )
 
@@ -151,6 +173,30 @@ internal class StudyChatRequestCoordinator(
       config = cardConfig
     ).map { raw ->
       parseAiAnkiCardPayload(raw)
+    }
+  }
+
+  private fun buildImageQuestionPrompt(
+    imagePrompt: String,
+    note: String?,
+    imageCount: Int
+  ): String {
+    return buildString {
+      append(normalizeImagePrompt(imagePrompt))
+
+      if (imageCount > 1) {
+        append("\n补充要求：本次上传了")
+        append(imageCount)
+        append("张图片，请综合识别后统一作答。")
+      }
+
+      val normalizedNote = note?.trim().orEmpty()
+      if (normalizedNote.isNotBlank()) {
+        append("\n用户补充：")
+        append(normalizedNote)
+      }
+
+      append("\n如果题目较复杂，先给关键结论与最必要步骤，再补充细节。")
     }
   }
 }

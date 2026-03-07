@@ -1,8 +1,10 @@
 package com.studysuit.aiqa.ui
 
 import com.studysuit.aiqa.data.ArkRequestMessage
+import com.studysuit.aiqa.data.QuestionTagger
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
+import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -25,7 +27,47 @@ internal fun isTokenStale(requestToken: Long, activeToken: Long): Boolean {
 }
 
 internal fun resolveErrorHint(throwable: Throwable?, fallback: String): String {
-  return throwable?.message?.take(80).orEmpty().ifBlank { fallback }
+  if (throwable == null) {
+    return fallback
+  }
+
+  resolveNetworkErrorHint(throwable)?.let { hint ->
+    return hint
+  }
+
+  return throwable.message?.trim().orEmpty().ifBlank { fallback }.take(80)
+}
+
+private fun resolveNetworkErrorHint(throwable: Throwable): String? {
+  val causeChain = throwable.toCauseChain()
+  if (causeChain.any { cause -> cause is SocketTimeoutException }) {
+    return "网络超时，请稍后重试"
+  }
+
+  val normalizedMessages = causeChain.map { cause ->
+    cause.message.orEmpty().lowercase(Locale.ROOT)
+  }
+  if (normalizedMessages.any { message ->
+      message.contains("software caused connection abort") ||
+        message.contains("connection reset") ||
+        message.contains("connection aborted") ||
+        message.contains("broken pipe") ||
+        message.contains("unexpected end of stream")
+    }) {
+    return "网络连接中断，请重试"
+  }
+
+  return null
+}
+
+private fun Throwable.toCauseChain(maxDepth: Int = 8): List<Throwable> {
+  val chain = mutableListOf<Throwable>()
+  var cursor: Throwable? = this
+  while (cursor != null && chain.size < maxDepth) {
+    chain += cursor
+    cursor = cursor.cause
+  }
+  return chain
 }
 
 internal fun <T> deliverTokenAwareResult(
@@ -61,7 +103,8 @@ internal fun routeRequestFailure(
 internal fun toArkMessages(messages: List<ChatMessage>): List<ArkRequestMessage> {
   return messages
     .filterNot { message ->
-      message is ChatMessage.Assistant && message.spans.firstOrNull()?.sourceQuestion == "初始化引导"
+      message is ChatMessage.Assistant &&
+        (message.mainSpan?.sourceQuestion ?: message.spans.firstOrNull()?.sourceQuestion) == "初始化引导"
     }
     .takeLast(12)
     .mapNotNull { message ->
@@ -72,7 +115,7 @@ internal fun toArkMessages(messages: List<ChatMessage>): List<ArkRequestMessage>
         }
 
         is ChatMessage.Assistant -> {
-          val text = message.spans.joinToString(separator = "\n\n") { span -> span.content }.trim()
+          val text = message.fullAnswerText()
           if (text.isBlank()) null else ArkRequestMessage(role = "assistant", text = text)
         }
       }
@@ -83,13 +126,22 @@ internal fun toArkMessages(messages: List<ChatMessage>): List<ArkRequestMessage>
 internal fun toSpanFollowupMessages(
   span: SpanData,
   followupQuestion: String,
-  details: List<SpanDetail>
+  details: List<SpanDetail>,
+  messages: List<ChatMessage> = emptyList()
 ): List<ArkRequestMessage> {
   val recentDetails = details.take(4).asReversed()
+  val sourceQuestion = resolveQuestionScopeQuestion(span = span, messages = messages)
+  val questionScopeAnswer = resolveQuestionScopeAnswer(spanId = span.id, messages = messages)
   val contextMessage = buildString {
-    append("我们只讨论这一段内容，请基于段落回答追问。\n")
+    append("我们以题目为单位回答追问，请先阅读完整上下文再作答。\n")
     append("回答要求：简洁直接，先结论后要点，默认不超过6行。\n")
-    append("段落：")
+    append("题目：")
+    append(sourceQuestion.ifBlank { "（原题缺失，请结合上下文回答）" })
+    if (questionScopeAnswer.isNotBlank()) {
+      append("\n该题完整回答：")
+      append(questionScopeAnswer)
+    }
+    append("\n当前追问聚焦段落：")
     append(span.content)
   }
 
@@ -109,6 +161,49 @@ internal fun toSpanFollowupMessages(
 
     add(ArkRequestMessage(role = "user", text = followupQuestion))
   }
+}
+
+private fun resolveQuestionScopeAnswer(spanId: String, messages: List<ChatMessage>): String {
+  val sourceAssistantMessage = messages.firstOrNull { message ->
+    message is ChatMessage.Assistant && message.findSpan(spanId) != null
+  } as? ChatMessage.Assistant ?: return ""
+
+  return sourceAssistantMessage.fullAnswerText()
+}
+
+private fun resolveQuestionScopeQuestion(span: SpanData, messages: List<ChatMessage>): String {
+  val sourceAssistantIndex = messages.indexOfFirst { message ->
+    message is ChatMessage.Assistant && message.findSpan(span.id) != null
+  }
+  val sourceAssistantMessage = messages.getOrNull(sourceAssistantIndex) as? ChatMessage.Assistant
+
+  val sourceSpanQuestion = sourceAssistantMessage
+    ?.findSpan(span.id)
+    ?.sourceQuestion
+    ?.trim()
+    .orEmpty()
+  if (sourceSpanQuestion.isNotBlank()) {
+    return sourceSpanQuestion
+  }
+
+  val fallbackSpanQuestion = span.sourceQuestion.trim()
+  if (fallbackSpanQuestion.isNotBlank()) {
+    return fallbackSpanQuestion
+  }
+
+  if (sourceAssistantIndex > 0) {
+    for (index in sourceAssistantIndex - 1 downTo 0) {
+      val message = messages[index]
+      if (message is ChatMessage.User) {
+        val question = message.text.trim()
+        if (question.isNotBlank()) {
+          return question
+        }
+      }
+    }
+  }
+
+  return ""
 }
 
 internal fun splitParagraphs(content: String): List<String> {
@@ -260,6 +355,16 @@ internal fun buildFollowupTreeExportFileName(exportedAtMillis: Long = System.cur
   return "追问图谱-$timestamp.md"
 }
 
+internal fun inferKnowledgePoints(text: String): List<String> {
+  return detectKnowledgePoints(text)
+}
+
+internal fun buildSavedQuestionPreview(answer: String): String {
+  return extractAnswerSnippetForSummary(answer).ifBlank {
+    normalizeInlineText(answer).take(56)
+  }
+}
+
 private fun buildFollowupTreeExportEntries(details: List<SpanDetail>): List<Pair<Int, SpanDetail>> {
   if (details.isEmpty()) {
     return emptyList()
@@ -336,6 +441,14 @@ internal fun mergeKnowledgePoints(
 }
 
 private fun detectKnowledgePoints(text: String): List<String> {
+  val tagged = QuestionTagger.autoTag(text).knowledgePoints
+    .map { point -> point.trim() }
+    .filter { point -> point.isNotBlank() }
+    .distinct()
+  if (tagged.isNotEmpty()) {
+    return tagged
+  }
+
   val normalized = text.lowercase(Locale.getDefault())
   val matched = knowledgeRules
     .filter { rule -> rule.keywords.any { keyword -> normalized.contains(keyword) } }
@@ -345,6 +458,185 @@ private fun detectKnowledgePoints(text: String): List<String> {
   return if (matched.isEmpty()) detectTopicsForProfile(text) else matched
 }
 
+private data class KnowledgeGapStats(
+  val point: String,
+  var exposureCount: Int = 0,
+  var directWeakCount: Int = 0,
+  var reasoningCount: Int = 0,
+  var methodCount: Int = 0,
+  var conceptCount: Int = 0,
+  var threadedDepth: Int = 0,
+  val evidenceSamples: MutableList<String> = mutableListOf()
+)
+
+private val directWeakKeywords = listOf(
+  "不会", "不太会", "没学会", "没懂", "不懂", "不明白", "看不懂", "不会做", "卡住", "忘了"
+)
+private val reasoningGapKeywords = listOf(
+  "为什么", "怎么想到", "怎么判断", "哪里来", "依据", "凭什么", "为什么这样", "怎么得出"
+)
+private val methodGapKeywords = listOf(
+  "怎么做", "怎么下手", "思路", "方法", "步骤", "套路", "切入点", "先做什么"
+)
+private val conceptGapKeywords = listOf(
+  "概念", "定义", "性质", "公式", "定理", "判定", "条件", "含义", "是什么"
+)
+
+internal fun buildKnowledgeGapInsights(
+  messages: List<ChatMessage>,
+  histories: Map<String, List<SpanDetail>>,
+  knowledgePoints: Map<String, Int>
+): List<KnowledgeGapInsight> {
+  val statsByPoint = linkedMapOf<String, KnowledgeGapStats>()
+
+  fun record(
+    text: String,
+    fallbackPoints: List<String> = emptyList(),
+    depthBoost: Int = 0
+  ) {
+    val normalized = text.trim()
+    if (normalized.isBlank()) {
+      return
+    }
+
+    val points = (detectKnowledgePoints(normalized) + fallbackPoints)
+      .map { point -> point.trim() }
+      .filter { point -> point.isNotBlank() }
+      .distinct()
+    if (points.isEmpty()) {
+      return
+    }
+
+    val lowered = normalized.lowercase(Locale.getDefault())
+    val directWeakHits = directWeakKeywords.count { keyword -> lowered.contains(keyword) }
+    val reasoningHits = reasoningGapKeywords.count { keyword -> lowered.contains(keyword) }
+    val methodHits = methodGapKeywords.count { keyword -> lowered.contains(keyword) }
+    val conceptHits = conceptGapKeywords.count { keyword -> lowered.contains(keyword) }
+    val snippet = normalizeInlineText(normalized).take(28)
+
+    points.forEach { point ->
+      val stats = statsByPoint.getOrPut(point) { KnowledgeGapStats(point = point) }
+      stats.exposureCount += 1
+      stats.directWeakCount += directWeakHits
+      stats.reasoningCount += reasoningHits
+      stats.methodCount += methodHits
+      stats.conceptCount += conceptHits
+      stats.threadedDepth += depthBoost
+      if (snippet.isNotBlank() && stats.evidenceSamples.none { sample -> sample == snippet }) {
+        stats.evidenceSamples += snippet
+      }
+    }
+  }
+
+  messages.forEach { message ->
+    if (message is ChatMessage.User) {
+      record(message.text)
+    }
+  }
+
+  histories.forEach { (spanId, details) ->
+    val span = findSpanById(messages, spanId)
+    val threadContextPoints = detectKnowledgePoints(
+      buildString {
+        span?.sourceQuestion?.takeIf { value -> value.isNotBlank() }?.let {
+          append(it)
+          append('\n')
+        }
+        span?.content?.takeIf { value -> value.isNotBlank() }?.let { append(it) }
+      }
+    )
+    val extraDepth = (details.size - 1).coerceAtLeast(0)
+    if (extraDepth > 0) {
+      details.firstOrNull()?.question?.takeIf { question -> question.isNotBlank() }?.let { rootQuestion ->
+        record(rootQuestion, fallbackPoints = threadContextPoints, depthBoost = extraDepth)
+      }
+    }
+
+    details.forEachIndexed { index, detail ->
+      val branchDepth = if (detail.parentDetailId != null) index + 1 else 0
+      detail.question?.let { question ->
+        record(question, fallbackPoints = threadContextPoints, depthBoost = branchDepth)
+      }
+    }
+  }
+
+  return statsByPoint.values
+    .map { stats ->
+      val heatBoost = (knowledgePoints[stats.point] ?: 0).coerceAtMost(3)
+      val score =
+        stats.directWeakCount * 4 +
+          stats.reasoningCount * 3 +
+          stats.methodCount * 2 +
+          stats.conceptCount * 2 +
+          stats.threadedDepth * 2 +
+          stats.exposureCount +
+          heatBoost
+      val level = when {
+        score >= 10 -> KnowledgeGapLevel.HIGH
+        score >= 6 -> KnowledgeGapLevel.MEDIUM
+        else -> KnowledgeGapLevel.LOW
+      }
+      val diagnosis = when {
+        stats.directWeakCount > 0 && stats.directWeakCount >= maxOf(stats.reasoningCount, stats.methodCount, stats.conceptCount) -> {
+          "你多次直接表示这块不会或没懂，基础还不稳"
+        }
+        stats.conceptCount >= maxOf(stats.reasoningCount, stats.methodCount) && stats.conceptCount > 0 -> {
+          "更像定义、性质或判定条件没有真正吃透"
+        }
+        stats.reasoningCount >= stats.methodCount && stats.reasoningCount > 0 -> {
+          "更像为什么这么做的依据链断了"
+        }
+        stats.methodCount > 0 -> {
+          "更像切入点和解题步骤不够稳定"
+        }
+        stats.threadedDepth >= 2 -> {
+          "同类问题连续追问，说明这里仍然卡住"
+        }
+        else -> {
+          "这一块反复出现，建议回补基础再做题"
+        }
+      }
+      val evidenceParts = buildList {
+        if (stats.exposureCount > 0) add("相关提问${stats.exposureCount}次")
+        if (stats.directWeakCount > 0) add("直接说不会/没懂${stats.directWeakCount}次")
+        if (stats.threadedDepth > 0) add("连续深追${stats.threadedDepth}层")
+      }
+      val evidence = buildString {
+        append(evidenceParts.joinToString(separator = " · ").ifBlank { "已多次围绕这一点追问" })
+        stats.evidenceSamples.firstOrNull()?.let { sample ->
+          append(" · 例：")
+          append(sample)
+        }
+      }
+      val action = when {
+        stats.conceptCount > 0 -> "先补 ${stats.point} 的定义、判定条件和常见误区，再做 1 道基础题验证。"
+        stats.reasoningCount > 0 -> "把 ${stats.point} 每一步为什么能这样做写成依据链，再回到原题复现。"
+        stats.methodCount > 0 -> "把 ${stats.point} 的标准切入步骤压成 3 步模板，重新走一遍原题。"
+        else -> "先做 1-2 道同类型基础题，把 ${stats.point} 练熟后再继续追问。"
+      }
+      KnowledgeGapInsight(
+        point = stats.point,
+        level = level,
+        score = score,
+        evidence = evidence,
+        diagnosis = diagnosis,
+        action = action
+      )
+    }
+    .filter { insight -> insight.score >= 4 }
+    .sortedWith(compareByDescending<KnowledgeGapInsight> { it.score }.thenBy { it.point })
+    .take(5)
+}
+
+internal fun summarizeKnowledgeGapInsights(insights: List<KnowledgeGapInsight>): String {
+  return insights
+    .take(4)
+    .joinToString(separator = "；") { insight ->
+      "${insight.point}(${insight.level.label})：${insight.diagnosis}"
+    }
+    .ifBlank { "暂无明显薄弱点" }
+}
+
 internal fun buildAnkiGenerationPrompt(
   mode: String,
   spanContent: String,
@@ -352,6 +644,7 @@ internal fun buildAnkiGenerationPrompt(
   answer: String,
   profile: ProfileState,
   knowledgePoints: Map<String, Int>,
+  knowledgeGapInsights: List<KnowledgeGapInsight>,
   existingDecks: List<String>
 ): String {
   val topTopics = profile.topicHits.entries
@@ -371,6 +664,7 @@ internal fun buildAnkiGenerationPrompt(
     .distinct()
     .joinToString(separator = "，")
     .ifBlank { "暂无" }
+  val gapSummary = summarizeKnowledgeGapInsights(knowledgeGapInsights)
 
   return buildString {
     append("请根据下面学习交互，生成1张最合适的Anki卡片。")
@@ -388,6 +682,8 @@ internal fun buildAnkiGenerationPrompt(
     append(topTopics)
     append("\n知识点热度：")
     append(topKnowledge)
+    append("\n薄弱点洞察：")
+    append(gapSummary)
     append("\n已有卡组：")
     append(deckCatalog)
     append("\n段落内容：")
@@ -791,21 +1087,6 @@ internal fun removeSpanDetailHistory(
   return current.copy(histories = updatedHistory)
 }
 
-internal fun buildSessionSummaries(
-  sessionOrder: List<String>,
-  sessionsById: Map<String, StoredSession>
-): List<SessionSummary> {
-  return sessionOrder.mapNotNull { id ->
-    val item = sessionsById[id] ?: return@mapNotNull null
-    SessionSummary(
-      id = item.id,
-      title = item.title,
-      updatedAt = item.updatedAt,
-      messageCount = item.messages.size
-    )
-  }.sortedByDescending { summary -> summary.updatedAt }
-}
-
 internal data class SessionSeeds(
   val messageSeed: Int,
   val spanSeed: Int,
@@ -820,7 +1101,7 @@ internal fun deriveSessionSeeds(active: StoredSession): SessionSeeds {
 
   val spanSeed = active.messages
     .filterIsInstance<ChatMessage.Assistant>()
-    .flatMap { assistant -> assistant.spans }
+    .flatMap { assistant -> assistant.interactiveSpans() }
     .mapNotNull { span -> span.id.removePrefix("span-").toIntOrNull() }
     .maxOrNull() ?: 0
 

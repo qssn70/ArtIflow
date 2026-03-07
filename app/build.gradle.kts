@@ -51,6 +51,7 @@ android {
       "https://lf3-static.bytednsdoc.com/obj/eden-cn/lm_hz_ihsph/ljhwZthlaukjlkulzlp/console/bigtts/zh_female_cancan_mars_bigtts.mp3"
     )
     val openSpeechUid = localValue("OPENSPEECH_UID", "豆包语音")
+    val flowStudyServerUrl = localValue("FLOWSTUDY_SERVER_URL")
 
     applicationId = "com.studysuit.aiqa"
     minSdk = 26
@@ -71,6 +72,7 @@ android {
     buildConfigField("String", "OPENSPEECH_QUERY_URL", openSpeechQueryUrl.toBuildConfigString())
     buildConfigField("String", "OPENSPEECH_AUDIO_URL", openSpeechAudioUrl.toBuildConfigString())
     buildConfigField("String", "OPENSPEECH_UID", openSpeechUid.toBuildConfigString())
+    buildConfigField("String", "FLOWSTUDY_SERVER_URL", flowStudyServerUrl.toBuildConfigString())
   }
 
   buildTypes {
@@ -133,6 +135,7 @@ dependencies {
   debugImplementation("androidx.compose.ui:ui-test-manifest")
 
   testImplementation("junit:junit:4.13.2")
+  testImplementation("org.json:json:20240303")
   androidTestImplementation("androidx.test.ext:junit:1.2.1")
   androidTestImplementation("androidx.test:rules:1.6.1")
   androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

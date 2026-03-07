@@ -12,7 +12,7 @@ internal fun findSpanById(messages: List<ChatMessage>, spanId: String?): SpanDat
 
   messages.forEach { message ->
     if (message is ChatMessage.Assistant) {
-      message.spans.firstOrNull { span -> span.id == spanId }?.let { found ->
+      message.findSpan(spanId)?.let { found ->
         return found
       }
     }
@@ -24,7 +24,19 @@ internal fun findSpanById(messages: List<ChatMessage>, spanId: String?): SpanDat
 internal fun findLatestAssistantSpan(messages: List<ChatMessage>): SpanData? {
   messages.asReversed().forEach { message ->
     if (message is ChatMessage.Assistant) {
-      message.spans.lastOrNull()?.let { span ->
+      (message.spans.lastOrNull() ?: message.mainSpan)?.let { span ->
+        return span
+      }
+    }
+  }
+
+  return null
+}
+
+internal fun findLatestAssistantQuestionSpan(messages: List<ChatMessage>): SpanData? {
+  messages.asReversed().forEach { message ->
+    if (message is ChatMessage.Assistant) {
+      (message.mainSpan ?: message.spans.lastOrNull())?.let { span ->
         return span
       }
     }
@@ -127,6 +139,14 @@ private const val DEFAULT_IMAGE_PROMPT =
   "你是一名中学学科辅导老师。请识别题目并简洁作答：先给结论，再给2-4条必要步骤；" +
     "多小题按编号回答；不要套话和长篇大论。"
 
+data class ModelPreset(
+  val id: String,
+  val name: String,
+  val baseUrl: String,
+  val apiKey: String,
+  val modelName: String
+)
+
 data class RuntimeSettings(
   val arkApiKey: String,
   val arkModel: String,
@@ -141,7 +161,11 @@ data class RuntimeSettings(
   val openSpeechUid: String,
   val flowStudyServerUrl: String,
   val flowStudyDeviceId: String,
-  val flowStudyDeviceToken: String
+  val flowStudyDeviceToken: String,
+  val customModelBaseUrl: String = "",
+  val customModelApiKey: String = "",
+  val customModelName: String = "",
+  val customModelPresets: List<ModelPreset> = emptyList()
 ) {
   companion object {
     fun defaults(): RuntimeSettings {
@@ -157,7 +181,7 @@ data class RuntimeSettings(
         openSpeechSubmitUrl = BuildConfig.OPENSPEECH_SUBMIT_URL,
         openSpeechQueryUrl = BuildConfig.OPENSPEECH_QUERY_URL,
         openSpeechUid = BuildConfig.OPENSPEECH_UID,
-        flowStudyServerUrl = "",
+        flowStudyServerUrl = BuildConfig.FLOWSTUDY_SERVER_URL,
         flowStudyDeviceId = "",
         flowStudyDeviceToken = ""
       )
@@ -165,12 +189,147 @@ data class RuntimeSettings(
   }
 }
 
+internal fun RuntimeSettings.hasCompleteCustomModel(): Boolean {
+  return customModelBaseUrl.trim().isNotBlank() &&
+    customModelApiKey.trim().isNotBlank() &&
+    customModelName.trim().isNotBlank()
+}
+
+internal fun RuntimeSettings.clearCustomModel(): RuntimeSettings {
+  return copy(
+    customModelBaseUrl = "",
+    customModelApiKey = "",
+    customModelName = ""
+  )
+}
+
+internal fun RuntimeSettings.applyModelPreset(preset: ModelPreset): RuntimeSettings {
+  return copy(
+    customModelBaseUrl = preset.baseUrl.trim(),
+    customModelApiKey = preset.apiKey.trim(),
+    customModelName = preset.modelName.trim()
+  )
+}
+
+internal fun RuntimeSettings.saveCurrentModelPreset(name: String): RuntimeSettings {
+  if (!hasCompleteCustomModel()) {
+    return this
+  }
+
+  val normalizedName = name.trim().replace(Regex("\\s+"), " ").take(18)
+  if (normalizedName.isBlank()) {
+    return this
+  }
+
+  val preserved = customModelPresets.filterNot { preset ->
+    preset.name.equals(normalizedName, ignoreCase = true)
+  }
+
+  val nextPreset = ModelPreset(
+    id = "preset-${System.currentTimeMillis()}-${normalizedName.lowercase(Locale.getDefault()).hashCode()}",
+    name = normalizedName,
+    baseUrl = customModelBaseUrl.trim(),
+    apiKey = customModelApiKey.trim(),
+    modelName = customModelName.trim()
+  )
+
+  return copy(customModelPresets = (listOf(nextPreset) + preserved).take(16))
+}
+
+internal fun RuntimeSettings.removeModelPreset(presetId: String): RuntimeSettings {
+  return copy(customModelPresets = customModelPresets.filterNot { preset -> preset.id == presetId })
+}
+
+internal fun RuntimeSettings.currentModelDisplayName(): String {
+  return if (hasCompleteCustomModel()) {
+    "自定义 · ${customModelName.trim()}"
+  } else {
+    "系统豆包 · ${arkModel.trim()}"
+  }
+}
+
+internal fun RuntimeSettings.currentModelDisplayHint(): String {
+  return if (hasCompleteCustomModel()) {
+    customModelBaseUrl.trim()
+  } else {
+    arkBaseUrl.trim()
+  }
+}
+
+internal fun builtinModelPresetTemplates(): List<ModelPreset> {
+  return listOf(
+    ModelPreset(
+      id = "template-openai-official",
+      name = "OpenAI 模板",
+      baseUrl = "https://api.openai.com/v1",
+      apiKey = "",
+      modelName = "gpt-4o-mini"
+    ),
+    ModelPreset(
+      id = "template-compatible-api",
+      name = "兼容接口模板",
+      baseUrl = "https://your-api.example.com/v1",
+      apiKey = "",
+      modelName = "your-model"
+    )
+  )
+}
+
+internal enum class KnowledgeGapLevel(val label: String) {
+  HIGH("优先补"),
+  MEDIUM("建议补"),
+  LOW("继续看")
+}
+
+internal data class KnowledgeGapInsight(
+  val point: String,
+  val level: KnowledgeGapLevel,
+  val score: Int,
+  val evidence: String,
+  val diagnosis: String,
+  val action: String
+)
+
 internal fun RuntimeSettings.toArkRuntimeConfig(): ArkRuntimeConfig {
+  val customConfig = customModelConfigOrNull()
+  if (customConfig != null) {
+    return customConfig
+  }
+
   return ArkRuntimeConfig(
     apiKey = arkApiKey,
     model = arkModel,
     baseUrl = arkBaseUrl,
     endpoint = arkEndpoint,
+    systemPrompt = normalizeSystemPrompt(arkSystemPrompt)
+  )
+}
+
+private fun RuntimeSettings.customModelConfigOrNull(): ArkRuntimeConfig? {
+  val baseUrlInput = customModelBaseUrl.trim()
+  val apiKeyInput = customModelApiKey.trim()
+  val modelInput = customModelName.trim()
+  if (baseUrlInput.isBlank() || apiKeyInput.isBlank() || modelInput.isBlank()) {
+    return null
+  }
+
+  val normalizedBase = baseUrlInput.trimEnd('/')
+  val endpoint = when {
+    normalizedBase.endsWith("/chat/completions", ignoreCase = true) -> "chat/completions"
+    normalizedBase.endsWith("/responses", ignoreCase = true) -> "responses"
+    else -> "chat/completions"
+  }
+  val baseUrl = when (endpoint) {
+    "chat/completions" -> normalizedBase.removeSuffix("/chat/completions")
+    "responses" -> normalizedBase.removeSuffix("/responses")
+    else -> normalizedBase
+  }.ifBlank { normalizedBase }
+
+  return ArkRuntimeConfig(
+    apiKey = apiKeyInput,
+    model = modelInput,
+    baseUrl = baseUrl,
+    endpoint = endpoint,
     systemPrompt = normalizeSystemPrompt(arkSystemPrompt)
   )
 }
@@ -195,6 +354,7 @@ data class ChatUiState(
   val quickFollowupSpanId: String? = null,
   val quickFollowupDetailId: String? = null,
   val activePage: WorkspacePage = WorkspacePage.CHAT,
+  val savedQuestions: List<SavedQuestion> = emptyList(),
   val knowledgePoints: Map<String, Int> = emptyMap(),
   val ankiCards: List<AnkiCard> = emptyList(),
   val isDueReviewMode: Boolean = false,
@@ -202,8 +362,6 @@ data class ChatUiState(
   val deckPracticeSelections: Map<String, CardMasteryLevel> = emptyMap(),
   val showDeckPracticeSummary: Boolean = false,
   val activeSessionId: String = "",
-  val sessionSummaries: List<SessionSummary> = emptyList(),
-  val isSessionsOpen: Boolean = false,
   val toastMessage: String? = null,
   val processingSpanIds: Set<String> = emptySet(),
   val isLoading: Boolean = false,
@@ -219,13 +377,6 @@ data class DeckPracticeSummary(
   val needsWorkCount: Int,
   val familiarCount: Int,
   val proficientCount: Int
-)
-
-data class SessionSummary(
-  val id: String,
-  val title: String,
-  val updatedAt: Long,
-  val messageCount: Int
 )
 
 data class ProfileState(
@@ -250,8 +401,37 @@ sealed interface ChatMessage {
   data class Assistant(
     override val id: String,
     override val time: String,
-    val spans: List<SpanData>
+    val spans: List<SpanData>,
+    val mainSpan: SpanData? = null,
+    val reasoningSummary: String? = null
   ) : ChatMessage
+}
+
+internal fun ChatMessage.Assistant.findSpan(spanId: String?): SpanData? {
+  if (spanId.isNullOrBlank()) {
+    return null
+  }
+
+  return when {
+    mainSpan?.id == spanId -> mainSpan
+    else -> spans.firstOrNull { span -> span.id == spanId }
+  }
+}
+
+internal fun ChatMessage.Assistant.interactiveSpans(): List<SpanData> {
+  return buildList {
+    mainSpan?.let(::add)
+    addAll(spans)
+  }
+}
+
+internal fun ChatMessage.Assistant.fullAnswerText(): String {
+  val normalizedMain = mainSpan?.content?.trim().orEmpty()
+  if (normalizedMain.isNotBlank()) {
+    return normalizedMain
+  }
+
+  return spans.joinToString(separator = "\n\n") { span -> span.content.trim() }.trim()
 }
 
 data class SpanData(
@@ -278,9 +458,21 @@ data class FollowupTreeScope(
   val details: List<SpanDetail>
 )
 
+data class SavedQuestion(
+  val id: String,
+  val sourceMessageId: String,
+  val question: String,
+  val answer: String,
+  val sourceTime: String,
+  val savedAt: Long,
+  val followupCount: Int = 0,
+  val knowledgeTags: List<String> = emptyList()
+)
+
 enum class WorkspacePage {
   CHAT,
   QUICK_FOLLOWUP,
+  ARCHIVE,
   ANKI,
   PROFILE
 }

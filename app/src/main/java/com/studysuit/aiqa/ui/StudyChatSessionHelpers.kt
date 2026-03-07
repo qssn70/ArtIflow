@@ -2,10 +2,10 @@ package com.studysuit.aiqa.ui
 
 internal fun buildIntroGuideContent(): String {
   return listOf(
-    "你好，我是你的学习搭子。这个界面看起来是普通 AI Chat，但每一段都能左滑右滑交互。",
-    "左滑松手会自动讲解当前段落，不会把讲解追加到底部，而是存进段落详解记录。",
-    "左滑后不松手会进入语音追问模式，松手即提交追问并更新你的学习画像。",
-    "右滑松手会打开该段详解弹窗；右滑并停留会进入快捷追问子界面，支持嵌套追问。"
+    "你好，我是你的学习搭子。主界面里每个题目都独立回答，不共享上下文。",
+    "每道题都会生成一组可滑动的回复段落；回复气泡最底下时间那一层也支持左滑交互。",
+    "底部时间那一层左滑松手会直接进入本题追问；段落卡左滑松手会自动讲解；左滑后继续按住会进入语音追问。",
+    "右滑松手会打开该卡片详解；右滑并停留会进入精细追问，当前题目的追问链会持续保留。"
   ).joinToString(separator = "\n\n")
 }
 
@@ -13,7 +13,6 @@ internal fun buildUiStateFromSession(
   session: StoredSession,
   ankiCards: List<AnkiCard>,
   settings: RuntimeSettings,
-  summaries: List<SessionSummary>,
   toastMessage: String?
 ): ChatUiState {
   return ChatUiState(
@@ -26,11 +25,10 @@ internal fun buildUiStateFromSession(
     quickFollowupSpanId = session.quickFollowupSpanId,
     quickFollowupDetailId = session.quickFollowupDetailId,
     activePage = session.activePage,
+    savedQuestions = session.savedQuestions,
     knowledgePoints = session.knowledgePoints,
     ankiCards = sortAnkiCardsForReview(ankiCards),
     activeSessionId = session.id,
-    sessionSummaries = summaries,
-    isSessionsOpen = false,
     toastMessage = toastMessage,
     isLoading = false,
     isSettingsOpen = false,
@@ -57,6 +55,7 @@ internal fun toStoredSessionSnapshot(
     activePage = state.activePage,
     quickFollowupSpanId = state.quickFollowupSpanId,
     quickFollowupDetailId = state.quickFollowupDetailId,
+    savedQuestions = state.savedQuestions,
     knowledgePoints = state.knowledgePoints,
     ankiCards = state.ankiCards
   )
@@ -80,11 +79,10 @@ internal fun createInitialSessionState(
     quickFollowupSpanId = null,
     quickFollowupDetailId = null,
     activePage = WorkspacePage.CHAT,
+    savedQuestions = emptyList(),
     knowledgePoints = emptyMap(),
     ankiCards = sortAnkiCardsForReview(ankiCards),
     activeSessionId = sessionId,
-    sessionSummaries = emptyList(),
-    isSessionsOpen = false,
     toastMessage = if (showIntroToast) "已开始新对话" else null,
     isLoading = false,
     isSettingsOpen = false,

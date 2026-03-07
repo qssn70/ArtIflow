@@ -27,9 +27,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountTree
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Archive
-import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -97,6 +95,17 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   var lastBackPressedAt by remember { mutableLongStateOf(0L) }
   var pendingImageDrafts by remember { mutableStateOf<List<ComposerImageDraft>>(emptyList()) }
   var pendingFollowupTreeExport by remember { mutableStateOf<FollowupTreeExportDraft?>(null) }
+  var isWorkspaceJumpOpen by remember { mutableStateOf(false) }
+  val knowledgeGapInsights = remember(uiState.messages, uiState.histories, uiState.knowledgePoints) {
+    buildKnowledgeGapInsights(
+      messages = uiState.messages,
+      histories = uiState.histories,
+      knowledgePoints = uiState.knowledgePoints
+    )
+  }
+  val savedQuestionMessageIds = remember(uiState.savedQuestions) {
+    uiState.savedQuestions.map { saved -> saved.sourceMessageId }.toSet()
+  }
 
   val appendPendingImage: (String, ByteArray) -> Unit = { source, imageBytes ->
     if (imageBytes.isEmpty()) {
@@ -224,7 +233,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
 
   val quickFollowupSpan = remember(uiState.messages, uiState.quickFollowupSpanId) {
     findSpanById(uiState.messages, uiState.quickFollowupSpanId)
-      ?: findLatestAssistantSpan(uiState.messages)
+      ?: findLatestAssistantQuestionSpan(uiState.messages)
   }
   val quickFollowupHistory = remember(uiState.histories, quickFollowupSpan) {
     if (quickFollowupSpan == null) {
@@ -337,13 +346,21 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     buildDeckPracticeSummary(deckName, deckCards, uiState.deckPracticeSelections)
   }
 
-  val hasModalDialog = uiState.isSettingsOpen || uiState.isSessionsOpen || selectedSpan != null || isFollowupTreeOpen
+  val hasModalDialog = uiState.isSettingsOpen || selectedSpan != null || isFollowupTreeOpen || isWorkspaceJumpOpen
   val isChatLikePage = uiState.activePage == WorkspacePage.CHAT ||
     uiState.activePage == WorkspacePage.QUICK_FOLLOWUP
   BackHandler(enabled = !hasModalDialog) {
     when {
       isDeckArchiveOpen -> {
         isDeckArchiveOpen = false
+      }
+
+      isWorkspaceJumpOpen -> {
+        isWorkspaceJumpOpen = false
+      }
+
+      uiState.activePage == WorkspacePage.QUICK_FOLLOWUP && viewModel.stepBackQuickFollowupLayer() -> {
+        Unit
       }
 
       uiState.activePage != WorkspacePage.CHAT -> {
@@ -488,19 +505,23 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       ) {
         if (isChatLikePage) {
           HeaderBar(
-            onNewChat = viewModel::startNewChat,
-            onOpenSessions = viewModel::openSessions,
+            onOpenSettings = viewModel::openSettings,
             onOpenFollowupTree = { isFollowupTreeOpen = true },
             title = if (uiState.activePage == WorkspacePage.QUICK_FOLLOWUP) {
-              "StudySuit · 快捷追问"
+              "StudySuit · 精细追问"
             } else {
               "StudySuit · AI学习问答"
             },
             subtitle = if (uiState.activePage == WorkspacePage.QUICK_FOLLOWUP) {
               "主界面同款 · 仅当前追问链路"
             } else {
-              "左滑讲解 · 长按语音 · 右滑弹窗（停留进追问）"
+              "整题卡/段落卡都可滑动 · 题目之间上下文独立"
             }
+          )
+        } else if (uiState.activePage == WorkspacePage.ARCHIVE) {
+          ArchiveHeaderBar(
+            savedCount = uiState.savedQuestions.size,
+            onOpenSettings = viewModel::openSettings
           )
         } else if (uiState.activePage == WorkspacePage.ANKI) {
           AnkiHeaderBar(
@@ -534,6 +555,12 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                   histories = uiState.histories,
                   processingSpanIds = uiState.processingSpanIds,
                   onAutoExplain = viewModel::autoExplain,
+                  onWholeReplyFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
+                  onRefreshReply = viewModel::refreshAssistantReply,
+                  onToggleSavedQuestion = viewModel::toggleSavedQuestion,
+                  refreshEnabled = !uiState.isLoading,
+                  showSaveAction = true,
+                  isSavedQuestion = message.id in savedQuestionMessageIds,
                   onVoiceFollowup = onVoiceCaptureSubmit,
                   onRightSwipeOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
                   onRightSwipeHoldFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
@@ -563,6 +590,12 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                     histories = quickFollowupHistoriesForUi,
                     processingSpanIds = uiState.processingSpanIds,
                     onAutoExplain = viewModel::autoExplain,
+                    onWholeReplyFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
+                    onRefreshReply = viewModel::refreshAssistantReply,
+                    onToggleSavedQuestion = viewModel::toggleSavedQuestion,
+                    refreshEnabled = !uiState.isLoading,
+                    showSaveAction = false,
+                    isSavedQuestion = false,
                     onVoiceFollowup = onVoiceCaptureSubmit,
                     onRightSwipeOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
                     onRightSwipeHoldFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
@@ -577,6 +610,17 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             if (uiState.isLoading) {
               item(key = "quick-followup-loading") {
                 AssistantLoadingBubble()
+              }
+            }
+          } else if (uiState.activePage == WorkspacePage.ARCHIVE) {
+            item(key = "archive-workspace") {
+              Box(modifier = Modifier.fillParentMaxSize()) {
+                QuestionArchiveWorkspace(
+                  savedQuestions = uiState.savedQuestions,
+                  onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
+                  onRestoreQuestion = viewModel::restoreSavedQuestionToComposer,
+                  onRemoveQuestion = viewModel::removeSavedQuestion
+                )
               }
             }
           } else if (uiState.activePage == WorkspacePage.ANKI) {
@@ -602,6 +646,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                   profile = uiState.profile,
                   cards = uiState.ankiCards,
                   dueCount = dueCardsToday.size,
+                  knowledgeGapInsights = knowledgeGapInsights,
                   onOpenDueReview = viewModel::openDueReviewQueue,
                   onOpenDeckArchive = { viewModel.switchWorkspacePage(WorkspacePage.ANKI); isDeckArchiveOpen = true },
                   onOpenSettings = viewModel::openSettings
@@ -663,7 +708,8 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
         if (!WindowInsets.isImeVisible) {
           WorkspaceSwipeStrip(
             activePage = uiState.activePage,
-            onSwitch = viewModel::switchWorkspacePage
+            onSwitch = viewModel::switchWorkspacePage,
+            onOpenJumpPanel = { isWorkspaceJumpOpen = true }
           )
         }
       }
@@ -700,6 +746,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       onDismiss = viewModel::closeSettings,
       onSave = viewModel::saveSettings,
       onReset = viewModel::resetSettingsDraft,
+      onResetMainThread = viewModel::startNewChat,
       onExportFollowupTree = triggerFollowupTreeExport,
       onPairFlowStudy = viewModel::pairFlowStudy,
       onPushSessionsToFlowStudy = viewModel::pushSessionsToFlowStudy,
@@ -707,13 +754,11 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     )
   }
 
-  if (uiState.isSessionsOpen) {
-    SessionListDialog(
-      sessions = uiState.sessionSummaries,
-      activeSessionId = uiState.activeSessionId,
-      onDismiss = viewModel::closeSessions,
-      onSelect = viewModel::switchSession,
-      onDelete = viewModel::deleteSession
+  if (isWorkspaceJumpOpen) {
+    WorkspaceJumpDialog(
+      activePage = uiState.activePage,
+      onDismiss = { isWorkspaceJumpOpen = false },
+      onSwitch = viewModel::switchWorkspacePage
     )
   }
 
@@ -739,6 +784,41 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     )
   }
 
+}
+
+@Composable
+private fun ArchiveHeaderBar(
+  savedCount: Int,
+  onOpenSettings: () -> Unit
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text(
+        text = "题目归档",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF235E4E),
+        fontWeight = FontWeight.Bold
+      )
+      Text(
+        text = "已收藏 $savedCount 题 · 可回填到提问框继续练",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF60756E),
+        maxLines = 1
+      )
+    }
+
+    IconButton(onClick = onOpenSettings) {
+      Icon(
+        imageVector = Icons.Rounded.Settings,
+        contentDescription = "打开设置",
+        tint = Color(0xFF2C6756)
+      )
+    }
+  }
 }
 
 @Composable
@@ -777,8 +857,7 @@ private fun ProfileHeaderBar(
 
 @Composable
 private fun HeaderBar(
-  onNewChat: () -> Unit,
-  onOpenSessions: () -> Unit,
+  onOpenSettings: () -> Unit,
   onOpenFollowupTree: () -> Unit,
   title: String,
   subtitle: String
@@ -820,18 +899,10 @@ private fun HeaderBar(
         )
       }
 
-      IconButton(onClick = onOpenSessions, modifier = Modifier.size(40.dp)) {
+      IconButton(onClick = onOpenSettings, modifier = Modifier.size(40.dp)) {
         Icon(
-          imageVector = Icons.Rounded.History,
-          contentDescription = "会话",
-          tint = Color(0xFF2C6756)
-        )
-      }
-
-      IconButton(onClick = onNewChat, modifier = Modifier.size(40.dp)) {
-        Icon(
-          imageVector = Icons.Rounded.Add,
-          contentDescription = "新对话",
+          imageVector = Icons.Rounded.Settings,
+          contentDescription = "设置",
           tint = Color(0xFF2C6756)
         )
       }
@@ -942,7 +1013,7 @@ private fun buildFollowupTreeScopes(
     if (message !is ChatMessage.Assistant) {
       return@forEach
     }
-    message.spans.asReversed().forEach { span ->
+    message.interactiveSpans().forEach { span ->
       spanById.putIfAbsent(span.id, span)
     }
   }

@@ -77,7 +77,8 @@ class ArkApiClient(
   suspend fun generateReplyStream(
     messages: List<ArkRequestMessage>,
     config: ArkRuntimeConfig = ArkRuntimeConfig(),
-    onDelta: (String) -> Unit
+    onDelta: (String) -> Unit,
+    onReasoningDelta: ((String) -> Unit)? = null
   ): Result<String> {
     if (messages.isEmpty()) {
       return Result.failure(IllegalArgumentException("消息列表为空"))
@@ -114,7 +115,12 @@ class ArkApiClient(
             throw IllegalStateException("ARK 流式返回为空，请稍后重试")
           }
 
-          val text = parseAssistantTextStream(endpoint = endpoint, body = body, onDelta = onDelta)
+          val text = parseAssistantTextStream(
+            endpoint = endpoint,
+            body = body,
+            onDelta = onDelta,
+            onReasoningDelta = onReasoningDelta
+          )
           if (text.isBlank()) {
             throw IllegalStateException("ARK 返回为空，请稍后重试")
           }
@@ -152,7 +158,8 @@ class ArkApiClient(
           prompt = normalizedPrompt,
           imageBytes = imageBytes,
           mimeType = mimeType,
-          config = config
+          config = config,
+          stream = false
         )
 
         val request = Request.Builder()
@@ -176,6 +183,73 @@ class ArkApiClient(
         }
 
         text
+      }
+    }
+  }
+
+  suspend fun generateReplyWithImageStream(
+    prompt: String,
+    imageBytes: ByteArray,
+    mimeType: String = "image/jpeg",
+    config: ArkRuntimeConfig = ArkRuntimeConfig(),
+    onDelta: (String) -> Unit,
+    onReasoningDelta: ((String) -> Unit)? = null
+  ): Result<String> {
+    val normalizedPrompt = prompt.trim()
+    if (normalizedPrompt.isBlank()) {
+      return Result.failure(IllegalArgumentException("图片提问提示词为空"))
+    }
+
+    if (imageBytes.isEmpty()) {
+      return Result.failure(IllegalArgumentException("图片数据为空"))
+    }
+
+    if (!isConfigured(config)) {
+      return Result.failure(IllegalStateException("请先在 local.properties 配置 ARK_API_KEY"))
+    }
+
+    return withContext(Dispatchers.IO) {
+      runCatching {
+        val endpoint = normalizedEndpoint(config)
+        val requestBody = buildImageRequestBody(
+          endpoint = endpoint,
+          prompt = normalizedPrompt,
+          imageBytes = imageBytes,
+          mimeType = mimeType,
+          config = config,
+          stream = true
+        )
+
+        val request = Request.Builder()
+          .url(endpointUrl(endpoint, config))
+          .post(requestBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
+          .header("Authorization", "Bearer ${config.apiKey}")
+          .header("Content-Type", "application/json")
+          .build()
+
+        httpClient.newCall(request).execute().use { response ->
+          val body = response.body
+          if (!response.isSuccessful) {
+            val message = extractErrorMessage(body?.string().orEmpty())
+            throw IllegalStateException("ARK 图片请求失败 (${response.code}): $message")
+          }
+
+          if (body == null) {
+            throw IllegalStateException("ARK 图片识别返回为空，请稍后重试")
+          }
+
+          val text = parseAssistantTextStream(
+            endpoint = endpoint,
+            body = body,
+            onDelta = onDelta,
+            onReasoningDelta = onReasoningDelta
+          )
+          if (text.isBlank()) {
+            throw IllegalStateException("ARK 图片识别返回为空，请稍后重试")
+          }
+
+          text
+        }
       }
     }
   }
@@ -252,7 +326,8 @@ class ArkApiClient(
     prompt: String,
     imageBytes: ByteArray,
     mimeType: String,
-    config: ArkRuntimeConfig
+    config: ArkRuntimeConfig,
+    stream: Boolean = false
   ): String {
     val dataUrl = "data:$mimeType;base64,${Base64.encodeToString(imageBytes, Base64.NO_WRAP)}"
     val systemPrompt = config.systemPrompt.trim()
@@ -297,6 +372,7 @@ class ArkApiClient(
         .put("model", config.model)
         .put("input", input)
         .put("temperature", 0.7)
+        .put("stream", stream)
         .toString()
     } else {
       val messages = JSONArray()
@@ -331,6 +407,7 @@ class ArkApiClient(
         .put("model", config.model)
         .put("messages", messages)
         .put("temperature", 0.7)
+        .put("stream", stream)
         .toString()
     }
   }
@@ -385,10 +462,13 @@ class ArkApiClient(
   private fun parseAssistantTextStream(
     endpoint: String,
     body: ResponseBody,
-    onDelta: (String) -> Unit
+    onDelta: (String) -> Unit,
+    onReasoningDelta: ((String) -> Unit)?
   ): String {
     val aggregate = StringBuilder()
     var fallbackText = ""
+    val reasoningAggregate = StringBuilder()
+    var reasoningFallback = ""
 
     body.charStream().buffered().useLines { lines ->
       lines.forEach { lineRaw ->
@@ -409,10 +489,23 @@ class ArkApiClient(
           onDelta(parsed.delta)
         }
 
+        if (parsed.reasoningDelta.isNotEmpty()) {
+          reasoningAggregate.append(parsed.reasoningDelta)
+          onReasoningDelta?.invoke(parsed.reasoningDelta)
+        }
+
         if (parsed.fallbackText.isNotBlank()) {
           fallbackText = parsed.fallbackText
         }
+
+        if (parsed.reasoningFallback.isNotBlank()) {
+          reasoningFallback = parsed.reasoningFallback
+        }
       }
+    }
+
+    if (reasoningAggregate.isEmpty() && reasoningFallback.isNotBlank()) {
+      onReasoningDelta?.invoke(reasoningFallback)
     }
 
     return aggregate.toString().ifBlank { fallbackText }
@@ -420,12 +513,19 @@ class ArkApiClient(
 
   private data class StreamPayloadParseResult(
     val delta: String,
-    val fallbackText: String
+    val fallbackText: String,
+    val reasoningDelta: String,
+    val reasoningFallback: String
   )
 
   private fun parseStreamPayload(endpoint: String, payload: String): StreamPayloadParseResult {
     val root = runCatching { JSONObject(payload) }.getOrNull()
-      ?: return StreamPayloadParseResult(delta = "", fallbackText = "")
+      ?: return StreamPayloadParseResult(
+        delta = "",
+        fallbackText = "",
+        reasoningDelta = "",
+        reasoningFallback = ""
+      )
 
     return if (endpoint == RESPONSES_ENDPOINT) {
       parseResponsesStreamPayload(root)
@@ -442,6 +542,11 @@ class ArkApiClient(
       else -> ""
     }
 
+    val reasoningDelta = when (type) {
+      "response.reasoning_summary_text.delta" -> root.optString("delta")
+      else -> ""
+    }
+
     val responseObject = root.optJSONObject("response")
     val fallback = when {
       type == "response.output_text.done" -> root.optString("text")
@@ -450,17 +555,39 @@ class ArkApiClient(
       else -> ""
     }
 
-    return StreamPayloadParseResult(delta = delta, fallbackText = fallback)
+    val reasoningFallback = when (type) {
+      "response.reasoning_summary_text.done" -> root.optString("text")
+      "response.reasoning_summary_part.done" -> root.optJSONObject("part")?.optString("text").orEmpty()
+      "response.completed" -> extractReasoningSummary(root.optJSONObject("response"))
+      else -> extractReasoningSummary(responseObject)
+    }
+
+    return StreamPayloadParseResult(
+      delta = delta,
+      fallbackText = fallback,
+      reasoningDelta = reasoningDelta,
+      reasoningFallback = reasoningFallback
+    )
   }
 
   private fun parseChatCompletionsStreamPayload(root: JSONObject): StreamPayloadParseResult {
     val choices = root.optJSONArray("choices")
     if (choices == null || choices.length() == 0) {
-      return StreamPayloadParseResult(delta = "", fallbackText = "")
+      return StreamPayloadParseResult(
+        delta = "",
+        fallbackText = "",
+        reasoningDelta = "",
+        reasoningFallback = ""
+      )
     }
 
     val firstChoice = choices.optJSONObject(0)
-      ?: return StreamPayloadParseResult(delta = "", fallbackText = "")
+      ?: return StreamPayloadParseResult(
+        delta = "",
+        fallbackText = "",
+        reasoningDelta = "",
+        reasoningFallback = ""
+      )
     val deltaObj = firstChoice.optJSONObject("delta")
     val deltaValue = deltaObj?.opt("content")
 
@@ -471,7 +598,30 @@ class ArkApiClient(
     }
 
     val fallback = firstChoice.optString("text")
-    return StreamPayloadParseResult(delta = delta, fallbackText = fallback)
+    return StreamPayloadParseResult(
+      delta = delta,
+      fallbackText = fallback,
+      reasoningDelta = "",
+      reasoningFallback = ""
+    )
+  }
+
+  private fun extractReasoningSummary(response: JSONObject?): String {
+    val output = response?.optJSONArray("output") ?: return ""
+    for (index in 0 until output.length()) {
+      val item = output.optJSONObject(index) ?: continue
+      if (item.optString("type") != "reasoning") {
+        continue
+      }
+
+      val summary = item.optJSONArray("summary") ?: continue
+      val text = summary.extractTextFromContentArray()
+      if (text.isNotBlank()) {
+        return text
+      }
+    }
+
+    return ""
   }
 
   private fun JSONArray.extractTextFromContentArray(): String {
@@ -530,7 +680,7 @@ class ArkApiClient(
     private fun defaultHttpClient(): OkHttpClient {
       return OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(300, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
     }

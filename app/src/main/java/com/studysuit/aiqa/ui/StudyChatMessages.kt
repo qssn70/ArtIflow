@@ -39,6 +39,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.StarBorder
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -64,6 +67,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.Job
@@ -195,6 +199,12 @@ internal fun AssistantBubble(
   histories: Map<String, List<SpanDetail>>,
   processingSpanIds: Set<String>,
   onAutoExplain: (String) -> Unit,
+  onWholeReplyFollowup: (String, String?) -> Unit,
+  onRefreshReply: (String) -> Unit,
+  onToggleSavedQuestion: (String) -> Unit,
+  refreshEnabled: Boolean,
+  showSaveAction: Boolean,
+  isSavedQuestion: Boolean,
   onVoiceFollowup: (String) -> Unit,
   onRightSwipeOpenDetails: (String, String?) -> Unit,
   onRightSwipeHoldFollowup: (String, String?) -> Unit,
@@ -219,24 +229,17 @@ internal fun AssistantBubble(
         modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
       ) {
-        message.spans.forEach { span ->
-          val history = histories[span.id].orEmpty()
-          val hasParentLinks = history.any { detail -> !detail.parentDetailId.isNullOrBlank() }
-          val historyCount = when {
-            span.detailId == null -> {
-              if (hasParentLinks) {
-                history.count { detail -> detail.parentDetailId.isNullOrBlank() }
-              } else {
-                history.size
-              }
-            }
+        message.reasoningSummary?.trim()?.takeIf { summary -> summary.isNotEmpty() }?.let { summary ->
+          AssistantReasoningSummary(
+            summary = summary,
+            messageId = message.id
+          )
+        }
 
-            hasParentLinks -> history.count { detail -> detail.parentDetailId == span.detailId }
-            else -> 0
-          }
+        message.spans.forEach { span ->
           InteractiveSpanCard(
             span = span,
-            historyCount = historyCount,
+            historyCount = resolveHistoryCount(span, histories),
             isProcessing = processingSpanIds.contains(span.id),
             onAutoExplain = onAutoExplain,
             onVoiceFollowup = onVoiceFollowup,
@@ -248,12 +251,61 @@ internal fun AssistantBubble(
           )
         }
 
-        Text(
-          text = message.time,
-          style = MaterialTheme.typography.labelSmall,
-          color = Color(0xFF788881),
-          modifier = Modifier.align(Alignment.End)
+        val replyScopeSpan = message.mainSpan ?: message.spans.lastOrNull()
+        AssistantBubbleMetaRow(
+          messageId = message.id,
+          time = message.time,
+          replyScopeSpan = replyScopeSpan,
+          onWholeReplyFollowup = onWholeReplyFollowup,
+          onRefreshReply = onRefreshReply,
+          onToggleSavedQuestion = onToggleSavedQuestion,
+          refreshEnabled = refreshEnabled,
+          showSaveAction = showSaveAction,
+          isSavedQuestion = isSavedQuestion
         )
+      }
+    }
+  }
+}
+
+
+@Composable
+private fun AssistantReasoningSummary(summary: String, messageId: String) {
+  var expanded by remember(messageId) { mutableStateOf(false) }
+
+  Surface(
+    color = Color(0xFFF8F5EA),
+    shape = RoundedCornerShape(12.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .border(1.dp, Color(0x2E7A7250), RoundedCornerShape(12.dp))
+  ) {
+    Column(
+      modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+      verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+      Text(
+        text = "模型思考摘要",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF7A6C36)
+      )
+      Text(
+        text = summary,
+        style = MaterialTheme.typography.bodySmall,
+        color = Color(0xFF4E544C),
+        maxLines = if (expanded) Int.MAX_VALUE else 4,
+        overflow = TextOverflow.Ellipsis
+      )
+      if (summary.length > 140) {
+        TextButton(
+          onClick = { expanded = !expanded },
+          contentPadding = PaddingValues(0.dp)
+        ) {
+          Text(
+            text = if (expanded) "收起思考" else "展开思考",
+            style = MaterialTheme.typography.labelSmall
+          )
+        }
       }
     }
   }
@@ -436,6 +488,127 @@ private fun InteractiveSpanCard(
     }
   }
 }
+
+
+@Composable
+private fun AssistantBubbleMetaRow(
+  messageId: String,
+  time: String,
+  replyScopeSpan: SpanData?,
+  onWholeReplyFollowup: (String, String?) -> Unit,
+  onRefreshReply: (String) -> Unit,
+  onToggleSavedQuestion: (String) -> Unit,
+  refreshEnabled: Boolean,
+  showSaveAction: Boolean,
+  isSavedQuestion: Boolean
+) {
+  var offsetX by remember(messageId) { mutableFloatStateOf(0f) }
+  val animatedOffset by animateFloatAsState(targetValue = offsetX, label = "assistant_meta_offset")
+
+  Surface(
+    color = Color(0xFFF7FAF8),
+    shape = RoundedCornerShape(9.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .graphicsLayer { translationX = animatedOffset }
+      .border(1.dp, Color(0x163A5A4F), RoundedCornerShape(9.dp))
+      .draggable(
+        enabled = replyScopeSpan != null,
+        state = rememberDraggableState { delta ->
+          offsetX = (offsetX + delta).coerceIn(-160f, 28f)
+        },
+        orientation = Orientation.Horizontal,
+        onDragStopped = {
+          val finalOffset = offsetX
+          offsetX = 0f
+          if (finalOffset <= -72f) {
+            replyScopeSpan?.let { span ->
+              onWholeReplyFollowup(span.id, span.detailId)
+            }
+          }
+        }
+      )
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 10.dp, vertical = 5.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Text(
+        text = "左滑进入本题追问",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF648076)
+      )
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        if (showSaveAction) {
+          Surface(
+            color = if (isSavedQuestion) Color(0xFFFFF1D8) else Color(0xFFF8F7F2),
+            shape = CircleShape,
+            modifier = Modifier
+              .size(22.dp)
+              .clickable(enabled = refreshEnabled) { onToggleSavedQuestion(messageId) }
+          ) {
+            Box(contentAlignment = Alignment.Center) {
+              Icon(
+                imageVector = if (isSavedQuestion) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                contentDescription = if (isSavedQuestion) "取消收藏题目" else "收藏题目",
+                tint = if (isSavedQuestion) Color(0xFFC38A22) else Color(0xFF8D978F),
+                modifier = Modifier.size(13.dp)
+              )
+            }
+          }
+        }
+        Surface(
+          color = if (refreshEnabled) Color(0xFFEAF5F0) else Color(0xFFF1F4F3),
+          shape = CircleShape,
+          modifier = Modifier
+            .size(22.dp)
+            .clickable(enabled = refreshEnabled) { onRefreshReply(messageId) }
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.Rounded.Refresh,
+              contentDescription = "刷新回复",
+              tint = if (refreshEnabled) Color(0xFF2F6F5D) else Color(0xFF9BA8A3),
+              modifier = Modifier.size(13.dp)
+            )
+          }
+        }
+        Text(
+          text = time,
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF788881)
+        )
+      }
+    }
+  }
+}
+
+private fun resolveHistoryCount(
+  span: SpanData,
+  histories: Map<String, List<SpanDetail>>
+): Int {
+  val history = histories[span.id].orEmpty()
+  val hasParentLinks = history.any { detail -> !detail.parentDetailId.isNullOrBlank() }
+  return when {
+    span.detailId == null -> {
+      if (hasParentLinks) {
+        history.count { detail -> detail.parentDetailId.isNullOrBlank() }
+      } else {
+        history.size
+      }
+    }
+
+    hasParentLinks -> history.count { detail -> detail.parentDetailId == span.detailId }
+    else -> 0
+  }
+}
+
 
 @Composable
 private fun DetailDiamondBadge(

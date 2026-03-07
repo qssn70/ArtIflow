@@ -55,10 +55,6 @@ internal class SessionRegistry {
     return sessionsById[id]?.createdAt
   }
 
-  fun summaries(): List<SessionSummary> {
-    return buildSessionSummaries(sessionOrder, sessionsById)
-  }
-
   fun orderedSessions(): List<StoredSession> {
     return sessionOrder.mapNotNull { id -> sessionsById[id] }
   }

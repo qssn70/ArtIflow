@@ -16,6 +16,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
@@ -33,6 +34,7 @@ internal fun ProfileWorkspace(
   profile: ProfileState,
   cards: List<AnkiCard>,
   dueCount: Int,
+  knowledgeGapInsights: List<KnowledgeGapInsight>,
   onOpenDueReview: () -> Unit,
   onOpenDeckArchive: () -> Unit,
   onOpenSettings: () -> Unit
@@ -181,6 +183,37 @@ internal fun ProfileWorkspace(
               maxLines = 1,
               overflow = TextOverflow.Ellipsis
             )
+          }
+        }
+      }
+    }
+
+    Surface(
+      color = Color(0xFFF7FBF8),
+      shape = RoundedCornerShape(14.dp),
+      modifier = Modifier
+        .fillMaxWidth()
+        .border(1.dp, Color(0x173B5D52), RoundedCornerShape(14.dp))
+    ) {
+      Column(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        Text(
+          text = "AI洞察 · 薄弱点",
+          style = MaterialTheme.typography.labelMedium,
+          color = Color(0xFF2C6251)
+        )
+
+        if (knowledgeGapInsights.isEmpty()) {
+          Text(
+            text = "当前还没有明显的知识漏洞信号；继续做题和追问后，这里会自动归纳“不会的点”。",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF647A73)
+          )
+        } else {
+          knowledgeGapInsights.take(3).forEach { insight ->
+            KnowledgeGapInsightCard(insight = insight)
           }
         }
       }
@@ -362,6 +395,73 @@ private fun ProfileStatCard(
         text = value,
         style = MaterialTheme.typography.titleMedium,
         color = Color(0xFF295C4D)
+      )
+    }
+  }
+}
+
+@Composable
+private fun KnowledgeGapInsightCard(insight: KnowledgeGapInsight) {
+  val accent = when (insight.level) {
+    KnowledgeGapLevel.HIGH -> Color(0xFFB95E45)
+    KnowledgeGapLevel.MEDIUM -> Color(0xFFB48733)
+    KnowledgeGapLevel.LOW -> Color(0xFF4A7B69)
+  }
+  val background = when (insight.level) {
+    KnowledgeGapLevel.HIGH -> Color(0xFFFFF4EE)
+    KnowledgeGapLevel.MEDIUM -> Color(0xFFFFF9ED)
+    KnowledgeGapLevel.LOW -> Color(0xFFF2FAF6)
+  }
+
+  Surface(
+    color = background,
+    shape = RoundedCornerShape(12.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .border(1.dp, accent.copy(alpha = 0.18f), RoundedCornerShape(12.dp))
+  ) {
+    Column(
+      modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+      verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(
+          text = insight.point,
+          style = MaterialTheme.typography.labelMedium,
+          color = accent,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis
+        )
+        Text(
+          text = insight.level.label,
+          style = MaterialTheme.typography.labelSmall,
+          color = accent
+        )
+      }
+      Text(
+        text = insight.evidence,
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF5C7068),
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+      )
+      Text(
+        text = insight.diagnosis,
+        style = MaterialTheme.typography.bodySmall,
+        color = Color(0xFF3F5A52),
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+      )
+      Text(
+        text = "建议：${insight.action}",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF5C7068),
+        maxLines = 3,
+        overflow = TextOverflow.Ellipsis
       )
     }
   }

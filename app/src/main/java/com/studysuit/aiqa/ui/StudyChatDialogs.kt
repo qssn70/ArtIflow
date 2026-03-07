@@ -70,6 +70,7 @@ internal fun SettingsDialog(
   onDismiss: () -> Unit,
   onSave: () -> Unit,
   onReset: () -> Unit,
+  onResetMainThread: () -> Unit,
   onExportFollowupTree: () -> Unit,
   onPairFlowStudy: (String) -> Unit,
   onPushSessionsToFlowStudy: (Int?) -> Unit,
@@ -77,7 +78,7 @@ internal fun SettingsDialog(
 ) {
   val scrollState = rememberScrollState()
   var flowStudyPairCode by remember { mutableStateOf("") }
-  var flowStudyRecentCount by remember { mutableStateOf("30") }
+  var modelPresetName by remember { mutableStateOf("") }
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -94,10 +95,120 @@ internal fun SettingsDialog(
       Column(
         modifier = Modifier
           .fillMaxWidth()
-          .heightIn(max = 440.dp)
+          .heightIn(max = 520.dp)
           .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(10.dp)
       ) {
+        Text(text = "当前模型", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
+        Surface(
+          color = Color(0xFFF0F7F3),
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color(0x1433564B), RoundedCornerShape(12.dp))
+        ) {
+          Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+          ) {
+            Text(
+              text = settings.currentModelDisplayName(),
+              style = MaterialTheme.typography.labelMedium,
+              color = Color(0xFF2C6251)
+            )
+            Text(
+              text = settings.currentModelDisplayHint().ifBlank { "使用应用内默认配置" },
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF6D8079)
+            )
+          }
+        }
+
+        Text(text = "快捷模板", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
+        ModelPresetActionRow(
+          title = "系统豆包",
+          summary = "清空自定义模型，直接回到内置 Ark/豆包 配置",
+          actionLabel = "启用",
+          onAction = { onSettingsChanged(settings.clearCustomModel()) }
+        )
+        builtinModelPresetTemplates().forEach { preset ->
+          ModelPresetActionRow(
+            title = preset.name,
+            summary = "${preset.baseUrl} · ${preset.modelName}",
+            actionLabel = "套用",
+            onAction = { onSettingsChanged(settings.applyModelPreset(preset)) }
+          )
+        }
+
+        HorizontalDivider(color = Color(0x1633564B))
+
+        Text(text = "自定义模型（只填三项）", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
+        SettingsTextField(
+          label = "BASEURL",
+          value = settings.customModelBaseUrl,
+          onValueChange = { value -> onSettingsChanged(settings.copy(customModelBaseUrl = value)) }
+        )
+        SettingsTextField(
+          label = "APIKEY",
+          value = settings.customModelApiKey,
+          onValueChange = { value -> onSettingsChanged(settings.copy(customModelApiKey = value)) }
+        )
+        SettingsTextField(
+          label = "MODELNAME",
+          value = settings.customModelName,
+          onValueChange = { value -> onSettingsChanged(settings.copy(customModelName = value)) }
+        )
+        Text(
+          text = "当 BASEURL / APIKEY / MODELNAME 三项都填写时，将优先使用该自定义模型。",
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF728880)
+        )
+
+        OutlinedTextField(
+          value = modelPresetName,
+          onValueChange = { modelPresetName = it },
+          label = { Text("把当前模型存为预设", style = MaterialTheme.typography.labelSmall) },
+          modifier = Modifier.fillMaxWidth(),
+          minLines = 1,
+          maxLines = 1,
+          shape = RoundedCornerShape(10.dp),
+          textStyle = MaterialTheme.typography.bodySmall
+        )
+        Button(
+          onClick = {
+            modelPresetName = modelPresetName.trim()
+            onSettingsChanged(settings.saveCurrentModelPreset(modelPresetName))
+            modelPresetName = ""
+          },
+          enabled = settings.hasCompleteCustomModel() && modelPresetName.trim().isNotBlank(),
+          shape = RoundedCornerShape(10.dp),
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Text(text = "保存为模型预设")
+        }
+
+        if (settings.customModelPresets.isEmpty()) {
+          Text(
+            text = "还没有保存的模型预设。填好上面的三项后，可以长期保存多套模型。",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF728880)
+          )
+        } else {
+          Text(text = "已存模型预设", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
+          settings.customModelPresets.forEach { preset ->
+            ModelPresetActionRow(
+              title = preset.name,
+              summary = "${preset.baseUrl} · ${preset.modelName}",
+              actionLabel = "启用",
+              onAction = { onSettingsChanged(settings.applyModelPreset(preset)) },
+              secondaryLabel = "删除",
+              onSecondaryAction = { onSettingsChanged(settings.removeModelPreset(preset.id)) }
+            )
+          }
+        }
+
+        HorizontalDivider(color = Color(0x1633564B))
+
         Text(text = "Ark（豆包）", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
 
         SettingsTextField(
@@ -171,7 +282,7 @@ internal fun SettingsDialog(
           verticalAlignment = Alignment.CenterVertically
         ) {
           Text(
-            text = "导出当前会话追问图谱（Markdown）",
+            text = "导出当前主界面追问图谱（Markdown）",
             style = MaterialTheme.typography.bodySmall,
             color = Color(0xFF3E5A51)
           )
@@ -217,16 +328,19 @@ internal fun SettingsDialog(
           textStyle = MaterialTheme.typography.bodySmall
         )
 
-        OutlinedTextField(
-          value = flowStudyRecentCount,
-          onValueChange = { value -> flowStudyRecentCount = value.filter { it.isDigit() }.take(4) },
-          label = { Text("最近 N 个会话（数字）", style = MaterialTheme.typography.labelSmall) },
-          modifier = Modifier.fillMaxWidth(),
-          minLines = 1,
-          maxLines = 1,
-          shape = RoundedCornerShape(10.dp),
-          textStyle = MaterialTheme.typography.bodySmall
+        Text(
+          text = "当前版本只保留一个主界面，上传时会同步当前主界面的完整快照。",
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF728880)
         )
+
+        Button(
+          onClick = onResetMainThread,
+          shape = RoundedCornerShape(10.dp),
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Text(text = "清空主界面并新开一题")
+        }
 
         Row(
           modifier = Modifier.fillMaxWidth(),
@@ -244,19 +358,8 @@ internal fun SettingsDialog(
             shape = RoundedCornerShape(10.dp),
             modifier = Modifier.weight(1f)
           ) {
-            Text(text = "上传全部")
+            Text(text = "上传主界面")
           }
-        }
-
-        Button(
-          onClick = {
-            val limit = flowStudyRecentCount.toIntOrNull()?.coerceIn(1, 500)
-            onPushSessionsToFlowStudy(limit)
-          },
-          shape = RoundedCornerShape(10.dp),
-          modifier = Modifier.fillMaxWidth()
-        ) {
-          Text(text = "上传最近 N 个")
         }
       }
     },
@@ -278,6 +381,61 @@ internal fun SettingsDialog(
   )
 }
 
+
+@Composable
+private fun ModelPresetActionRow(
+  title: String,
+  summary: String,
+  actionLabel: String,
+  onAction: () -> Unit,
+  secondaryLabel: String? = null,
+  onSecondaryAction: (() -> Unit)? = null
+) {
+  Surface(
+    color = Color(0xFFF0F7F3),
+    shape = RoundedCornerShape(12.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .border(1.dp, Color(0x1433564B), RoundedCornerShape(12.dp))
+  ) {
+    Row(
+      modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Column(
+        modifier = Modifier.weight(1f),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+      ) {
+        Text(
+          text = title,
+          style = MaterialTheme.typography.labelMedium,
+          color = Color(0xFF2C6251),
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis
+        )
+        Text(
+          text = summary,
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF6D8079),
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+      Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (secondaryLabel != null && onSecondaryAction != null) {
+          TextButton(onClick = onSecondaryAction) {
+            Text(text = secondaryLabel)
+          }
+        }
+        TextButton(onClick = onAction) {
+          Text(text = actionLabel)
+        }
+      }
+    }
+  }
+}
+
 @Composable
 private fun SettingsTextField(
   label: String,
@@ -294,88 +452,6 @@ private fun SettingsTextField(
     maxLines = if (minLines == 1) 1 else 8,
     shape = RoundedCornerShape(10.dp),
     textStyle = MaterialTheme.typography.bodySmall
-  )
-}
-
-@Composable
-internal fun SessionListDialog(
-  sessions: List<SessionSummary>,
-  activeSessionId: String,
-  onDismiss: () -> Unit,
-  onSelect: (String) -> Unit,
-  onDelete: (String) -> Unit
-) {
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    containerColor = Color(0xFFF6FBF7),
-    shape = RoundedCornerShape(18.dp),
-    title = {
-      Text(
-        text = "历史会话",
-        style = MaterialTheme.typography.titleMedium,
-        color = Color(0xFF255E4D)
-      )
-    },
-    text = {
-      if (sessions.isEmpty()) {
-        Text(text = "暂无历史会话", color = Color(0xFF5D7069))
-      } else {
-        LazyColumn(
-          modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(max = 360.dp),
-          verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-          items(sessions, key = { it.id }) { session ->
-            val isActive = session.id == activeSessionId
-            Surface(
-              color = if (isActive) Color(0xFFE8F5EF) else Color(0xFFFBFEFC),
-              shape = RoundedCornerShape(10.dp),
-              modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, Color(0x1F3A5A4F), RoundedCornerShape(10.dp))
-            ) {
-              Row(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .padding(horizontal = 10.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                  Text(
-                    text = session.title,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF2F433C),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                  )
-                  Text(
-                    text = "${formatSessionTime(session.updatedAt)} · ${session.messageCount}条",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF668078)
-                  )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                  TextButton(onClick = { onSelect(session.id) }) {
-                    Text(text = if (isActive) "当前" else "打开")
-                  }
-                  TextButton(onClick = { onDelete(session.id) }) {
-                    Text(text = "删除", color = Color(0xFF8E4D4D))
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    confirmButton = {
-      TextButton(onClick = onDismiss) {
-        Text(text = "关闭", color = Color(0xFF2D6F5D))
-      }
-    }
   )
 }
 
@@ -610,7 +686,7 @@ internal fun SpanDetailDialog(
         if (history.isEmpty()) {
           item(key = "history-empty") {
             Text(
-              text = "这段还没有记录。左滑松手自动讲解，长按松手语音追问，右滑松手看弹窗，右滑停留进快捷追问。",
+              text = "这段还没有记录。左滑松手自动讲解，长按松手语音追问，右滑松手看弹窗，右滑停留进精细追问。",
               style = MaterialTheme.typography.bodySmall,
               color = Color(0xFF5D7069)
             )
@@ -789,7 +865,7 @@ internal fun FollowupTreeDialog(
         }
 
         Text(
-          text = "当前会话全局图谱（全部段落与追问节点）",
+          text = "当前主界面全局图谱（整题卡、段落卡与追问节点）",
           style = MaterialTheme.typography.labelSmall,
           color = Color(0xFF5D736A)
         )

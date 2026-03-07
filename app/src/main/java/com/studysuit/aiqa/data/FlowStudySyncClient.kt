@@ -59,7 +59,7 @@ class FlowStudySyncClient(
         val response = httpClient.newCall(request).execute()
         val responseBody = response.body?.string().orEmpty()
         if (!response.isSuccessful) {
-          val detail = JSONObject(responseBody).optString("detail").ifBlank { responseBody }
+          val detail = parseErrorDetail(responseBody)
           throw IllegalStateException("配对失败 (${response.code}): $detail")
         }
 
@@ -110,7 +110,7 @@ class FlowStudySyncClient(
         val response = httpClient.newCall(request).execute()
         val responseBody = response.body?.string().orEmpty()
         if (!response.isSuccessful) {
-          val detail = JSONObject(responseBody).optString("detail").ifBlank { responseBody }
+          val detail = parseErrorDetail(responseBody)
           throw IllegalStateException("上传失败 (${response.code}): $detail")
         }
 
@@ -137,6 +137,18 @@ class FlowStudySyncClient(
       .joinToString(separator = " ")
       .ifBlank { "Android" }
       .take(64)
+  }
+
+  private fun parseErrorDetail(responseBody: String): String {
+    val fallback = responseBody.trim().ifBlank { "空响应" }
+    val parsed = runCatching {
+      val root = JSONObject(responseBody)
+      root.optString("detail")
+        .ifBlank { root.optString("message") }
+        .trim()
+    }.getOrNull()
+
+    return parsed?.ifBlank { fallback }?.take(280) ?: fallback.take(280)
   }
 
   companion object {

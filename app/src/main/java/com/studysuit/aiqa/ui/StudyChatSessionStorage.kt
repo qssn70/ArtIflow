@@ -2,6 +2,7 @@ package com.studysuit.aiqa.ui
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -18,6 +19,7 @@ internal data class StoredSession(
   val activePage: WorkspacePage,
   val quickFollowupSpanId: String? = null,
   val quickFollowupDetailId: String? = null,
+  val savedQuestions: List<SavedQuestion> = emptyList(),
   val knowledgePoints: Map<String, Int>,
   val ankiCards: List<AnkiCard>
 )
@@ -35,12 +37,14 @@ internal class SessionStorage(private val context: Context) {
     return buildRootJson(payload).toString()
   }
 
-  fun save(payload: PersistedSessions) {
-    runCatching {
+  fun save(payload: PersistedSessions): Result<Unit> {
+    return runCatching {
       val root = buildRootJson(payload)
 
       storageFile.parentFile?.mkdirs()
       storageFile.writeText(root.toString(), Charsets.UTF_8)
+    }.onFailure { error ->
+      Log.w(TAG, "Failed to persist sessions", error)
     }
   }
 
@@ -61,31 +65,43 @@ internal class SessionStorage(private val context: Context) {
       return null
     }
 
-    return runCatching {
-      val root = JSONObject(storageFile.readText(Charsets.UTF_8))
-      val activeSessionId = root.optString("activeSessionId").trim()
-      val settings = root.optJSONObject("settings")?.toRuntimeSettings() ?: RuntimeSettings.defaults()
-      val sessions = root.optJSONArray("sessions")
-        ?.let { array ->
-          buildList {
-            for (index in 0 until array.length()) {
-              val item = array.optJSONObject(index) ?: continue
-              item.toStoredSession()?.let { session -> add(session) }
-            }
+    val raw = runCatching {
+      storageFile.readText(Charsets.UTF_8)
+    }.onFailure { error ->
+      Log.w(TAG, "Failed to read persisted sessions", error)
+    }.getOrNull() ?: return null
+
+    return parsePersistedSessionsJson(raw).onFailure { error ->
+      Log.w(TAG, "Failed to restore sessions", error)
+    }.getOrNull()
+  }
+
+  private companion object {
+    private const val TAG = "SessionStorage"
+  }
+}
+
+internal fun parsePersistedSessionsJson(raw: String): Result<PersistedSessions> {
+  return runCatching {
+    val root = JSONObject(raw)
+    val activeSessionId = root.optString("activeSessionId").trim()
+    val settings = root.optJSONObject("settings")?.toRuntimeSettings() ?: RuntimeSettings.defaults()
+    val sessions = root.optJSONArray("sessions")
+      ?.let { array ->
+        buildList {
+          for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            item.toStoredSession()?.let { session -> add(session) }
           }
         }
-        .orEmpty()
-
-      if (sessions.isEmpty()) {
-        null
-      } else {
-        PersistedSessions(
-          activeSessionId = activeSessionId,
-          settings = settings,
-          sessions = sessions
-        )
       }
-    }.getOrNull()
+      .orEmpty()
+
+    PersistedSessions(
+      activeSessionId = activeSessionId,
+      settings = settings,
+      sessions = sessions
+    )
   }
 }
 
@@ -105,6 +121,17 @@ private fun RuntimeSettings.toJson(): JSONObject {
     .put("flowStudyServerUrl", flowStudyServerUrl)
     .put("flowStudyDeviceId", flowStudyDeviceId)
     .put("flowStudyDeviceToken", flowStudyDeviceToken)
+    .put("customModelBaseUrl", customModelBaseUrl)
+    .put("customModelApiKey", customModelApiKey)
+    .put("customModelName", customModelName)
+    .put(
+      "customModelPresets",
+      JSONArray().apply {
+        customModelPresets.forEach { preset ->
+          put(preset.toJson())
+        }
+      }
+    )
 }
 
 private fun JSONObject.toRuntimeSettings(): RuntimeSettings {
@@ -129,8 +156,42 @@ private fun JSONObject.toRuntimeSettings(): RuntimeSettings {
     openSpeechUid = optString("openSpeechUid", defaults.openSpeechUid),
     flowStudyServerUrl = optString("flowStudyServerUrl", defaults.flowStudyServerUrl),
     flowStudyDeviceId = optString("flowStudyDeviceId", defaults.flowStudyDeviceId),
-    flowStudyDeviceToken = optString("flowStudyDeviceToken", defaults.flowStudyDeviceToken)
+    flowStudyDeviceToken = optString("flowStudyDeviceToken", defaults.flowStudyDeviceToken),
+    customModelBaseUrl = optString("customModelBaseUrl", defaults.customModelBaseUrl),
+    customModelApiKey = optString("customModelApiKey", defaults.customModelApiKey),
+    customModelName = optString("customModelName", defaults.customModelName),
+    customModelPresets = optJSONArray("customModelPresets")?.toModelPresets().orEmpty()
   )
+}
+
+private fun ModelPreset.toJson(): JSONObject {
+  return JSONObject()
+    .put("id", id)
+    .put("name", name)
+    .put("baseUrl", baseUrl)
+    .put("apiKey", apiKey)
+    .put("modelName", modelName)
+}
+
+private fun JSONArray.toModelPresets(): List<ModelPreset> {
+  return buildList {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      val id = item.optString("id").trim().ifBlank { "preset-$index" }
+      val name = item.optString("name").trim()
+      if (name.isNotBlank()) {
+        add(
+          ModelPreset(
+            id = id,
+            name = name,
+            baseUrl = item.optString("baseUrl").trim(),
+            apiKey = item.optString("apiKey").trim(),
+            modelName = item.optString("modelName").trim()
+          )
+        )
+      }
+    }
+  }
 }
 
 private const val LEGACY_ARK_MODEL = "doubao-seed-1-8-251228"
@@ -145,6 +206,7 @@ private fun StoredSession.toJson(): JSONObject {
     .put("activePage", activePage.name)
     .put("quickFollowupSpanId", quickFollowupSpanId ?: JSONObject.NULL)
     .put("quickFollowupDetailId", quickFollowupDetailId ?: JSONObject.NULL)
+    .put("savedQuestions", JSONArray().apply { savedQuestions.forEach { question -> put(question.toJson()) } })
     .put("profile", profile.toJson())
     .put("messages", JSONArray().apply {
       messages.forEach { message -> put(message.toJson()) }
@@ -160,7 +222,7 @@ private fun JSONObject.toStoredSession(): StoredSession? {
     return null
   }
 
-  val title = optString("title").ifBlank { "历史会话" }
+  val title = optString("title").ifBlank { "主界面" }
   val createdAt = optLong("createdAt", System.currentTimeMillis())
   val updatedAt = optLong("updatedAt", createdAt)
   val input = optString("input")
@@ -171,6 +233,7 @@ private fun JSONObject.toStoredSession(): StoredSession? {
   val activePage = optString("activePage").toWorkspacePageOrDefault()
   val quickFollowupSpanId = optString("quickFollowupSpanId").trim().ifBlank { null }
   val quickFollowupDetailId = optString("quickFollowupDetailId").trim().ifBlank { null }
+  val savedQuestions = optJSONArray("savedQuestions")?.toSavedQuestions().orEmpty()
   val knowledgePoints = optJSONObject("knowledgePoints")?.toKnowledgePoints().orEmpty()
   val ankiCards = optJSONArray("ankiCards")?.toAnkiCards().orEmpty()
 
@@ -186,6 +249,7 @@ private fun JSONObject.toStoredSession(): StoredSession? {
     activePage = activePage,
     quickFollowupSpanId = quickFollowupSpanId,
     quickFollowupDetailId = quickFollowupDetailId,
+    savedQuestions = savedQuestions,
     knowledgePoints = knowledgePoints,
     ankiCards = ankiCards
   )
@@ -253,6 +317,16 @@ private fun ChatMessage.toJson(): JSONObject {
       .put("type", "assistant")
       .put("id", id)
       .put("time", time)
+      .put(
+        "mainSpan",
+        mainSpan?.let { span ->
+          JSONObject()
+            .put("id", span.id)
+            .put("content", span.content)
+            .put("sourceQuestion", span.sourceQuestion)
+        } ?: JSONObject.NULL
+      )
+      .put("reasoningSummary", reasoningSummary ?: JSONObject.NULL)
       .put("spans", JSONArray().apply {
         spans.forEach { span ->
           put(
@@ -327,12 +401,25 @@ private fun JSONArray.toChatMessages(): List<ChatMessage> {
               }
             }
           }.orEmpty()
+          val mainSpan = item.optJSONObject("mainSpan")?.let { spanObj ->
+            SpanData(
+              id = spanObj.optString("id"),
+              content = spanObj.optString("content"),
+              sourceQuestion = spanObj.optString("sourceQuestion")
+            )
+          } ?: buildLegacyMainSpan(
+            messageId = item.optString("id"),
+            spans = spans
+          )
 
           add(
             ChatMessage.Assistant(
               id = item.optString("id"),
               time = item.optString("time"),
-              spans = spans
+              spans = spans,
+              mainSpan = mainSpan,
+              reasoningSummary = item.optString("reasoningSummary")
+                .takeIf { summary -> summary.isNotBlank() && summary != "null" }
             )
           )
         }
@@ -390,6 +477,52 @@ private fun JSONObject.toHistories(): Map<String, List<SpanDetail>> {
     histories[spanId] = details
   }
   return histories
+}
+
+private fun SavedQuestion.toJson(): JSONObject {
+  return JSONObject()
+    .put("id", id)
+    .put("sourceMessageId", sourceMessageId)
+    .put("question", question)
+    .put("answer", answer)
+    .put("sourceTime", sourceTime)
+    .put("savedAt", savedAt)
+    .put("followupCount", followupCount)
+    .put("knowledgeTags", JSONArray(knowledgeTags))
+}
+
+private fun JSONArray.toSavedQuestions(): List<SavedQuestion> {
+  return buildList {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      val id = item.optString("id").trim()
+      val question = item.optString("question").trim()
+      if (id.isBlank() || question.isBlank()) {
+        continue
+      }
+      add(
+        SavedQuestion(
+          id = id,
+          sourceMessageId = item.optString("sourceMessageId").trim(),
+          question = question,
+          answer = item.optString("answer"),
+          sourceTime = item.optString("sourceTime"),
+          savedAt = item.optLong("savedAt", System.currentTimeMillis()),
+          followupCount = item.optInt("followupCount", 0).coerceAtLeast(0),
+          knowledgeTags = item.optJSONArray("knowledgeTags")?.let { tagsArray ->
+            buildList {
+              for (tagIndex in 0 until tagsArray.length()) {
+                val tag = tagsArray.optString(tagIndex).trim()
+                if (tag.isNotBlank()) {
+                  add(tag)
+                }
+              }
+            }
+          }.orEmpty()
+        )
+      )
+    }
+  }
 }
 
 private fun Map<String, Int>.toKnowledgePointsJson(): JSONObject {
@@ -472,4 +605,26 @@ private fun String.toCardMasteryLevelOrDefault(): CardMasteryLevel {
 
 private fun String.toWorkspacePageOrDefault(): WorkspacePage {
   return runCatching { WorkspacePage.valueOf(this) }.getOrDefault(WorkspacePage.CHAT)
+}
+
+private fun buildLegacyMainSpan(messageId: String, spans: List<SpanData>): SpanData? {
+  if (spans.isEmpty()) {
+    return null
+  }
+
+  val fullAnswer = spans.joinToString(separator = "\n\n") { span -> span.content.trim() }.trim()
+  if (fullAnswer.isBlank()) {
+    return null
+  }
+
+  val sourceQuestion = spans
+    .firstOrNull { span -> span.sourceQuestion.isNotBlank() }
+    ?.sourceQuestion
+    .orEmpty()
+
+  return SpanData(
+    id = "assistant-main-${messageId.ifBlank { "legacy" }}",
+    content = fullAnswer,
+    sourceQuestion = sourceQuestion
+  )
 }
