@@ -16,9 +16,13 @@ internal data class StoredSession(
   val histories: Map<String, List<SpanDetail>>,
   val profile: ProfileState,
   val input: String,
+  val coachInput: String = "",
   val activePage: WorkspacePage,
   val quickFollowupSpanId: String? = null,
   val quickFollowupDetailId: String? = null,
+  val coachMessages: List<CoachChatMessage> = emptyList(),
+  val coachDigest: CoachDailyDigest? = null,
+  val dailyTraining: DailyTrainingState = DailyTrainingState(),
   val savedQuestions: List<SavedQuestion> = emptyList(),
   val knowledgePoints: Map<String, Int>,
   val ankiCards: List<AnkiCard>
@@ -203,9 +207,13 @@ private fun StoredSession.toJson(): JSONObject {
     .put("createdAt", createdAt)
     .put("updatedAt", updatedAt)
     .put("input", input)
+    .put("coachInput", coachInput)
     .put("activePage", activePage.name)
     .put("quickFollowupSpanId", quickFollowupSpanId ?: JSONObject.NULL)
     .put("quickFollowupDetailId", quickFollowupDetailId ?: JSONObject.NULL)
+    .put("coachMessages", JSONArray().apply { coachMessages.forEach { message -> put(message.toJson()) } })
+    .put("coachDigest", coachDigest?.toJson() ?: JSONObject.NULL)
+    .put("dailyTraining", dailyTraining.toJson())
     .put("savedQuestions", JSONArray().apply { savedQuestions.forEach { question -> put(question.toJson()) } })
     .put("profile", profile.toJson())
     .put("messages", JSONArray().apply {
@@ -226,6 +234,7 @@ private fun JSONObject.toStoredSession(): StoredSession? {
   val createdAt = optLong("createdAt", System.currentTimeMillis())
   val updatedAt = optLong("updatedAt", createdAt)
   val input = optString("input")
+  val coachInput = optString("coachInput")
 
   val profile = optJSONObject("profile")?.toProfileState() ?: ProfileState(level = "高二 · 进阶冲刺")
   val messages = optJSONArray("messages")?.toChatMessages().orEmpty()
@@ -233,6 +242,9 @@ private fun JSONObject.toStoredSession(): StoredSession? {
   val activePage = optString("activePage").toWorkspacePageOrDefault()
   val quickFollowupSpanId = optString("quickFollowupSpanId").trim().ifBlank { null }
   val quickFollowupDetailId = optString("quickFollowupDetailId").trim().ifBlank { null }
+  val coachMessages = optJSONArray("coachMessages")?.toCoachMessages().orEmpty()
+  val coachDigest = optJSONObject("coachDigest")?.toCoachDailyDigest()
+  val dailyTraining = optJSONObject("dailyTraining")?.toDailyTrainingState() ?: DailyTrainingState()
   val savedQuestions = optJSONArray("savedQuestions")?.toSavedQuestions().orEmpty()
   val knowledgePoints = optJSONObject("knowledgePoints")?.toKnowledgePoints().orEmpty()
   val ankiCards = optJSONArray("ankiCards")?.toAnkiCards().orEmpty()
@@ -246,9 +258,13 @@ private fun JSONObject.toStoredSession(): StoredSession? {
     histories = histories,
     profile = profile,
     input = input,
+    coachInput = coachInput,
     activePage = activePage,
     quickFollowupSpanId = quickFollowupSpanId,
     quickFollowupDetailId = quickFollowupDetailId,
+    coachMessages = coachMessages,
+    coachDigest = coachDigest,
+    dailyTraining = dailyTraining,
     savedQuestions = savedQuestions,
     knowledgePoints = knowledgePoints,
     ankiCards = ankiCards
@@ -597,6 +613,160 @@ private fun JSONArray.toAnkiCards(): List<AnkiCard> {
       )
     }
   }
+}
+
+private fun CoachChatMessage.toJson(): JSONObject {
+  return JSONObject()
+    .put("id", id)
+    .put("role", role.name)
+    .put("time", time)
+    .put("text", text)
+}
+
+private fun JSONArray.toCoachMessages(): List<CoachChatMessage> {
+  return buildList {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      val id = item.optString("id").trim()
+      if (id.isBlank()) {
+        continue
+      }
+      val text = item.optString("text").trim()
+      add(
+        CoachChatMessage(
+          id = id,
+          role = item.optString("role").toCoachMessageRoleOrDefault(),
+          time = item.optString("time"),
+          text = text
+        )
+      )
+    }
+  }
+}
+
+private fun CoachDailyDigest.toJson(): JSONObject {
+  return JSONObject()
+    .put("dateKey", dateKey)
+    .put("generatedAt", generatedAt)
+    .put("headline", headline)
+    .put("summary", summary)
+    .put(
+      "focusAreas",
+      JSONArray().apply {
+        focusAreas.forEach { area -> put(area.toJson()) }
+      }
+    )
+    .put(
+      "recommendedQuestions",
+      JSONArray().apply {
+        recommendedQuestions.forEach { question -> put(question.toJson()) }
+      }
+    )
+}
+
+private fun DailyTrainingState.toJson(): JSONObject {
+  return JSONObject()
+    .put("dateKey", dateKey)
+    .put("currentIndex", currentIndex)
+    .put("phase", phase.name)
+    .put("currentQuestionText", currentQuestionText)
+    .put(
+      "rounds",
+      JSONArray().apply {
+        rounds.forEach { round -> put(round.toJson()) }
+      }
+    )
+}
+
+private fun JSONObject.toDailyTrainingState(): DailyTrainingState {
+  return DailyTrainingState(
+    dateKey = optString("dateKey"),
+    rounds = optJSONArray("rounds")?.toCoachRecommendedQuestions().orEmpty(),
+    currentIndex = optInt("currentIndex", 0).coerceAtLeast(0),
+    phase = optString("phase").toDailyTrainingPhaseOrDefault(),
+    currentQuestionText = optString("currentQuestionText")
+  )
+}
+
+private fun JSONObject.toCoachDailyDigest(): CoachDailyDigest {
+  return CoachDailyDigest(
+    dateKey = optString("dateKey"),
+    generatedAt = optLong("generatedAt", System.currentTimeMillis()),
+    headline = optString("headline"),
+    summary = optString("summary"),
+    focusAreas = optJSONArray("focusAreas")?.toCoachFocusAreas().orEmpty(),
+    recommendedQuestions = optJSONArray("recommendedQuestions")?.toCoachRecommendedQuestions().orEmpty()
+  )
+}
+
+private fun CoachFocusArea.toJson(): JSONObject {
+  return JSONObject()
+    .put("point", point)
+    .put("level", level.name)
+    .put("diagnosis", diagnosis)
+    .put("action", action)
+    .put("evidence", evidence)
+}
+
+private fun JSONArray.toCoachFocusAreas(): List<CoachFocusArea> {
+  return buildList {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      val point = item.optString("point").trim()
+      if (point.isBlank()) {
+        continue
+      }
+      add(
+        CoachFocusArea(
+          point = point,
+          level = item.optString("level").toKnowledgeGapLevelOrDefault(),
+          diagnosis = item.optString("diagnosis"),
+          action = item.optString("action"),
+          evidence = item.optString("evidence")
+        )
+      )
+    }
+  }
+}
+
+private fun CoachRecommendedQuestion.toJson(): JSONObject {
+  return JSONObject()
+    .put("id", id)
+    .put("title", title)
+    .put("reason", reason)
+    .put("prompt", prompt)
+}
+
+private fun JSONArray.toCoachRecommendedQuestions(): List<CoachRecommendedQuestion> {
+  return buildList {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      val prompt = item.optString("prompt").trim()
+      if (prompt.isBlank()) {
+        continue
+      }
+      add(
+        CoachRecommendedQuestion(
+          id = item.optString("id").trim().ifBlank { "coach-rec-$index" },
+          title = item.optString("title"),
+          reason = item.optString("reason"),
+          prompt = prompt
+        )
+      )
+    }
+  }
+}
+
+private fun String.toCoachMessageRoleOrDefault(): CoachMessageRole {
+  return runCatching { CoachMessageRole.valueOf(this) }.getOrDefault(CoachMessageRole.ASSISTANT)
+}
+
+private fun String.toDailyTrainingPhaseOrDefault(): DailyTrainingPhase {
+  return runCatching { DailyTrainingPhase.valueOf(this) }.getOrDefault(DailyTrainingPhase.IDLE)
+}
+
+private fun String.toKnowledgeGapLevelOrDefault(): KnowledgeGapLevel {
+  return runCatching { KnowledgeGapLevel.valueOf(this) }.getOrDefault(KnowledgeGapLevel.MEDIUM)
 }
 
 private fun String.toCardMasteryLevelOrDefault(): CardMasteryLevel {

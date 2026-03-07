@@ -15,20 +15,27 @@ internal fun buildUiStateFromSession(
   settings: RuntimeSettings,
   toastMessage: String?
 ): ChatUiState {
+  val sanitizedSession = sanitizeStoredSession(session)
+  val sanitizedCards = sortAnkiCardsForReview(ankiCards.map(::sanitizeAnkiCard))
+
   return ChatUiState(
-    messages = session.messages,
-    histories = session.histories,
-    profile = session.profile,
-    input = session.input,
+    messages = sanitizedSession.messages,
+    histories = sanitizedSession.histories,
+    profile = sanitizedSession.profile,
+    input = sanitizedSession.input,
+    coachInput = sanitizedSession.coachInput,
     selectedSpanId = null,
     selectedDetailId = null,
-    quickFollowupSpanId = session.quickFollowupSpanId,
-    quickFollowupDetailId = session.quickFollowupDetailId,
-    activePage = session.activePage,
-    savedQuestions = session.savedQuestions,
-    knowledgePoints = session.knowledgePoints,
-    ankiCards = sortAnkiCardsForReview(ankiCards),
-    activeSessionId = session.id,
+    quickFollowupSpanId = sanitizedSession.quickFollowupSpanId,
+    quickFollowupDetailId = sanitizedSession.quickFollowupDetailId,
+    activePage = sanitizedSession.activePage,
+    coachMessages = sanitizedSession.coachMessages,
+    coachDigest = sanitizedSession.coachDigest,
+    dailyTraining = sanitizedSession.dailyTraining,
+    savedQuestions = sanitizedSession.savedQuestions,
+    knowledgePoints = sanitizedSession.knowledgePoints,
+    ankiCards = sanitizedCards,
+    activeSessionId = sanitizedSession.id,
     toastMessage = toastMessage,
     isLoading = false,
     isSettingsOpen = false,
@@ -43,21 +50,27 @@ internal fun toStoredSessionSnapshot(
   createdAt: Long,
   updatedAt: Long
 ): StoredSession {
-  return StoredSession(
-    id = state.activeSessionId,
-    title = title,
-    createdAt = createdAt,
-    updatedAt = updatedAt,
-    messages = state.messages,
-    histories = state.histories,
-    profile = state.profile,
-    input = state.input,
-    activePage = state.activePage,
-    quickFollowupSpanId = state.quickFollowupSpanId,
-    quickFollowupDetailId = state.quickFollowupDetailId,
-    savedQuestions = state.savedQuestions,
-    knowledgePoints = state.knowledgePoints,
-    ankiCards = state.ankiCards
+  return sanitizeStoredSession(
+    StoredSession(
+      id = state.activeSessionId,
+      title = title,
+      createdAt = createdAt,
+      updatedAt = updatedAt,
+      messages = state.messages,
+      histories = state.histories,
+      profile = state.profile,
+      input = state.input,
+      coachInput = state.coachInput,
+      activePage = state.activePage,
+      quickFollowupSpanId = state.quickFollowupSpanId,
+      quickFollowupDetailId = state.quickFollowupDetailId,
+      coachMessages = state.coachMessages,
+      coachDigest = state.coachDigest,
+      dailyTraining = state.dailyTraining,
+      savedQuestions = state.savedQuestions,
+      knowledgePoints = state.knowledgePoints,
+      ankiCards = state.ankiCards
+    )
   )
 }
 
@@ -74,6 +87,7 @@ internal fun createInitialSessionState(
     histories = emptyMap(),
     profile = ProfileState(level = "高二 · 进阶冲刺"),
     input = "",
+    coachInput = "",
     selectedSpanId = null,
     selectedDetailId = null,
     quickFollowupSpanId = null,
@@ -123,9 +137,11 @@ internal fun buildPersistedSessionsPayload(
   sessions: List<StoredSession>
 ): PersistedSessions? {
   val activeSessionId = state.activeSessionId.ifBlank { return null }
-  return PersistedSessions(
-    activeSessionId = activeSessionId,
-    settings = state.settings,
-    sessions = sessions
+  return sanitizePersistedSessions(
+    PersistedSessions(
+      activeSessionId = activeSessionId,
+      settings = state.settings,
+      sessions = sessions
+    )
   )
 }

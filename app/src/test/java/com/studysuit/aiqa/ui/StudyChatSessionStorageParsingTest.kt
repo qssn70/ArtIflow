@@ -95,6 +95,56 @@ class StudyChatSessionStorageParsingTest {
   }
 
   @Test
+  fun buildUiStateFromSession_sanitizesLegacyDirtyStudyArtifacts() {
+    val session = StoredSession(
+      id = "session-1",
+      title = "主界面",
+      createdAt = 1L,
+      updatedAt = 2L,
+      messages = emptyList(),
+      histories = emptyMap(),
+      profile = ProfileState(level = "高二"),
+      input = "",
+      activePage = WorkspacePage.CHAT,
+      savedQuestions = listOf(
+        SavedQuestion(
+          id = "saved-1",
+          sourceMessageId = "msg-1",
+          question = "函数题",
+          answer = "看导数",
+          sourceTime = "10:00",
+          savedAt = 3L,
+          knowledgeTags = listOf("方法总结", "导数")
+        )
+      ),
+      knowledgePoints = linkedMapOf("不会" to 5, "电流" to 2),
+      ankiCards = listOf(
+        AnkiCard(
+          id = "card-1",
+          front = "q",
+          back = "a",
+          tags = listOf("方法总结", "电流"),
+          source = "src",
+          createdAt = 4L,
+          deckName = "方法总结"
+        )
+      )
+    )
+
+    val rebuilt = buildUiStateFromSession(
+      session = session,
+      ankiCards = session.ankiCards,
+      settings = RuntimeSettings.defaults(),
+      toastMessage = null
+    )
+
+    assertEquals(listOf("函数与图像", "导数与应用"), rebuilt.savedQuestions.first().knowledgeTags)
+    assertEquals(linkedMapOf("电磁学" to 2), rebuilt.knowledgePoints)
+    assertEquals(listOf("电磁学"), rebuilt.ankiCards.first().tags)
+    assertEquals("电磁学卡组", rebuilt.ankiCards.first().deckName)
+  }
+
+  @Test
   fun parsePersistedSessionsJsonRestoresSavedQuestionsArchive() {
     val raw = """
       {

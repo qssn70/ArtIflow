@@ -228,22 +228,237 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
+  fun onCoachInputChanged(value: String) {
+    updateUiState(persistSession = true) { current ->
+      current.copy(coachInput = value)
+    }
+  }
+
+  fun onCoachPageViewed() {
+    if (isDailyTrainingStale(_uiState.value.dailyTraining)) {
+      updateUiState(persistSession = true) { current ->
+        current.copy(dailyTraining = DailyTrainingState())
+      }
+    }
+    ensureCoachDigestCurrent()
+  }
+
+  fun useCoachRecommendedQuestion(prompt: String) {
+    val normalized = prompt.trim()
+    if (normalized.isBlank()) {
+      return
+    }
+
+    updateUiState(persistSession = true) { current ->
+      current.copy(
+        activePage = WorkspacePage.CHAT,
+        input = normalized,
+        toastMessage = "已把教练推荐题放到主界面提问框"
+      )
+    }
+  }
+
+  fun startCoachTraining() {
+    val digest = ensureCoachDigestCurrent()
+    val rounds = buildCoachTrainingRounds(digest)
+    if (rounds.isEmpty()) {
+      postToast("今日训练题暂时不可用")
+      return
+    }
+
+    updateUiState(persistSession = true) { current ->
+      current.copy(
+        activePage = WorkspacePage.CHAT,
+        input = "",
+        coachInput = "",
+        dailyTraining = DailyTrainingState(
+          dateKey = digest.dateKey,
+          rounds = rounds,
+          currentIndex = 0,
+          phase = DailyTrainingPhase.ASKING_QUESTION,
+          currentQuestionText = ""
+        ),
+        toastMessage = "已开始今日训练 · 正在打开第1题"
+      )
+    }
+    launchDailyTrainingRound(rounds = rounds, roundIndex = 0)
+  }
+
   fun sendQuestion() {
     val current = _uiState.value
+    when (current.activePage) {
+      WorkspacePage.QUICK_FOLLOWUP -> {
+        val question = current.input.trim()
+        if (question.isEmpty()) {
+          return
+        }
+        sendQuickFollowupQuestion(question)
+        return
+      }
+
+      WorkspacePage.COACH -> {
+        sendCoachMessage()
+        return
+      }
+
+      else -> Unit
+    }
+
     val question = current.input.trim()
     if (question.isEmpty()) {
       return
     }
 
-    if (current.activePage == WorkspacePage.QUICK_FOLLOWUP) {
-      sendQuickFollowupQuestion(question)
-      return
+    val activeTraining = current.dailyTraining.takeIf { training ->
+      !isDailyTrainingStale(training) && training.isActive
+    }
+    if (activeTraining != null) {
+      when (activeTraining.phase) {
+        DailyTrainingPhase.AWAITING_ANSWER -> {
+          submitDailyTrainingAnswer(question)
+          return
+        }
+
+        DailyTrainingPhase.ASKING_QUESTION,
+        DailyTrainingPhase.REVIEWING_ANSWER -> {
+          postToast("当前训练题还在准备或批改中，请稍等")
+          return
+        }
+
+        else -> Unit
+      }
+    }
+
+    if (isDailyTrainingStale(current.dailyTraining)) {
+      updateUiState(persistSession = true) { state ->
+        state.copy(dailyTraining = DailyTrainingState())
+      }
     }
 
     enqueueQuestionAndFetch(
       question = question,
       isFollowup = false,
       isVoice = false
+    )
+  }
+
+  fun sendCoachMessage() {
+    val initialState = _uiState.value
+    val question = initialState.coachInput.trim()
+    if (question.isEmpty()) {
+      return
+    }
+
+    val digest = initialState.coachDigest?.takeIf { current ->
+      current.dateKey == currentCoachDateKey()
+    } ?: ensureCoachDigestCurrent()
+    val stateSnapshot = _uiState.value
+    val requestConversationToken = conversationToken
+    val settings = stateSnapshot.settings
+    val profileSnapshot = stateSnapshot.profile
+    val knowledgeSnapshot = stateSnapshot.knowledgePoints
+    val savedQuestionsSnapshot = stateSnapshot.savedQuestions
+    val knowledgeGapSnapshot = buildKnowledgeGapInsights(
+      messages = stateSnapshot.messages,
+      histories = stateSnapshot.histories,
+      knowledgePoints = stateSnapshot.knowledgePoints
+    )
+    val userMessage = CoachChatMessage(
+      id = nextMessageId(),
+      role = CoachMessageRole.USER,
+      time = currentTime(),
+      text = question
+    )
+    val assistantMessageId = nextMessageId()
+    val assistantMessageTime = currentTime()
+    val assistantPlaceholder = CoachChatMessage(
+      id = assistantMessageId,
+      role = CoachMessageRole.ASSISTANT,
+      time = assistantMessageTime,
+      text = "正在生成教练建议..."
+    )
+    val streamBuffer = StringBuilder()
+
+    val pushPartialAssistant: () -> Unit = {
+      val partial = streamBuffer.toString().trimStart()
+      val partialMessage = assistantPlaceholder.copy(
+        text = partial.ifBlank { "正在生成教练建议..." }
+      )
+      updateUiState(persistSession = false) { current ->
+        current.copy(
+          coachMessages = upsertCoachMessage(current.coachMessages, partialMessage),
+          coachDigest = current.coachDigest ?: digest
+        )
+      }
+    }
+
+    startRequest(clearToast = true) { current ->
+      current.copy(
+        coachInput = "",
+        coachDigest = digest,
+        coachMessages = current.coachMessages + listOf(userMessage, assistantPlaceholder)
+      )
+    }
+
+    launchTokenAwareRequest(
+      requestConversationToken = requestConversationToken,
+      request = {
+        requestCoordinator.replyForCoachConversationStream(
+          coachMessages = stateSnapshot.coachMessages + userMessage,
+          digest = digest,
+          profile = profileSnapshot,
+          knowledgePoints = knowledgeSnapshot,
+          knowledgeGapInsights = knowledgeGapSnapshot,
+          savedQuestions = savedQuestionsSnapshot,
+          settings = settings,
+          onDelta = { delta ->
+            if (isTokenStale(requestConversationToken, conversationToken) || delta.isBlank()) {
+              return@replyForCoachConversationStream
+            }
+
+            streamBuffer.append(delta)
+            pushPartialAssistant()
+          }
+        )
+      },
+      onStale = { finishRequest() },
+      onSuccess = { reply ->
+        val resolvedReply = reply.ifBlank { streamBuffer.toString().trim() }.ifBlank { "我先陪你把问题拆开，你可以继续追问我最卡的那一步。" }
+        val assistantMessage = assistantPlaceholder.copy(text = resolvedReply)
+        finishRequest { current ->
+          current.copy(
+            coachDigest = current.coachDigest ?: digest,
+            coachMessages = upsertCoachMessage(current.coachMessages, assistantMessage)
+          )
+        }
+      },
+      onFailure = { throwable ->
+        val partialReply = streamBuffer.toString().trimStart()
+        if (partialReply.isNotBlank()) {
+          val recovered = assistantPlaceholder.copy(text = partialReply)
+          finishRequest { current ->
+            current.copy(
+              coachDigest = current.coachDigest ?: digest,
+              coachMessages = upsertCoachMessage(current.coachMessages, recovered),
+              toastMessage = "网络连接中断，已保留已生成的教练建议"
+            )
+          }
+          return@launchTokenAwareRequest
+        }
+
+        handleRequestFailure(
+          throwable = throwable,
+          onError = { current, errorHint ->
+            current.copy(
+              coachInput = question,
+              coachMessages = current.coachMessages.filterNot { message ->
+                message.id == assistantMessageId || message.id == userMessage.id
+              },
+              toastMessage = "教练回复失败：$errorHint（问题已保留，可重发）"
+            )
+          }
+        )
+      }
     )
   }
 
@@ -538,6 +753,10 @@ class StudyChatViewModel : ViewModel() {
         target
       }
     }
+
+    if (page == WorkspacePage.COACH) {
+      ensureCoachDigestCurrent()
+    }
   }
 
   fun openQuickFollowup(spanId: String? = null, detailId: String? = null) {
@@ -752,7 +971,7 @@ class StudyChatViewModel : ViewModel() {
   fun updateAnkiCard(cardId: String, front: String, back: String, tags: List<String>) {
     val normalizedFront = normalizeCardText(front, maxLen = 500)
     val normalizedBack = normalizeCardText(back, maxLen = 1200)
-    val normalizedTags = tags.map(String::trim).filter(String::isNotEmpty).distinct().take(10)
+    val normalizedTags = filterToHighSchoolKnowledgeTags(tags, maxSize = 10)
 
     if (normalizedFront.isBlank() || normalizedBack.isBlank()) {
       postToast("题面和答案都不能为空")
@@ -1545,6 +1764,413 @@ class StudyChatViewModel : ViewModel() {
       ?: findLatestAssistantQuestionSpan(state.messages)
   }
 
+  private fun ensureCoachDigestCurrent(): CoachDailyDigest {
+    val todayKey = currentCoachDateKey()
+    val current = _uiState.value
+    current.coachDigest?.takeIf { digest -> digest.dateKey == todayKey }?.let { digest ->
+      return digest
+    }
+
+    val digest = buildCoachDailyDigest(
+      messages = current.messages,
+      histories = current.histories,
+      savedQuestions = current.savedQuestions,
+      knowledgePoints = current.knowledgePoints
+    )
+    updateUiState(persistSession = true) { state ->
+      if (state.coachDigest?.dateKey == digest.dateKey) {
+        state
+      } else {
+        state.copy(coachDigest = digest)
+      }
+    }
+    return digest
+  }
+
+  private fun isDailyTrainingStale(training: DailyTrainingState): Boolean {
+    return training.dateKey.isNotBlank() && training.dateKey != currentCoachDateKey()
+  }
+
+  private fun launchDailyTrainingRound(
+    rounds: List<CoachRecommendedQuestion>,
+    roundIndex: Int
+  ) {
+    val round = rounds.getOrNull(roundIndex)
+    if (round == null) {
+      updateUiState(persistSession = true) { current ->
+        current.copy(
+          dailyTraining = DailyTrainingState(
+            dateKey = currentCoachDateKey(),
+            rounds = rounds,
+            currentIndex = rounds.lastIndex.coerceAtLeast(0),
+            phase = DailyTrainingPhase.COMPLETED,
+            currentQuestionText = ""
+          ),
+          toastMessage = "今日训练已完成"
+        )
+      }
+      return
+    }
+
+    val requestConversationToken = conversationToken
+    val settings = _uiState.value.settings
+    val displayUserMessage = ChatMessage.User(
+      id = nextMessageId(),
+      time = currentTime(),
+      text = buildTrainingRoundDisplayText(round, roundIndex, rounds.size)
+    )
+    val assistantMessageId = nextMessageId()
+    val assistantMessageTime = currentTime()
+    val requestMessages = listOf(
+      ChatMessage.User(
+        id = "train-request-$assistantMessageId",
+        time = assistantMessageTime,
+        text = round.prompt
+      )
+    )
+    val streamBuffer = StringBuilder()
+    val reasoningBuffer = StringBuilder()
+    val placeholderText = "正在生成第${roundIndex + 1}题..."
+    val assistantPlaceholder = createAssistantMessage(
+      content = placeholderText,
+      sourceQuestion = round.prompt,
+      reasoningSummary = null,
+      messageId = assistantMessageId,
+      messageTime = assistantMessageTime
+    )
+
+    val pushPartialAssistant: () -> Unit = {
+      val partial = streamBuffer.toString().trimStart()
+      val reasoning = reasoningBuffer.toString().trim().ifBlank { null }
+      val partialMessage = createAssistantMessage(
+        content = partial.ifBlank { placeholderText },
+        sourceQuestion = round.prompt,
+        reasoningSummary = reasoning,
+        messageId = assistantMessageId,
+        messageTime = assistantMessageTime
+      )
+      updateUiState(persistSession = false) { current ->
+        upsertAssistantMessageState(current, partialMessage)
+      }
+    }
+
+    startRequest(toastMessage = "正在生成今日训练第${roundIndex + 1}题...") { current ->
+      val queued = current.copy(
+        activePage = WorkspacePage.CHAT,
+        input = "",
+        coachInput = "",
+        messages = current.messages + displayUserMessage,
+        profile = current.profile.updateWith(text = round.prompt, isFollowup = false, isVoice = false),
+        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(round.prompt)),
+        dailyTraining = DailyTrainingState(
+          dateKey = currentCoachDateKey(),
+          rounds = rounds,
+          currentIndex = roundIndex,
+          phase = DailyTrainingPhase.ASKING_QUESTION,
+          currentQuestionText = ""
+        )
+      )
+      upsertAssistantMessageState(queued, assistantPlaceholder)
+    }
+
+    launchTokenAwareRequest(
+      requestConversationToken = requestConversationToken,
+      request = {
+        requestCoordinator.replyForConversationStream(
+          messages = requestMessages,
+          settings = settings,
+          onDelta = { delta ->
+            if (isTokenStale(requestConversationToken, conversationToken) || delta.isBlank()) {
+              return@replyForConversationStream
+            }
+            streamBuffer.append(delta)
+            pushPartialAssistant()
+          },
+          onReasoningDelta = { reasoningDelta ->
+            if (isTokenStale(requestConversationToken, conversationToken) || reasoningDelta.isBlank()) {
+              return@replyForConversationStream
+            }
+            reasoningBuffer.append(reasoningDelta)
+            pushPartialAssistant()
+          }
+        )
+      },
+      onStale = { finishRequest() },
+      onSuccess = { reply ->
+        val resolvedReply = reply.ifBlank { streamBuffer.toString().trim() }
+        val resolvedReasoning = reasoningBuffer.toString().trim().ifBlank { null }
+        val assistantMessage = createAssistantMessage(
+          content = resolvedReply,
+          sourceQuestion = round.prompt,
+          reasoningSummary = resolvedReasoning,
+          messageId = assistantMessageId,
+          messageTime = assistantMessageTime
+        )
+        finishRequest { current ->
+          val updated = appendAssistantMessageState(
+            current = current,
+            assistantMessage = assistantMessage,
+            toastMessage = "第${roundIndex + 1}题已发到主界面",
+            knowledgeTexts = listOf(resolvedReply)
+          )
+          updated.copy(
+            dailyTraining = DailyTrainingState(
+              dateKey = currentCoachDateKey(),
+              rounds = rounds,
+              currentIndex = roundIndex,
+              phase = DailyTrainingPhase.AWAITING_ANSWER,
+              currentQuestionText = assistantMessage.fullAnswerText()
+            )
+          )
+        }
+      },
+      onFailure = { throwable ->
+        val partialReply = streamBuffer.toString().trimStart()
+        val partialReasoning = reasoningBuffer.toString().trim().ifBlank { null }
+        if (partialReply.isNotBlank() || partialReasoning != null) {
+          val recoveredMessage = createAssistantMessage(
+            content = partialReply.ifBlank { "网络波动，已保留当前训练题的已生成内容。" },
+            sourceQuestion = round.prompt,
+            reasoningSummary = partialReasoning,
+            messageId = assistantMessageId,
+            messageTime = assistantMessageTime
+          )
+          finishRequest { current ->
+            val updated = appendAssistantMessageState(
+              current = current,
+              assistantMessage = recoveredMessage,
+              toastMessage = "网络连接中断，已保留当前训练题",
+              knowledgeTexts = listOf(partialReply.ifBlank { partialReasoning.orEmpty() })
+            )
+            updated.copy(
+              dailyTraining = DailyTrainingState(
+                dateKey = currentCoachDateKey(),
+                rounds = rounds,
+                currentIndex = roundIndex,
+                phase = DailyTrainingPhase.AWAITING_ANSWER,
+                currentQuestionText = recoveredMessage.fullAnswerText()
+              )
+            )
+          }
+          return@launchTokenAwareRequest
+        }
+
+        handleRequestFailure(
+          throwable = throwable,
+          onError = { current, errorHint ->
+            val rolledBackPlaceholder = rollbackQueuedUserMessageState(current, assistantMessageId)
+            rollbackQueuedUserMessageState(
+              current = rolledBackPlaceholder,
+              messageId = displayUserMessage.id,
+              toastMessage = "今日训练启动失败：$errorHint"
+            ).copy(dailyTraining = DailyTrainingState())
+          }
+        )
+      }
+    )
+  }
+
+  private fun submitDailyTrainingAnswer(answer: String) {
+    val stateSnapshot = _uiState.value
+    val training = stateSnapshot.dailyTraining
+    if (isDailyTrainingStale(training)) {
+      updateUiState(persistSession = true) { current ->
+        current.copy(dailyTraining = DailyTrainingState(), toastMessage = "今日训练已过期，请重新开始")
+      }
+      return
+    }
+
+    val round = training.currentRound
+    val trainingQuestion = training.currentQuestionText.trim()
+    if (round == null || training.phase != DailyTrainingPhase.AWAITING_ANSWER || trainingQuestion.isBlank()) {
+      postToast("当前没有可提交答案的训练题")
+      return
+    }
+
+    val requestConversationToken = conversationToken
+    val settings = stateSnapshot.settings
+    val roundIndex = training.currentIndex.coerceAtLeast(0)
+    val requestPrompt = buildTrainingEvaluationPrompt(round, trainingQuestion, answer)
+    val displayUserMessage = ChatMessage.User(
+      id = nextMessageId(),
+      time = currentTime(),
+      text = answer
+    )
+    val assistantMessageId = nextMessageId()
+    val assistantMessageTime = currentTime()
+    val requestMessages = listOf(
+      ChatMessage.User(
+        id = "train-review-$assistantMessageId",
+        time = assistantMessageTime,
+        text = requestPrompt
+      )
+    )
+    val streamBuffer = StringBuilder()
+    val reasoningBuffer = StringBuilder()
+    val placeholderText = "正在批改第${roundIndex + 1}题..."
+    val assistantPlaceholder = createAssistantMessage(
+      content = placeholderText,
+      sourceQuestion = trainingQuestion,
+      reasoningSummary = null,
+      messageId = assistantMessageId,
+      messageTime = assistantMessageTime
+    )
+
+    val pushPartialAssistant: () -> Unit = {
+      val partial = streamBuffer.toString().trimStart()
+      val reasoning = reasoningBuffer.toString().trim().ifBlank { null }
+      val partialMessage = createAssistantMessage(
+        content = partial.ifBlank { placeholderText },
+        sourceQuestion = trainingQuestion,
+        reasoningSummary = reasoning,
+        messageId = assistantMessageId,
+        messageTime = assistantMessageTime
+      )
+      updateUiState(persistSession = false) { current ->
+        upsertAssistantMessageState(current, partialMessage)
+      }
+    }
+
+    startRequest(toastMessage = "正在批改第${roundIndex + 1}题...") { current ->
+      val queued = current.copy(
+        input = "",
+        messages = current.messages + displayUserMessage,
+        profile = current.profile.updateWith(text = answer, isFollowup = false, isVoice = false),
+        knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(answer, trainingQuestion)),
+        dailyTraining = current.dailyTraining.copy(phase = DailyTrainingPhase.REVIEWING_ANSWER)
+      )
+      upsertAssistantMessageState(queued, assistantPlaceholder)
+    }
+
+    launchTokenAwareRequest(
+      requestConversationToken = requestConversationToken,
+      request = {
+        requestCoordinator.replyForConversationStream(
+          messages = requestMessages,
+          settings = settings,
+          onDelta = { delta ->
+            if (isTokenStale(requestConversationToken, conversationToken) || delta.isBlank()) {
+              return@replyForConversationStream
+            }
+            streamBuffer.append(delta)
+            pushPartialAssistant()
+          },
+          onReasoningDelta = { reasoningDelta ->
+            if (isTokenStale(requestConversationToken, conversationToken) || reasoningDelta.isBlank()) {
+              return@replyForConversationStream
+            }
+            reasoningBuffer.append(reasoningDelta)
+            pushPartialAssistant()
+          }
+        )
+      },
+      onStale = { finishRequest() },
+      onSuccess = { reply ->
+        val resolvedReply = reply.ifBlank { streamBuffer.toString().trim() }
+        val resolvedReasoning = reasoningBuffer.toString().trim().ifBlank { null }
+        val assistantMessage = createAssistantMessage(
+          content = resolvedReply,
+          sourceQuestion = trainingQuestion,
+          reasoningSummary = resolvedReasoning,
+          messageId = assistantMessageId,
+          messageTime = assistantMessageTime
+        )
+        val hasNextRound = roundIndex + 1 < training.rounds.size
+        finishRequest { current ->
+          val updated = appendAssistantMessageState(
+            current = current,
+            assistantMessage = assistantMessage,
+            toastMessage = if (hasNextRound) {
+              "第${roundIndex + 1}题完成，正在进入第${roundIndex + 2}题"
+            } else {
+              "今日训练完成"
+            },
+            knowledgeTexts = listOf(resolvedReply)
+          )
+          updated.copy(
+            dailyTraining = if (hasNextRound) {
+              current.dailyTraining.copy(
+                phase = DailyTrainingPhase.ASKING_QUESTION,
+                currentIndex = roundIndex + 1,
+                currentQuestionText = ""
+              )
+            } else {
+              current.dailyTraining.copy(
+                phase = DailyTrainingPhase.COMPLETED,
+                currentQuestionText = ""
+              )
+            }
+          )
+        }
+        if (hasNextRound) {
+          launchDailyTrainingRound(training.rounds, roundIndex + 1)
+        }
+      },
+      onFailure = { throwable ->
+        val partialReply = streamBuffer.toString().trimStart()
+        val partialReasoning = reasoningBuffer.toString().trim().ifBlank { null }
+        val hasNextRound = roundIndex + 1 < training.rounds.size
+        if (partialReply.isNotBlank() || partialReasoning != null) {
+          val recoveredMessage = createAssistantMessage(
+            content = partialReply.ifBlank { "网络波动，已保留本次批改的已生成内容。" },
+            sourceQuestion = trainingQuestion,
+            reasoningSummary = partialReasoning,
+            messageId = assistantMessageId,
+            messageTime = assistantMessageTime
+          )
+          finishRequest { current ->
+            val updated = appendAssistantMessageState(
+              current = current,
+              assistantMessage = recoveredMessage,
+              toastMessage = if (hasNextRound) {
+                "第${roundIndex + 1}题批改部分完成，继续进入下一题"
+              } else {
+                "今日训练完成（已保留本题批改内容）"
+              },
+              knowledgeTexts = listOf(partialReply.ifBlank { partialReasoning.orEmpty() })
+            )
+            updated.copy(
+              dailyTraining = if (hasNextRound) {
+                current.dailyTraining.copy(
+                  phase = DailyTrainingPhase.ASKING_QUESTION,
+                  currentIndex = roundIndex + 1,
+                  currentQuestionText = ""
+                )
+              } else {
+                current.dailyTraining.copy(
+                  phase = DailyTrainingPhase.COMPLETED,
+                  currentQuestionText = ""
+                )
+              }
+            )
+          }
+          if (hasNextRound) {
+            launchDailyTrainingRound(training.rounds, roundIndex + 1)
+          }
+          return@launchTokenAwareRequest
+        }
+
+        handleRequestFailure(
+          throwable = throwable,
+          onError = { current, errorHint ->
+            val rolledBackPlaceholder = rollbackQueuedUserMessageState(current, assistantMessageId)
+            rollbackQueuedUserMessageState(
+              current = rolledBackPlaceholder,
+              messageId = displayUserMessage.id,
+              restoredInput = answer,
+              toastMessage = "第${roundIndex + 1}题批改失败：$errorHint（答案已保留，可重发）"
+            ).copy(
+              dailyTraining = current.dailyTraining.copy(
+                phase = DailyTrainingPhase.AWAITING_ANSWER,
+                currentQuestionText = trainingQuestion
+              )
+            )
+          }
+        )
+      }
+    )
+  }
+
   private fun enqueueQuestionAndFetch(
     question: String,
     isFollowup: Boolean,
@@ -1801,28 +2427,34 @@ class StudyChatViewModel : ViewModel() {
       return
     }
 
-    if (restored.sessions.isEmpty()) {
+    val sanitized = sanitizePersistedSessions(restored)
+
+    if (sanitized.sessions.isEmpty()) {
       sessionRegistry.clear()
       _uiState.update { current ->
         current.copy(
-          settings = restored.settings,
-          settingsDraft = restored.settings
+          settings = sanitized.settings,
+          settingsDraft = sanitized.settings
         )
       }
       resetConversation()
       return
     }
 
-    val preferredSession = restored.sessions.firstOrNull { session -> session.id == restored.activeSessionId }
-      ?: restored.sessions.firstOrNull()
+    val preferredSession = sanitized.sessions.firstOrNull { session -> session.id == sanitized.activeSessionId }
+      ?: sanitized.sessions.firstOrNull()
       ?: run {
         sessionRegistry.clear()
         resetConversation()
         return
       }
 
-    val settings = restored.settings
-    val sharedAnkiCards = mergeGlobalAnkiCards(restored.sessions)
+    val shouldPersistCleanedState = sanitized != restored ||
+      sanitized.activeSessionId != preferredSession.id ||
+      sanitized.sessions.size != 1
+
+    val settings = sanitized.settings
+    val sharedAnkiCards = mergeGlobalAnkiCards(sanitized.sessions)
     sessionRegistry.replaceAll(listOf(preferredSession))
     activateSession(
       session = preferredSession,
@@ -1831,6 +2463,9 @@ class StudyChatViewModel : ViewModel() {
       toastMessage = null,
       persistSession = false
     )
+    if (shouldPersistCleanedState) {
+      persistSessionsAsync()
+    }
   }
 
   private fun persistSessionsAsync() {
@@ -1897,9 +2532,10 @@ class StudyChatViewModel : ViewModel() {
     val historyCount = assistantMessage.interactiveSpans().sumOf { span ->
       state.histories[span.id].orEmpty().size
     }
-    val tags = inferKnowledgePoints(listOf(question, answer).joinToString(separator = "\n"))
-      .distinct()
-      .take(6)
+    val tags = filterToHighSchoolKnowledgeTags(
+      inferKnowledgePoints(listOf(question, answer).joinToString(separator = "\n")),
+      maxSize = 6
+    )
 
     return SavedQuestion(
       id = "saved-${System.currentTimeMillis()}-${messageId}",
@@ -1962,11 +2598,7 @@ class StudyChatViewModel : ViewModel() {
   ): AnkiCard {
     val normalizedFront = normalizeCardText(front, maxLen = 500)
     val normalizedBack = normalizeCardText(back, maxLen = 1200)
-    val effectiveTags = tags
-      .map(String::trim)
-      .filter(String::isNotEmpty)
-      .distinct()
-      .take(10)
+    val effectiveTags = filterToHighSchoolKnowledgeTags(tags, maxSize = 10)
 
     return AnkiCard(
       id = nextCardId(),

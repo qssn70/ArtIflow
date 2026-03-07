@@ -374,6 +374,171 @@ internal fun inferKnowledgePoints(text: String): List<String> {
   return detectKnowledgePoints(text)
 }
 
+private val supportedKnowledgeSubjects = setOf("数学", "物理", "化学", "英语", "语文")
+private val canonicalHighSchoolKnowledgePoints = (
+  knowledgeRules.map { rule -> rule.point } + listOf(
+    "二次函数",
+    "解析几何",
+    "数列",
+    "导数与应用",
+    "三角函数",
+    "运动学",
+    "光学",
+    "热学",
+    "机械能",
+    "有机化学",
+    "电化学",
+    "离子反应",
+    "化学平衡",
+    "时态与语态",
+    "从句",
+    "虚拟语气",
+    "完形填空",
+    "阅读理解",
+    "文言文",
+    "现代文阅读",
+    "诗词鉴赏",
+    "作文",
+    "修辞手法"
+  )
+).toSet()
+
+internal fun filterToHighSchoolKnowledgeTags(
+  tags: List<String>,
+  maxSize: Int = 6
+): List<String> {
+  return tags
+    .asSequence()
+    .flatMap { tag -> canonicalizeHighSchoolKnowledgePoint(tag).asSequence() }
+    .distinct()
+    .take(maxSize)
+    .toList()
+}
+
+private fun canonicalizeHighSchoolKnowledgePoint(text: String): List<String> {
+  val normalized = text.trim()
+  if (normalized.isBlank()) {
+    return emptyList()
+  }
+
+  if (normalized in canonicalHighSchoolKnowledgePoints) {
+    return listOf(normalized)
+  }
+
+  val tagged = QuestionTagger.autoTag(normalized)
+  val taggedPoints = tagged.knowledgePoints
+    .map { point -> point.trim() }
+    .filter { point -> point.isNotBlank() }
+    .distinct()
+  if (tagged.subject in supportedKnowledgeSubjects && taggedPoints.isNotEmpty()) {
+    return taggedPoints
+  }
+
+  return detectRuleBasedKnowledgePoints(normalized)
+}
+
+private fun detectRuleBasedKnowledgePoints(text: String): List<String> {
+  val normalized = text.lowercase(Locale.getDefault())
+  return knowledgeRules
+    .filter { rule -> rule.keywords.any { keyword -> normalized.contains(keyword.lowercase(Locale.getDefault())) } }
+    .map { rule -> rule.point }
+    .distinct()
+}
+
+private fun isValidHighSchoolDeckSuggestion(raw: String?): Boolean {
+  val normalized = raw?.trim().orEmpty()
+    .removeSuffix("卡组")
+    .removeSuffix("专练")
+    .removeSuffix("训练")
+    .trim()
+  if (normalized.isBlank()) {
+    return false
+  }
+
+  if (QuestionTagger.detectSubject(normalized) in supportedKnowledgeSubjects) {
+    return true
+  }
+
+  return canonicalizeHighSchoolKnowledgePoint(normalized).isNotEmpty()
+}
+
+
+internal fun sanitizeKnowledgePointsMap(
+  knowledgePoints: Map<String, Int>,
+  maxSize: Int = 32
+): Map<String, Int> {
+  if (knowledgePoints.isEmpty()) {
+    return emptyMap()
+  }
+
+  val sanitized = linkedMapOf<String, Int>()
+  knowledgePoints.forEach { (rawPoint, rawCount) ->
+    val count = rawCount.coerceAtLeast(0)
+    if (count <= 0) {
+      return@forEach
+    }
+
+    filterToHighSchoolKnowledgeTags(listOf(rawPoint), maxSize = 6).forEach { point ->
+      sanitized[point] = (sanitized[point] ?: 0) + count
+    }
+  }
+
+  return sanitized.entries
+    .take(maxSize)
+    .associateTo(linkedMapOf()) { entry -> entry.key to entry.value }
+}
+
+internal fun sanitizeSavedQuestion(saved: SavedQuestion): SavedQuestion? {
+  val question = saved.question.trim()
+  val answer = saved.answer.trim()
+  if (question.isBlank() || answer.isBlank()) {
+    return null
+  }
+
+  return saved.copy(
+    question = question,
+    answer = answer,
+    knowledgeTags = filterToHighSchoolKnowledgeTags(saved.knowledgeTags, maxSize = 6)
+  )
+}
+
+internal fun sanitizeAnkiCard(card: AnkiCard): AnkiCard {
+  val tags = filterToHighSchoolKnowledgeTags(card.tags, maxSize = 10)
+  return card.copy(
+    tags = tags,
+    deckName = sanitizeDeckNameForStoredCard(card.deckName, tags)
+  )
+}
+
+internal fun sanitizeStoredSession(session: StoredSession): StoredSession {
+  return session.copy(
+    savedQuestions = session.savedQuestions.mapNotNull(::sanitizeSavedQuestion),
+    knowledgePoints = sanitizeKnowledgePointsMap(session.knowledgePoints),
+    ankiCards = sortAnkiCardsForReview(session.ankiCards.map(::sanitizeAnkiCard))
+  )
+}
+
+internal fun sanitizePersistedSessions(payload: PersistedSessions): PersistedSessions {
+  return payload.copy(
+    sessions = payload.sessions.map(::sanitizeStoredSession)
+  )
+}
+
+private fun sanitizeDeckNameForStoredCard(deckName: String?, tags: List<String>): String {
+  val normalizedDeck = normalizeDeckName(deckName)
+  if (!normalizedDeck.isNullOrBlank()) {
+    if (normalizedDeck.equals(DEFAULT_ANKI_DECK_NAME, ignoreCase = true)) {
+      return DEFAULT_ANKI_DECK_NAME
+    }
+    if (isValidHighSchoolDeckSuggestion(normalizedDeck)) {
+      return normalizedDeck
+    }
+  }
+
+  val firstTag = filterToHighSchoolKnowledgeTags(tags, maxSize = 1).firstOrNull()
+  return normalizeDeckName(firstTag?.let { point -> "${point.trim()}卡组" }) ?: DEFAULT_ANKI_DECK_NAME
+}
+
 internal fun buildSavedQuestionPreview(answer: String): String {
   return extractAnswerSnippetForSummary(answer).ifBlank {
     normalizeInlineText(answer).take(56)
@@ -456,21 +621,7 @@ internal fun mergeKnowledgePoints(
 }
 
 private fun detectKnowledgePoints(text: String): List<String> {
-  val tagged = QuestionTagger.autoTag(text).knowledgePoints
-    .map { point -> point.trim() }
-    .filter { point -> point.isNotBlank() }
-    .distinct()
-  if (tagged.isNotEmpty()) {
-    return tagged
-  }
-
-  val normalized = text.lowercase(Locale.getDefault())
-  val matched = knowledgeRules
-    .filter { rule -> rule.keywords.any { keyword -> normalized.contains(keyword) } }
-    .map { rule -> rule.point }
-    .distinct()
-
-  return if (matched.isEmpty()) detectTopicsForProfile(text) else matched
+  return canonicalizeHighSchoolKnowledgePoint(text)
 }
 
 private data class KnowledgeGapStats(
@@ -690,6 +841,8 @@ internal fun buildAnkiGenerationPrompt(
     append("\n仅输出JSON，不要代码块，不要解释。")
     append("\nJSON格式：{\"skip\":false,\"front\":\"...\",\"back\":\"...\",\"tags\":[\"...\"],\"deck\":\"...\",\"card_type\":\"...\"}")
     append("\n约束：front<=60字，back<=180字，tags<=6。")
+    append("\ntags要求：只允许填写高中学科知识点或学科名；不要写审题、方法、不会、易错、套路、总结这类泛标签。")
+    append("\ndeck要求：只有在确实对应高中学科或知识点时才创建新卡组，否则优先复用已有卡组或归入未分类。")
     append("\ndeck命名：2~12字，中文优先，不要使用\"卡组\"、\"默认\"这类空泛名称。")
     append("\n\n交互模式：")
     append(mode)
@@ -739,16 +892,19 @@ internal fun parseAiAnkiCardPayload(raw: String): AiAnkiCardPayload? {
     return null
   }
 
-  val tags = payload.optJSONArray("tags")?.let { array ->
-    buildList {
-      for (index in 0 until array.length()) {
-        val tag = array.optString(index).trim()
-        if (tag.isNotBlank()) {
-          add(tag)
+  val tags = filterToHighSchoolKnowledgeTags(
+    payload.optJSONArray("tags")?.let { array ->
+      buildList {
+        for (index in 0 until array.length()) {
+          val tag = array.optString(index).trim()
+          if (tag.isNotBlank()) {
+            add(tag)
+          }
         }
       }
-    }
-  }.orEmpty()
+    }.orEmpty(),
+    maxSize = 6
+  )
 
   val deck = payload.optString("deck").trim().takeIf { value -> value.isNotBlank() }
 
@@ -817,12 +973,17 @@ internal fun resolveDeckNameForAutoCard(
   val normalizedSuggestion = normalizeDeckName(suggestedDeck)
 
   if (normalizedSuggestion != null) {
-    return existingDecks.firstOrNull { deck ->
+    existingDecks.firstOrNull { deck ->
       deck.equals(normalizedSuggestion, ignoreCase = true)
-    } ?: normalizedSuggestion
+    }?.let { matched ->
+      return matched
+    }
+    if (isValidHighSchoolDeckSuggestion(normalizedSuggestion)) {
+      return normalizedSuggestion
+    }
   }
 
-  val normalizedTags = tags
+  val normalizedTags = filterToHighSchoolKnowledgeTags(tags, maxSize = 10)
     .asSequence()
     .map { tag -> tag.trim().lowercase(Locale.getDefault()) }
     .filter { tag -> tag.isNotBlank() }
@@ -833,7 +994,10 @@ internal fun resolveDeckNameForAutoCard(
     val matchedDeck = grouped
       .map { (deck, cardsInDeck) ->
         val deckTags = cardsInDeck
-          .flatMap { card -> card.tags }
+          .flatMap { card ->
+            val normalized = filterToHighSchoolKnowledgeTags(card.tags, maxSize = 10)
+            if (normalized.isEmpty()) card.tags else normalized
+          }
           .asSequence()
           .map { tag -> tag.trim().lowercase(Locale.getDefault()) }
           .filter { tag -> tag.isNotBlank() }
@@ -850,7 +1014,7 @@ internal fun resolveDeckNameForAutoCard(
     }
   }
 
-  val firstTag = tags.firstOrNull { tag -> tag.isNotBlank() }
+  val firstTag = filterToHighSchoolKnowledgeTags(tags, maxSize = 1).firstOrNull()
   if (!firstTag.isNullOrBlank()) {
     return normalizeDeckName("${firstTag.trim()}卡组") ?: DEFAULT_ANKI_DECK_NAME
   }
@@ -1110,9 +1274,13 @@ internal data class SessionSeeds(
 )
 
 internal fun deriveSessionSeeds(active: StoredSession): SessionSeeds {
-  val messageSeed = active.messages.mapNotNull { message ->
-    message.id.removePrefix("msg-").toIntOrNull()
-  }.maxOrNull() ?: 0
+  val messageSeed = (
+    active.messages.mapNotNull { message ->
+      message.id.removePrefix("msg-").toIntOrNull()
+    } + active.coachMessages.mapNotNull { message ->
+      message.id.removePrefix("msg-").toIntOrNull()
+    }
+  ).maxOrNull() ?: 0
 
   val spanSeed = active.messages
     .filterIsInstance<ChatMessage.Assistant>()

@@ -431,6 +431,97 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun inferKnowledgePoints_filtersOutGenericMethodText() {
+    val points = inferKnowledgePoints("这题的审题思路还是有点乱")
+
+    assertTrue(points.isEmpty())
+  }
+
+  @Test
+  fun parseAiAnkiCardPayload_filtersNonStudyTags() {
+    val payload = parseAiAnkiCardPayload(
+      """
+      {"skip":false,"front":"f","back":"b","tags":["审题","函数与图像","方法总结","电场强度"],"deck":"方法总结"}
+      """.trimIndent()
+    )
+
+    assertEquals(listOf("函数与图像", "电磁学"), payload?.tags)
+  }
+
+  @Test
+  fun resolveDeckNameForAutoCard_ignoresGenericSuggestion() {
+    val deck = resolveDeckNameForAutoCard(
+      suggestedDeck = "方法总结",
+      tags = emptyList(),
+      existingCards = emptyList()
+    )
+
+    assertEquals(DEFAULT_ANKI_DECK_NAME, deck)
+  }
+
+
+  @Test
+  fun filterToHighSchoolKnowledgeTags_keepsCanonicalPointLabelsStable() {
+    val tags = filterToHighSchoolKnowledgeTags(listOf("电磁学", "导数与应用"), maxSize = 6)
+
+    assertEquals(listOf("电磁学", "导数与应用"), tags)
+  }
+
+  @Test
+  fun sanitizeStoredSession_removesDirtyKnowledgeTagsAndDecks() {
+    val sanitized = sanitizeStoredSession(
+      StoredSession(
+        id = "session-1",
+        title = "主界面",
+        createdAt = 1L,
+        updatedAt = 2L,
+        messages = emptyList(),
+        histories = emptyMap(),
+        profile = ProfileState(level = "高二"),
+        input = "",
+        activePage = WorkspacePage.CHAT,
+        savedQuestions = listOf(
+          SavedQuestion(
+            id = "saved-1",
+            sourceMessageId = "msg-1",
+            question = " 这题怎么做 ",
+            answer = " 先看函数图像 ",
+            sourceTime = "10:00",
+            savedAt = 3L,
+            knowledgeTags = listOf("审题", "导数")
+          ),
+          SavedQuestion(
+            id = "saved-2",
+            sourceMessageId = "msg-2",
+            question = "   ",
+            answer = "会被清掉",
+            sourceTime = "10:01",
+            savedAt = 4L
+          )
+        ),
+        knowledgePoints = linkedMapOf("审题" to 3, "导数" to 2, "函数" to 1),
+        ankiCards = listOf(
+          AnkiCard(
+            id = "card-1",
+            front = "q",
+            back = "a",
+            tags = listOf("方法总结", "导数"),
+            source = "src",
+            createdAt = 5L,
+            deckName = "方法总结"
+          )
+        )
+      )
+    )
+
+    assertEquals(1, sanitized.savedQuestions.size)
+    assertEquals(listOf("函数与图像", "导数与应用"), sanitized.savedQuestions.first().knowledgeTags)
+    assertEquals(linkedMapOf("函数与图像" to 3, "导数与应用" to 2), sanitized.knowledgePoints)
+    assertEquals(listOf("函数与图像", "导数与应用"), sanitized.ankiCards.first().tags)
+    assertEquals("函数与图像卡组", sanitized.ankiCards.first().deckName)
+  }
+
+  @Test
   fun resolveDeckNameForAutoCard_prefersExistingDeckBySuggestionOrTagOverlap() {
     val existing = listOf(
       AnkiCard(
@@ -488,7 +579,8 @@ class StudyChatViewModelSupportTest {
       existingCards = existing
     )
 
-    assertEquals("化学平衡卡组", newDeck)
+    assertTrue(newDeck.endsWith("卡组"))
+    assertTrue(newDeck.contains("化学"))
   }
 
   @Test

@@ -144,6 +144,32 @@ internal class StudyChatRequestCoordinator(
     )
   }
 
+  suspend fun replyForCoachConversationStream(
+    coachMessages: List<CoachChatMessage>,
+    digest: CoachDailyDigest?,
+    profile: ProfileState,
+    knowledgePoints: Map<String, Int>,
+    knowledgeGapInsights: List<KnowledgeGapInsight>,
+    savedQuestions: List<SavedQuestion>,
+    settings: RuntimeSettings,
+    onDelta: (String) -> Unit,
+    onReasoningDelta: ((String) -> Unit)? = null
+  ): Result<String> {
+    return arkApiClient.generateReplyStream(
+      messages = buildCoachConversationMessages(
+        digest = digest,
+        coachMessages = coachMessages,
+        profile = profile,
+        knowledgePoints = knowledgePoints,
+        knowledgeGapInsights = knowledgeGapInsights,
+        savedQuestions = savedQuestions
+      ),
+      config = settings.toArkRuntimeConfig().copy(systemPrompt = COACH_SYSTEM_PROMPT),
+      onDelta = onDelta,
+      onReasoningDelta = onReasoningDelta
+    )
+  }
+
   fun canTranscribe(settings: RuntimeSettings): Boolean {
     return openSpeechAsrClient.isConfigured(settings.toOpenSpeechRuntimeConfig())
   }

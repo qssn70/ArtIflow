@@ -350,6 +350,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   }
   val chatListState = rememberLazyListState()
   val quickFollowupListState = rememberLazyListState()
+  val coachListState = rememberLazyListState()
   val workspaceListState = rememberLazyListState()
   val visibleAnkiCards = remember(uiState.ankiCards, uiState.isDueReviewMode, uiState.focusedDeckName) {
     when {
@@ -369,8 +370,9 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   }
 
   val hasModalDialog = uiState.isSettingsOpen || selectedSpan != null || isFollowupTreeOpen || isWorkspaceJumpOpen
-  val isChatLikePage = uiState.activePage == WorkspacePage.CHAT ||
+  val isQuestionPage = uiState.activePage == WorkspacePage.CHAT ||
     uiState.activePage == WorkspacePage.QUICK_FOLLOWUP
+  val isCoachPage = uiState.activePage == WorkspacePage.COACH
 
   LaunchedEffect(uiState.activePage, uiState.messages.size, uiState.isLoading) {
     if (uiState.activePage != WorkspacePage.CHAT) {
@@ -380,6 +382,23 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     val totalItems = uiState.messages.size + if (uiState.isLoading) 1 else 0
     if (totalItems > 0) {
       chatListState.scrollToItem(totalItems - 1)
+    }
+  }
+
+  LaunchedEffect(uiState.activePage) {
+    if (uiState.activePage == WorkspacePage.COACH) {
+      viewModel.onCoachPageViewed()
+    }
+  }
+
+  LaunchedEffect(uiState.activePage, uiState.coachMessages.size, uiState.coachDigest?.dateKey, uiState.isLoading) {
+    if (uiState.activePage != WorkspacePage.COACH) {
+      return@LaunchedEffect
+    }
+
+    val totalItems = 1 + uiState.coachMessages.size
+    if (totalItems > 0) {
+      coachListState.scrollToItem(totalItems - 1)
     }
   }
   BackHandler(enabled = !hasModalDialog) {
@@ -582,6 +601,10 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
               )
             }
 
+            WorkspacePage.COACH -> {
+              CoachHeaderBar(onOpenSettings = viewModel::openSettings)
+            }
+
             WorkspacePage.PROFILE -> {
               ProfileHeaderBar(onOpenSettings = viewModel::openSettings)
             }
@@ -600,6 +623,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             state = when (page) {
               WorkspacePage.CHAT -> chatListState
               WorkspacePage.QUICK_FOLLOWUP -> quickFollowupListState
+              WorkspacePage.COACH -> coachListState
               else -> workspaceListState
             },
             modifier = Modifier.fillMaxSize(),
@@ -671,6 +695,24 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                   AssistantLoadingBubble()
                 }
               }
+            } else if (page == WorkspacePage.COACH) {
+              item(key = "coach-digest") {
+                CoachDigestCard(
+                  digest = uiState.coachDigest,
+                  onStartTraining = viewModel::startCoachTraining,
+                  onUseRecommendedPrompt = viewModel::useCoachRecommendedQuestion
+                )
+              }
+
+              if (uiState.coachMessages.isEmpty()) {
+                item(key = "coach-empty") {
+                  CoachEmptyState()
+                }
+              } else {
+                items(uiState.coachMessages, key = { it.id }) { message ->
+                  CoachMessageBubble(message = message)
+                }
+              }
             } else if (page == WorkspacePage.ARCHIVE) {
               item(key = "archive-workspace") {
                 Box(modifier = Modifier.fillParentMaxSize()) {
@@ -717,7 +759,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
         }
 
         AnimatedVisibility(
-          visible = isChatLikePage,
+          visible = isQuestionPage,
           enter = fadeIn(animationSpec = tween(durationMillis = 220, delayMillis = 40)) +
             slideInVertically(animationSpec = tween(durationMillis = 260)) { height -> height / 3 },
           exit = fadeOut(animationSpec = tween(durationMillis = 140)) +
@@ -767,6 +809,27 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                 pendingImageDrafts = pendingImageDrafts.filterIndexed { i, _ -> i != index }
               },
               onClearPendingImages = { pendingImageDrafts = emptyList() }
+            )
+          }
+        }
+
+        AnimatedVisibility(
+          visible = isCoachPage,
+          enter = fadeIn(animationSpec = tween(durationMillis = 220, delayMillis = 40)) +
+            slideInVertically(animationSpec = tween(durationMillis = 260)) { height -> height / 3 },
+          exit = fadeOut(animationSpec = tween(durationMillis = 140)) +
+            slideOutVertically(animationSpec = tween(durationMillis = 180)) { height -> height / 3 }
+        ) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .imePadding()
+          ) {
+            CoachComposerBar(
+              input = uiState.coachInput,
+              isLoading = uiState.isLoading,
+              onInputChanged = viewModel::onCoachInputChanged,
+              onSend = viewModel::sendCoachMessage
             )
           }
         }
@@ -897,6 +960,40 @@ private fun ArchiveHeaderBar(
       )
       Text(
         text = "已收藏 $savedCount 题 · 可回填到提问框继续练",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFF60756E),
+        maxLines = 1
+      )
+    }
+
+    IconButton(onClick = onOpenSettings) {
+      Icon(
+        imageVector = Icons.Rounded.Settings,
+        contentDescription = "打开设置",
+        tint = Color(0xFF2C6756)
+      )
+    }
+  }
+}
+
+@Composable
+private fun CoachHeaderBar(
+  onOpenSettings: () -> Unit
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+      Text(
+        text = "AI教练",
+        style = MaterialTheme.typography.titleMedium,
+        color = Color(0xFF235E4E),
+        fontWeight = FontWeight.Bold
+      )
+      Text(
+        text = "每天首次自动复盘 · 直接聊你真正漏掉的点",
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF60756E),
         maxLines = 1

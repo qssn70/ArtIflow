@@ -275,7 +275,7 @@ internal fun builtinModelPresetTemplates(): List<ModelPreset> {
   )
 }
 
-internal enum class KnowledgeGapLevel(val label: String) {
+enum class KnowledgeGapLevel(val label: String) {
   HIGH("优先补"),
   MEDIUM("建议补"),
   LOW("继续看")
@@ -289,6 +289,67 @@ internal data class KnowledgeGapInsight(
   val diagnosis: String,
   val action: String
 )
+
+enum class CoachMessageRole {
+  USER,
+  ASSISTANT
+}
+
+data class CoachChatMessage(
+  val id: String,
+  val role: CoachMessageRole,
+  val time: String,
+  val text: String
+)
+
+data class CoachFocusArea(
+  val point: String,
+  val level: KnowledgeGapLevel,
+  val diagnosis: String,
+  val action: String,
+  val evidence: String
+)
+
+data class CoachRecommendedQuestion(
+  val id: String,
+  val title: String,
+  val reason: String,
+  val prompt: String
+)
+
+data class CoachDailyDigest(
+  val dateKey: String,
+  val generatedAt: Long,
+  val headline: String,
+  val summary: String,
+  val focusAreas: List<CoachFocusArea> = emptyList(),
+  val recommendedQuestions: List<CoachRecommendedQuestion> = emptyList()
+)
+
+enum class DailyTrainingPhase {
+  IDLE,
+  ASKING_QUESTION,
+  AWAITING_ANSWER,
+  REVIEWING_ANSWER,
+  COMPLETED
+}
+
+data class DailyTrainingState(
+  val dateKey: String = "",
+  val rounds: List<CoachRecommendedQuestion> = emptyList(),
+  val currentIndex: Int = 0,
+  val phase: DailyTrainingPhase = DailyTrainingPhase.IDLE,
+  val currentQuestionText: String = ""
+) {
+  val isActive: Boolean
+    get() = rounds.isNotEmpty() && phase != DailyTrainingPhase.IDLE && phase != DailyTrainingPhase.COMPLETED
+
+  val totalRounds: Int
+    get() = rounds.size
+
+  val currentRound: CoachRecommendedQuestion?
+    get() = rounds.getOrNull(currentIndex.coerceAtLeast(0))
+}
 
 internal fun RuntimeSettings.toArkRuntimeConfig(): ArkRuntimeConfig {
   val customConfig = customModelConfigOrNull()
@@ -349,11 +410,15 @@ data class ChatUiState(
   val histories: Map<String, List<SpanDetail>> = emptyMap(),
   val profile: ProfileState = ProfileState(level = "高二 · 进阶冲刺"),
   val input: String = "",
+  val coachInput: String = "",
   val selectedSpanId: String? = null,
   val selectedDetailId: String? = null,
   val quickFollowupSpanId: String? = null,
   val quickFollowupDetailId: String? = null,
   val activePage: WorkspacePage = WorkspacePage.CHAT,
+  val coachMessages: List<CoachChatMessage> = emptyList(),
+  val coachDigest: CoachDailyDigest? = null,
+  val dailyTraining: DailyTrainingState = DailyTrainingState(),
   val savedQuestions: List<SavedQuestion> = emptyList(),
   val knowledgePoints: Map<String, Int> = emptyMap(),
   val ankiCards: List<AnkiCard> = emptyList(),
@@ -472,6 +537,7 @@ data class SavedQuestion(
 enum class WorkspacePage {
   CHAT,
   QUICK_FOLLOWUP,
+  COACH,
   ARCHIVE,
   ANKI,
   PROFILE

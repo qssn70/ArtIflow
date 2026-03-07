@@ -574,6 +574,7 @@ private fun workspacePageTitle(page: WorkspacePage): String {
   return when (page) {
     WorkspacePage.CHAT -> "AI学习问答"
     WorkspacePage.QUICK_FOLLOWUP -> "精细追问"
+    WorkspacePage.COACH -> "AI教练"
     WorkspacePage.ARCHIVE -> "题目归档"
     WorkspacePage.ANKI -> "Anki 练习"
     WorkspacePage.PROFILE -> "用户中心"
@@ -584,6 +585,7 @@ internal val workspacePageRing: List<WorkspacePage> = listOf(
   WorkspacePage.ANKI,
   WorkspacePage.CHAT,
   WorkspacePage.QUICK_FOLLOWUP,
+  WorkspacePage.COACH,
   WorkspacePage.PROFILE,
   WorkspacePage.ARCHIVE
 )
@@ -620,6 +622,7 @@ private fun workspacePageSummary(page: WorkspacePage): String {
   return when (page) {
     WorkspacePage.CHAT -> "主会话做新题，各题上下文互不共享"
     WorkspacePage.QUICK_FOLLOWUP -> "只围绕当前题目继续深挖"
+    WorkspacePage.COACH -> "每天首次自动复盘，并给你推荐典型题"
     WorkspacePage.ARCHIVE -> "查看已收藏的题目与答案归档"
     WorkspacePage.ANKI -> "自动制卡、待复习与卡组练习"
     WorkspacePage.PROFILE -> "学习画像、薄弱点与模型入口"
