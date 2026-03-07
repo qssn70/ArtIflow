@@ -515,13 +515,7 @@ internal fun WorkspaceJumpDialog(
   onDismiss: () -> Unit,
   onSwitch: (WorkspacePage) -> Unit
 ) {
-  val pages = listOf(
-    WorkspacePage.CHAT,
-    WorkspacePage.QUICK_FOLLOWUP,
-    WorkspacePage.ARCHIVE,
-    WorkspacePage.ANKI,
-    WorkspacePage.PROFILE
-  )
+  val pages = workspacePageRing
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -586,6 +580,42 @@ private fun workspacePageTitle(page: WorkspacePage): String {
   }
 }
 
+internal val workspacePageRing: List<WorkspacePage> = listOf(
+  WorkspacePage.ANKI,
+  WorkspacePage.CHAT,
+  WorkspacePage.QUICK_FOLLOWUP,
+  WorkspacePage.PROFILE,
+  WorkspacePage.ARCHIVE
+)
+
+internal fun workspacePageRingIndex(page: WorkspacePage): Int {
+  val index = workspacePageRing.indexOf(page)
+  return if (index >= 0) index else 0
+}
+
+internal fun nextWorkspacePage(page: WorkspacePage): WorkspacePage {
+  val index = workspacePageRingIndex(page)
+  return workspacePageRing[(index + 1) % workspacePageRing.size]
+}
+
+internal fun previousWorkspacePage(page: WorkspacePage): WorkspacePage {
+  val index = workspacePageRingIndex(page)
+  return workspacePageRing[(index - 1 + workspacePageRing.size) % workspacePageRing.size]
+}
+
+internal fun workspaceTransitionDirection(initialPage: WorkspacePage, targetPage: WorkspacePage): Int {
+  val total = workspacePageRing.size
+  val initialIndex = workspacePageRingIndex(initialPage)
+  val targetIndex = workspacePageRingIndex(targetPage)
+  val forwardSteps = (targetIndex - initialIndex + total) % total
+  val backwardSteps = (initialIndex - targetIndex + total) % total
+  return when {
+    forwardSteps == 0 -> 0
+    forwardSteps <= backwardSteps -> 1
+    else -> -1
+  }
+}
+
 private fun workspacePageSummary(page: WorkspacePage): String {
   return when (page) {
     WorkspacePage.CHAT -> "主会话做新题，各题上下文互不共享"
@@ -623,41 +653,9 @@ internal fun WorkspaceSwipeStrip(
           dragOffset += delta
         },
         onDragStopped = {
-          when (activePage) {
-            WorkspacePage.CHAT -> {
-              when {
-                dragOffset <= -threshold -> onSwitch(WorkspacePage.ANKI)
-                dragOffset >= threshold -> onSwitch(WorkspacePage.QUICK_FOLLOWUP)
-              }
-            }
-
-            WorkspacePage.QUICK_FOLLOWUP -> {
-              when {
-                dragOffset <= -threshold -> onSwitch(WorkspacePage.CHAT)
-                dragOffset >= threshold -> onSwitch(WorkspacePage.PROFILE)
-              }
-            }
-
-            WorkspacePage.ANKI -> {
-              when {
-                dragOffset <= -threshold -> onSwitch(WorkspacePage.PROFILE)
-                dragOffset >= threshold -> onSwitch(WorkspacePage.CHAT)
-              }
-            }
-
-            WorkspacePage.PROFILE -> {
-              when {
-                dragOffset <= -threshold -> onSwitch(WorkspacePage.QUICK_FOLLOWUP)
-                dragOffset >= threshold -> onSwitch(WorkspacePage.ANKI)
-              }
-            }
-
-            WorkspacePage.ARCHIVE -> {
-              when {
-                dragOffset <= -threshold -> onSwitch(WorkspacePage.CHAT)
-                dragOffset >= threshold -> onSwitch(WorkspacePage.PROFILE)
-              }
-            }
+          when {
+            dragOffset <= -threshold -> onSwitch(nextWorkspacePage(activePage))
+            dragOffset >= threshold -> onSwitch(previousWorkspacePage(activePage))
           }
           dragOffset = 0f
         }
@@ -665,13 +663,7 @@ internal fun WorkspaceSwipeStrip(
   ) {
     Box(contentAlignment = Alignment.Center) {
       Text(
-        text = when (activePage) {
-          WorkspacePage.CHAT -> "左滑到 Anki · 右滑到精细追问 · 点按快切"
-          WorkspacePage.QUICK_FOLLOWUP -> "左滑到聊天 · 右滑到用户中心 · 点按快切"
-          WorkspacePage.ARCHIVE -> "左滑到聊天 · 右滑到用户中心 · 点按快切"
-          WorkspacePage.ANKI -> "左滑到用户中心 · 右滑到聊天 · 点按快切"
-          WorkspacePage.PROFILE -> "左滑到精细追问 · 右滑到 Anki · 点按快切"
-        },
+        text = "左滑到 ${workspacePageTitle(nextWorkspacePage(activePage))} · 右滑到 ${workspacePageTitle(previousWorkspacePage(activePage))} · 点按快切",
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF5A7169)
       )

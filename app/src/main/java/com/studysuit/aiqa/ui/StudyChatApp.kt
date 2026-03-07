@@ -11,6 +11,19 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -358,11 +371,6 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val hasModalDialog = uiState.isSettingsOpen || selectedSpan != null || isFollowupTreeOpen || isWorkspaceJumpOpen
   val isChatLikePage = uiState.activePage == WorkspacePage.CHAT ||
     uiState.activePage == WorkspacePage.QUICK_FOLLOWUP
-  val activeListState = when (uiState.activePage) {
-    WorkspacePage.CHAT -> chatListState
-    WorkspacePage.QUICK_FOLLOWUP -> quickFollowupListState
-    else -> workspaceListState
-  }
 
   LaunchedEffect(uiState.activePage, uiState.messages.size, uiState.isLoading) {
     if (uiState.activePage != WorkspacePage.CHAT) {
@@ -528,100 +536,90 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
           .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
       ) {
-        if (isChatLikePage) {
-          HeaderBar(
-            onOpenSettings = viewModel::openSettings,
-            onOpenFollowupTree = { isFollowupTreeOpen = true },
-            title = if (uiState.activePage == WorkspacePage.QUICK_FOLLOWUP) {
-              "StudySuit · 精细追问"
-            } else {
-              "StudySuit · AI学习问答"
-            },
-            subtitle = if (uiState.activePage == WorkspacePage.QUICK_FOLLOWUP) {
-              "主界面同款 · 仅当前追问链路"
-            } else {
-              "整题卡/段落卡都可滑动 · 题目之间上下文独立"
+        AnimatedContent(
+          targetState = uiState.activePage,
+          transitionSpec = { workspacePageTransition() },
+          label = "workspace_header"
+        ) { page ->
+          when (page) {
+            WorkspacePage.CHAT,
+            WorkspacePage.QUICK_FOLLOWUP -> {
+              HeaderBar(
+                onOpenSettings = viewModel::openSettings,
+                onOpenFollowupTree = { isFollowupTreeOpen = true },
+                title = if (page == WorkspacePage.QUICK_FOLLOWUP) {
+                  "StudySuit · 精细追问"
+                } else {
+                  "StudySuit · AI学习问答"
+                },
+                subtitle = if (page == WorkspacePage.QUICK_FOLLOWUP) {
+                  "主界面同款 · 仅当前追问链路"
+                } else {
+                  "整题卡/段落卡都可滑动 · 题目之间上下文独立"
+                }
+              )
             }
-          )
-        } else if (uiState.activePage == WorkspacePage.ARCHIVE) {
-          ArchiveHeaderBar(
-            savedCount = uiState.savedQuestions.size,
-            onOpenSettings = viewModel::openSettings
-          )
-        } else if (uiState.activePage == WorkspacePage.ANKI) {
-          AnkiHeaderBar(
-            cardCount = visibleAnkiCards.size,
-            deckCount = ankiDeckSummaries.size,
-            isDueReviewMode = uiState.isDueReviewMode,
-            focusedDeckName = uiState.focusedDeckName,
-            dueReviewCount = dueCardsToday.size,
-            onOpenDueReview = viewModel::openDueReviewQueue,
-            onExitDueReviewMode = viewModel::closeDueReviewMode,
-            onExitDeckFocusedPractice = viewModel::closeDeckFocusedPractice,
-            onOpenDeckPracticeSummary = viewModel::openDeckPracticeSummary,
-            onOpenDeckManager = { isDeckArchiveOpen = true }
-          )
-        } else {
-          ProfileHeaderBar(onOpenSettings = viewModel::openSettings)
+
+            WorkspacePage.ARCHIVE -> {
+              ArchiveHeaderBar(
+                savedCount = uiState.savedQuestions.size,
+                onOpenSettings = viewModel::openSettings
+              )
+            }
+
+            WorkspacePage.ANKI -> {
+              AnkiHeaderBar(
+                cardCount = visibleAnkiCards.size,
+                deckCount = ankiDeckSummaries.size,
+                isDueReviewMode = uiState.isDueReviewMode,
+                focusedDeckName = uiState.focusedDeckName,
+                dueReviewCount = dueCardsToday.size,
+                onOpenDueReview = viewModel::openDueReviewQueue,
+                onExitDueReviewMode = viewModel::closeDueReviewMode,
+                onExitDeckFocusedPractice = viewModel::closeDeckFocusedPractice,
+                onOpenDeckPracticeSummary = viewModel::openDeckPracticeSummary,
+                onOpenDeckManager = { isDeckArchiveOpen = true }
+              )
+            }
+
+            WorkspacePage.PROFILE -> {
+              ProfileHeaderBar(onOpenSettings = viewModel::openSettings)
+            }
+          }
         }
 
-        LazyColumn(
-          state = activeListState,
+        AnimatedContent(
+          targetState = uiState.activePage,
+          transitionSpec = { workspacePageTransition() },
           modifier = Modifier
             .weight(1f)
             .fillMaxWidth(),
-          verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-          if (uiState.activePage == WorkspacePage.CHAT) {
-            items(uiState.messages, key = { it.id }) { message ->
-              when (message) {
-                is ChatMessage.User -> UserBubble(message)
-                is ChatMessage.Assistant -> AssistantBubble(
-                  message = message,
-                  histories = uiState.histories,
-                  processingSpanIds = uiState.processingSpanIds,
-                  onAutoExplain = viewModel::autoExplain,
-                  onWholeReplyFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
-                  onRefreshReply = viewModel::refreshAssistantReply,
-                  onToggleSavedQuestion = viewModel::toggleSavedQuestion,
-                  refreshEnabled = !uiState.isLoading,
-                  showSaveAction = true,
-                  isSavedQuestion = message.id in savedQuestionMessageIds,
-                  onVoiceFollowup = onVoiceCaptureSubmit,
-                  onRightSwipeOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
-                  onRightSwipeHoldFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
-                  onOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
-                  onVoiceCaptureStart = onVoiceCaptureStart,
-                  onVoiceCaptureCancel = onVoiceCaptureCancel
-                )
-              }
-            }
-
-            if (uiState.isLoading) {
-              item(key = "assistant-loading") {
-                AssistantLoadingBubble()
-              }
-            }
-          } else if (uiState.activePage == WorkspacePage.QUICK_FOLLOWUP) {
-            if (quickFollowupMessages.isEmpty()) {
-              item(key = "quick-followup-empty") {
-                AssistantLoadingBubble()
-              }
-            } else {
-              items(quickFollowupMessages, key = { it.id }) { message ->
+          label = "workspace_body"
+        ) { page ->
+          LazyColumn(
+            state = when (page) {
+              WorkspacePage.CHAT -> chatListState
+              WorkspacePage.QUICK_FOLLOWUP -> quickFollowupListState
+              else -> workspaceListState
+            },
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+          ) {
+            if (page == WorkspacePage.CHAT) {
+              items(uiState.messages, key = { it.id }) { message ->
                 when (message) {
                   is ChatMessage.User -> UserBubble(message)
                   is ChatMessage.Assistant -> AssistantBubble(
                     message = message,
-                    histories = quickFollowupHistoriesForUi,
+                    histories = uiState.histories,
                     processingSpanIds = uiState.processingSpanIds,
                     onAutoExplain = viewModel::autoExplain,
                     onWholeReplyFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
                     onRefreshReply = viewModel::refreshAssistantReply,
                     onToggleSavedQuestion = viewModel::toggleSavedQuestion,
                     refreshEnabled = !uiState.isLoading,
-                    showSaveAction = false,
-                    isSavedQuestion = false,
+                    showSaveAction = true,
+                    isSavedQuestion = message.id in savedQuestionMessageIds,
                     onVoiceFollowup = onVoiceCaptureSubmit,
                     onRightSwipeOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
                     onRightSwipeHoldFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
@@ -631,58 +629,100 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                   )
                 }
               }
-            }
 
-            if (uiState.isLoading) {
-              item(key = "quick-followup-loading") {
-                AssistantLoadingBubble()
+              if (uiState.isLoading) {
+                item(key = "assistant-loading") {
+                  AssistantLoadingBubble()
+                }
               }
-            }
-          } else if (uiState.activePage == WorkspacePage.ARCHIVE) {
-            item(key = "archive-workspace") {
-              Box(modifier = Modifier.fillParentMaxSize()) {
-                QuestionArchiveWorkspace(
-                  savedQuestions = uiState.savedQuestions,
-                  onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
-                  onRestoreQuestion = viewModel::restoreSavedQuestionToComposer,
-                  onRemoveQuestion = viewModel::removeSavedQuestion
-                )
+            } else if (page == WorkspacePage.QUICK_FOLLOWUP) {
+              if (quickFollowupMessages.isEmpty()) {
+                item(key = "quick-followup-empty") {
+                  AssistantLoadingBubble()
+                }
+              } else {
+                items(quickFollowupMessages, key = { it.id }) { message ->
+                  when (message) {
+                    is ChatMessage.User -> UserBubble(message)
+                    is ChatMessage.Assistant -> AssistantBubble(
+                      message = message,
+                      histories = quickFollowupHistoriesForUi,
+                      processingSpanIds = uiState.processingSpanIds,
+                      onAutoExplain = viewModel::autoExplain,
+                      onWholeReplyFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
+                      onRefreshReply = viewModel::refreshAssistantReply,
+                      onToggleSavedQuestion = viewModel::toggleSavedQuestion,
+                      refreshEnabled = !uiState.isLoading,
+                      showSaveAction = false,
+                      isSavedQuestion = false,
+                      onVoiceFollowup = onVoiceCaptureSubmit,
+                      onRightSwipeOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
+                      onRightSwipeHoldFollowup = { spanId, detailId -> viewModel.openQuickFollowup(spanId, detailId) },
+                      onOpenDetails = { spanId, detailId -> viewModel.openDetails(spanId, detailId) },
+                      onVoiceCaptureStart = onVoiceCaptureStart,
+                      onVoiceCaptureCancel = onVoiceCaptureCancel
+                    )
+                  }
+                }
               }
-            }
-          } else if (uiState.activePage == WorkspacePage.ANKI) {
-            item(key = "anki-workspace") {
-              Box(modifier = Modifier.fillParentMaxSize()) {
-                AnkiWorkspace(
-                  cards = visibleAnkiCards,
-                  isDueReviewMode = uiState.isDueReviewMode,
-                  focusedDeckName = uiState.focusedDeckName,
-                  onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
-                  onExitDueReviewMode = viewModel::closeDueReviewMode,
-                  onExitDeckFocusedPractice = viewModel::closeDeckFocusedPractice,
-                  onUpdateCard = viewModel::updateAnkiCard,
-                  onDeleteCard = viewModel::deleteAnkiCard,
-                  onSetCardMastery = viewModel::setAnkiCardMastery
-                )
+
+              if (uiState.isLoading) {
+                item(key = "quick-followup-loading") {
+                  AssistantLoadingBubble()
+                }
               }
-            }
-          } else {
-            item(key = "profile-workspace") {
-              Box(modifier = Modifier.fillParentMaxSize()) {
-                ProfileWorkspace(
-                  profile = uiState.profile,
-                  cards = uiState.ankiCards,
-                  dueCount = dueCardsToday.size,
-                  knowledgeGapInsights = knowledgeGapInsights,
-                  onOpenDueReview = viewModel::openDueReviewQueue,
-                  onOpenDeckArchive = { viewModel.switchWorkspacePage(WorkspacePage.ANKI); isDeckArchiveOpen = true },
-                  onOpenSettings = viewModel::openSettings
-                )
+            } else if (page == WorkspacePage.ARCHIVE) {
+              item(key = "archive-workspace") {
+                Box(modifier = Modifier.fillParentMaxSize()) {
+                  QuestionArchiveWorkspace(
+                    savedQuestions = uiState.savedQuestions,
+                    onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
+                    onRestoreQuestion = viewModel::restoreSavedQuestionToComposer,
+                    onRemoveQuestion = viewModel::removeSavedQuestion
+                  )
+                }
+              }
+            } else if (page == WorkspacePage.ANKI) {
+              item(key = "anki-workspace") {
+                Box(modifier = Modifier.fillParentMaxSize()) {
+                  AnkiWorkspace(
+                    cards = visibleAnkiCards,
+                    isDueReviewMode = uiState.isDueReviewMode,
+                    focusedDeckName = uiState.focusedDeckName,
+                    onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
+                    onExitDueReviewMode = viewModel::closeDueReviewMode,
+                    onExitDeckFocusedPractice = viewModel::closeDeckFocusedPractice,
+                    onUpdateCard = viewModel::updateAnkiCard,
+                    onDeleteCard = viewModel::deleteAnkiCard,
+                    onSetCardMastery = viewModel::setAnkiCardMastery
+                  )
+                }
+              }
+            } else {
+              item(key = "profile-workspace") {
+                Box(modifier = Modifier.fillParentMaxSize()) {
+                  ProfileWorkspace(
+                    profile = uiState.profile,
+                    cards = uiState.ankiCards,
+                    dueCount = dueCardsToday.size,
+                    knowledgeGapInsights = knowledgeGapInsights,
+                    onOpenDueReview = viewModel::openDueReviewQueue,
+                    onOpenDeckArchive = { viewModel.switchWorkspacePage(WorkspacePage.ANKI); isDeckArchiveOpen = true },
+                    onOpenSettings = viewModel::openSettings
+                  )
+                }
               }
             }
           }
         }
 
-        if (isChatLikePage) {
+        AnimatedVisibility(
+          visible = isChatLikePage,
+          enter = fadeIn(animationSpec = tween(durationMillis = 220, delayMillis = 40)) +
+            slideInVertically(animationSpec = tween(durationMillis = 260)) { height -> height / 3 },
+          exit = fadeOut(animationSpec = tween(durationMillis = 140)) +
+            slideOutVertically(animationSpec = tween(durationMillis = 180)) { height -> height / 3 }
+        ) {
           Box(
             modifier = Modifier
               .fillMaxWidth()
@@ -730,7 +770,6 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             )
           }
         }
-
         if (!WindowInsets.isImeVisible) {
           WorkspaceSwipeStrip(
             activePage = uiState.activePage,
@@ -810,6 +849,33 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     )
   }
 
+}
+
+private fun AnimatedContentTransitionScope<WorkspacePage>.workspacePageTransition(): ContentTransform {
+  val direction = workspaceTransitionDirection(initialState, targetState)
+  return when {
+    direction > 0 -> (
+      fadeIn(animationSpec = tween(durationMillis = 240, delayMillis = 50)) +
+        slideInHorizontally(animationSpec = tween(durationMillis = 320)) { width -> width / 5 }
+      ).togetherWith(
+        fadeOut(animationSpec = tween(durationMillis = 180)) +
+          slideOutHorizontally(animationSpec = tween(durationMillis = 240)) { width -> -width / 6 }
+      ).using(SizeTransform(clip = false))
+
+    direction < 0 -> (
+      fadeIn(animationSpec = tween(durationMillis = 240, delayMillis = 50)) +
+        slideInHorizontally(animationSpec = tween(durationMillis = 320)) { width -> -width / 5 }
+      ).togetherWith(
+        fadeOut(animationSpec = tween(durationMillis = 180)) +
+          slideOutHorizontally(animationSpec = tween(durationMillis = 240)) { width -> width / 6 }
+      ).using(SizeTransform(clip = false))
+
+    else -> (
+      fadeIn(animationSpec = tween(durationMillis = 180)).togetherWith(
+        fadeOut(animationSpec = tween(durationMillis = 120))
+      ).using(SizeTransform(clip = false))
+    )
+  }
 }
 
 @Composable
