@@ -159,7 +159,7 @@ internal fun SettingsDialog(
           onValueChange = { value -> onSettingsChanged(settings.copy(customModelName = value)) }
         )
         Text(
-          text = "当 BASEURL / APIKEY / MODELNAME 三项都填写时，将优先使用该自定义模型。",
+          text = "当 BASEURL / APIKEY / MODELNAME 三项都填写时，将优先使用该自定义模型。自建 IP 接口如果没有正式证书，直接填 http://IP:端口/v1，不要填 https://IP。",
           style = MaterialTheme.typography.labelSmall,
           color = Color(0xFF728880)
         )

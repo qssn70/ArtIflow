@@ -8,6 +8,8 @@ import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 private val fencedJsonRegex = Regex(
   pattern = "```(?:json)?\\s*(\\{.*?\\})\\s*```",
@@ -44,8 +46,21 @@ private fun resolveNetworkErrorHint(throwable: Throwable): String? {
     return "网络超时，请稍后重试"
   }
 
+  if (causeChain.any { cause -> cause is SSLHandshakeException || cause is SSLPeerUnverifiedException }) {
+    return "证书校验失败；如果你连的是自建 IP 接口，请把 BASEURL 改成 http://IP:端口/v1"
+  }
+
   val normalizedMessages = causeChain.map { cause ->
     cause.message.orEmpty().lowercase(Locale.ROOT)
+  }
+  if (normalizedMessages.any { message ->
+      message.contains("certificate") ||
+        message.contains("certpath") ||
+        message.contains("trust anchor") ||
+        message.contains("hostname") ||
+        message.contains("peer not verified")
+    }) {
+    return "证书校验失败；如果你连的是自建 IP 接口，请把 BASEURL 改成 http://IP:端口/v1"
   }
   if (normalizedMessages.any { message ->
       message.contains("software caused connection abort") ||

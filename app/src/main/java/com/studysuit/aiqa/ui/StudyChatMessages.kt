@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -213,6 +214,16 @@ internal fun AssistantBubble(
   onVoiceCaptureCancel: (String) -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val isMessageProcessing = remember(message.id, processingSpanIds) {
+    message.interactiveSpans().any { span -> span.id in processingSpanIds }
+  }
+  val processingPulse = rememberProcessingPulse(label = "assistant_message_processing")
+  val containerBorderColor = if (isMessageProcessing) {
+    lerp(Color(0x1F3D564E), Color(0x7F4F695F), processingPulse)
+  } else {
+    Color(0x1F3D564E)
+  }
+
   Row(
     modifier = modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.Start
@@ -223,7 +234,7 @@ internal fun AssistantBubble(
       shadowElevation = 1.dp,
       modifier = Modifier
         .fillMaxWidth(0.94f)
-        .border(1.dp, Color(0x1F3D564E), RoundedCornerShape(16.dp))
+        .border(1.dp, containerBorderColor, RoundedCornerShape(16.dp))
     ) {
       Column(
         modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
@@ -261,7 +272,12 @@ internal fun AssistantBubble(
           onToggleSavedQuestion = onToggleSavedQuestion,
           refreshEnabled = refreshEnabled,
           showSaveAction = showSaveAction,
-          isSavedQuestion = isSavedQuestion
+          isSavedQuestion = isSavedQuestion,
+          isProcessing = isMessageProcessing,
+          onVoiceFollowup = onVoiceFollowup,
+          onRightSwipeOpenDetails = onRightSwipeOpenDetails,
+          onVoiceCaptureStart = onVoiceCaptureStart,
+          onVoiceCaptureCancel = onVoiceCaptureCancel
         )
       }
     }
@@ -339,15 +355,7 @@ private fun InteractiveSpanCard(
   val recordingCancelThreshold = -58f
   val openDetailsThreshold = 40f
   val openQuickFollowupHoldDuration = 420L
-  val processingPulse by rememberInfiniteTransition(label = "span_processing_transition").animateFloat(
-    initialValue = 0f,
-    targetValue = 1f,
-    animationSpec = infiniteRepeatable(
-      animation = tween(durationMillis = 820),
-      repeatMode = RepeatMode.Reverse
-    ),
-    label = "span_processing_pulse"
-  )
+  val processingPulse = rememberProcessingPulse(label = "span_processing")
 
   val borderColor = when {
     recording -> Color(0xFFDD8258)
@@ -500,31 +508,117 @@ private fun AssistantBubbleMetaRow(
   onToggleSavedQuestion: (String) -> Unit,
   refreshEnabled: Boolean,
   showSaveAction: Boolean,
-  isSavedQuestion: Boolean
+  isSavedQuestion: Boolean,
+  isProcessing: Boolean,
+  onVoiceFollowup: (String) -> Unit,
+  onRightSwipeOpenDetails: (String, String?) -> Unit,
+  onVoiceCaptureStart: (String) -> Unit,
+  onVoiceCaptureCancel: (String) -> Unit
 ) {
   var offsetX by remember(messageId) { mutableFloatStateOf(0f) }
   val animatedOffset by animateFloatAsState(targetValue = offsetX, label = "assistant_meta_offset")
+  val processingPulse = rememberProcessingPulse(label = "assistant_meta_processing")
+  val metaBorderColor = if (isProcessing) {
+    lerp(Color(0x163A5A4F), Color(0x8A4E6A60), processingPulse)
+  } else {
+    Color(0x163A5A4F)
+  }
+  val metaBackgroundColor = if (isProcessing) {
+    lerp(Color(0xFFF7FAF8), Color(0xFFEAF5F0), processingPulse)
+  } else {
+    Color(0xFFF7FAF8)
+  }
+  var recording by remember(messageId) { mutableStateOf(false) }
+  var recordingCanceledInGesture by remember(messageId) { mutableStateOf(false) }
+  var rightHoldTriggered by remember(messageId) { mutableStateOf(false) }
+  var voiceHoldJob by remember(messageId) { mutableStateOf<Job?>(null) }
+  var rightHoldJob by remember(messageId) { mutableStateOf<Job?>(null) }
+  val scope = rememberCoroutineScope()
+  val holdStartThreshold = -108f
+  val holdCancelThreshold = -46f
+  val recordingCancelThreshold = -58f
+  val openDetailsThreshold = 40f
+  val openQuickFollowupHoldDuration = 420L
 
   Surface(
-    color = Color(0xFFF7FAF8),
+    color = if (recording) Color(0xFFFFF4EA) else metaBackgroundColor,
     shape = RoundedCornerShape(9.dp),
     modifier = Modifier
       .fillMaxWidth()
       .graphicsLayer { translationX = animatedOffset }
-      .border(1.dp, Color(0x163A5A4F), RoundedCornerShape(9.dp))
+      .border(1.dp, if (recording) Color(0xFFDD8258) else metaBorderColor, RoundedCornerShape(9.dp))
       .draggable(
         enabled = replyScopeSpan != null,
         state = rememberDraggableState { delta ->
-          offsetX = (offsetX + delta).coerceIn(-160f, 28f)
+          offsetX = (offsetX + delta).coerceIn(-220f, 170f)
+
+          if (offsetX <= holdStartThreshold && voiceHoldJob == null && !recording && !recordingCanceledInGesture) {
+            voiceHoldJob = scope.launch {
+              delay(620)
+              recording = true
+              replyScopeSpan?.let { span -> onVoiceCaptureStart(span.id) }
+            }
+          }
+
+          if (offsetX > holdCancelThreshold && !recording) {
+            voiceHoldJob?.cancel()
+            voiceHoldJob = null
+          }
+
+          if (recording && offsetX > recordingCancelThreshold) {
+            recording = false
+            recordingCanceledInGesture = true
+            voiceHoldJob?.cancel()
+            voiceHoldJob = null
+            replyScopeSpan?.let { span -> onVoiceCaptureCancel(span.id) }
+          }
+
+          if (!rightHoldTriggered && offsetX >= openDetailsThreshold && rightHoldJob == null) {
+            rightHoldJob = scope.launch {
+              delay(openQuickFollowupHoldDuration)
+              rightHoldTriggered = true
+              voiceHoldJob?.cancel()
+              voiceHoldJob = null
+              recording = false
+              recordingCanceledInGesture = false
+              replyScopeSpan?.let { span ->
+                onWholeReplyFollowup(span.id, span.detailId)
+              }
+            }
+          }
+
+          if (offsetX < openDetailsThreshold && !rightHoldTriggered) {
+            rightHoldJob?.cancel()
+            rightHoldJob = null
+          }
+
+          if (rightHoldTriggered) {
+            voiceHoldJob?.cancel()
+            voiceHoldJob = null
+            recording = false
+            recordingCanceledInGesture = false
+          }
         },
         orientation = Orientation.Horizontal,
         onDragStopped = {
           val finalOffset = offsetX
+          val shouldSendVoiceFollowup = recording
+          val didEnterQuickFollowup = rightHoldTriggered
+          voiceHoldJob?.cancel()
+          rightHoldJob?.cancel()
+          voiceHoldJob = null
+          rightHoldJob = null
           offsetX = 0f
-          if (finalOffset <= -72f) {
-            replyScopeSpan?.let { span ->
-              onWholeReplyFollowup(span.id, span.detailId)
-            }
+          recording = false
+          recordingCanceledInGesture = false
+          rightHoldTriggered = false
+
+          if (didEnterQuickFollowup) {
+            Unit
+          } else if (shouldSendVoiceFollowup) {
+            replyScopeSpan?.let { span -> onVoiceFollowup(span.id) }
+          } else if (finalOffset >= openDetailsThreshold) {
+            replyScopeSpan?.let { span -> onRightSwipeOpenDetails(span.id, span.detailId) }
           }
         }
       )
@@ -533,14 +627,17 @@ private fun AssistantBubbleMetaRow(
       modifier = Modifier
         .fillMaxWidth()
         .padding(horizontal = 10.dp, vertical = 5.dp),
-      horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically
     ) {
-      Text(
-        text = "左滑进入本题追问",
-        style = MaterialTheme.typography.labelSmall,
-        color = Color(0xFF648076)
-      )
+      if (recording) {
+        Text(
+          text = "整题录音中... 松手提交，回滑取消",
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFFB9643D)
+        )
+      } else {
+        Spacer(modifier = Modifier.weight(1f))
+      }
       Row(
         horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -587,6 +684,20 @@ private fun AssistantBubbleMetaRow(
       }
     }
   }
+}
+
+@Composable
+private fun rememberProcessingPulse(label: String): Float {
+  val transition = rememberInfiniteTransition(label = "${label}_transition")
+  return transition.animateFloat(
+    initialValue = 0f,
+    targetValue = 1f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 820),
+      repeatMode = RepeatMode.Reverse
+    ),
+    label = "${label}_pulse"
+  ).value
 }
 
 private fun resolveHistoryCount(

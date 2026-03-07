@@ -159,6 +159,8 @@ class FlowStudySyncClient(
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.MINUTES)
         .writeTimeout(5, TimeUnit.MINUTES)
+        .pingInterval(20, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
     }
   }

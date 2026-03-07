@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Archive
@@ -245,6 +246,9 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val quickFollowupHistoryForTree = remember(quickFollowupHistory) {
     normalizeHistoryForTree(quickFollowupHistory)
   }
+  val quickFollowupSourceUser = remember(uiState.messages, quickFollowupSpan) {
+    findSourceUserMessageForSpan(uiState.messages, quickFollowupSpan)
+  }
   val quickFollowupHistoriesForUi = remember(quickFollowupSpan, quickFollowupHistoryForTree) {
     buildQuickFollowupHistories(quickFollowupSpan, quickFollowupHistoryForTree)
   }
@@ -271,12 +275,14 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val quickFollowupMessages = remember(
     quickFollowupSpan,
     quickFollowupHistoryForTree,
-    uiState.quickFollowupDetailId
+    uiState.quickFollowupDetailId,
+    quickFollowupSourceUser
   ) {
     buildQuickFollowupMessages(
       span = quickFollowupSpan,
       history = quickFollowupHistoryForTree,
-      activeDetailId = uiState.quickFollowupDetailId
+      activeDetailId = uiState.quickFollowupDetailId,
+      sourceUserMessage = quickFollowupSourceUser
     )
   }
   val selectedSpan = remember(uiState.messages, quickFollowupMessages, uiState.selectedSpanId) {
@@ -329,6 +335,9 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val dueCardsToday = remember(uiState.ankiCards) {
     dueReviewCards(uiState.ankiCards)
   }
+  val chatListState = rememberLazyListState()
+  val quickFollowupListState = rememberLazyListState()
+  val workspaceListState = rememberLazyListState()
   val visibleAnkiCards = remember(uiState.ankiCards, uiState.isDueReviewMode, uiState.focusedDeckName) {
     when {
       uiState.isDueReviewMode -> dueReviewCards(uiState.ankiCards)
@@ -349,6 +358,22 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val hasModalDialog = uiState.isSettingsOpen || selectedSpan != null || isFollowupTreeOpen || isWorkspaceJumpOpen
   val isChatLikePage = uiState.activePage == WorkspacePage.CHAT ||
     uiState.activePage == WorkspacePage.QUICK_FOLLOWUP
+  val activeListState = when (uiState.activePage) {
+    WorkspacePage.CHAT -> chatListState
+    WorkspacePage.QUICK_FOLLOWUP -> quickFollowupListState
+    else -> workspaceListState
+  }
+
+  LaunchedEffect(uiState.activePage, uiState.messages.size, uiState.isLoading) {
+    if (uiState.activePage != WorkspacePage.CHAT) {
+      return@LaunchedEffect
+    }
+
+    val totalItems = uiState.messages.size + if (uiState.isLoading) 1 else 0
+    if (totalItems > 0) {
+      chatListState.scrollToItem(totalItems - 1)
+    }
+  }
   BackHandler(enabled = !hasModalDialog) {
     when {
       isDeckArchiveOpen -> {
@@ -541,6 +566,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
         }
 
         LazyColumn(
+          state = activeListState,
           modifier = Modifier
             .weight(1f)
             .fillMaxWidth(),
@@ -920,29 +946,77 @@ private fun normalizeHistoryForTree(history: List<SpanDetail>): List<SpanDetail>
   }
 }
 
+private fun findSourceUserMessageForSpan(
+  messages: List<ChatMessage>,
+  span: SpanData?
+): ChatMessage.User? {
+  val targetSpanId = span?.id ?: return null
+  val assistantIndex = messages.indexOfFirst { message ->
+    message is ChatMessage.Assistant && message.findSpan(targetSpanId) != null
+  }
+  if (assistantIndex <= 0) {
+    return null
+  }
+
+  for (index in assistantIndex - 1 downTo 0) {
+    val message = messages[index] as? ChatMessage.User ?: continue
+    val hasImages = message.imagePreviewList.isNotEmpty() || message.imagePreviewBytes != null
+    if (message.text.isNotBlank() || hasImages) {
+      return message
+    }
+  }
+  return null
+}
+
 private fun buildQuickFollowupMessages(
   span: SpanData?,
   history: List<SpanDetail>,
-  activeDetailId: String?
+  activeDetailId: String?,
+  sourceUserMessage: ChatMessage.User?
 ): List<ChatMessage> {
   if (span == null) {
     return emptyList()
   }
 
+  val sourceQuestion = span.sourceQuestion.trim()
+  val rootAnswerSpan = span.copy(detailId = null, sourceQuestion = sourceQuestion)
   val parentDetail = findDetailById(history, activeDetailId)
-  val parentSpan = if (parentDetail == null) {
-    span.copy(detailId = null)
-  } else {
+  val parentSpan = parentDetail?.let { detail ->
     span.copy(
-      content = parentDetail.answer,
-      sourceQuestion = parentDetail.question ?: span.sourceQuestion,
-      detailId = parentDetail.id
+      content = detail.answer,
+      sourceQuestion = detail.question ?: sourceQuestion,
+      detailId = detail.id
     )
   }
   val parentId = parentDetail?.id
   val children = history.asReversed().filter { detail -> detail.parentDetailId == parentId }
 
   return buildList {
+    if (sourceUserMessage != null) {
+      add(
+        sourceUserMessage.copy(
+          id = "quick-root-user-${sourceUserMessage.id}",
+          time = sourceUserMessage.time.ifBlank { "原题" }
+        )
+      )
+    } else if (sourceQuestion.isNotBlank()) {
+      add(
+        ChatMessage.User(
+          id = "quick-root-user-${span.id}",
+          time = "原题",
+          text = sourceQuestion
+        )
+      )
+    }
+
+    add(
+      ChatMessage.Assistant(
+        id = "quick-root-assistant-${span.id}",
+        time = if (history.isEmpty()) "追问起点" else history.last().time,
+        spans = listOf(rootAnswerSpan)
+      )
+    )
+
     parentDetail?.question?.takeIf { question -> question.isNotBlank() }?.let { question ->
       add(
         ChatMessage.User(
@@ -953,13 +1027,15 @@ private fun buildQuickFollowupMessages(
       )
     }
 
-    add(
-      ChatMessage.Assistant(
-        id = "quick-parent-assistant-${parentId ?: span.id}",
-        time = parentDetail?.time ?: if (history.isEmpty()) "追问起点" else history.last().time,
-        spans = listOf(parentSpan)
+    parentSpan?.let { resolvedParentSpan ->
+      add(
+        ChatMessage.Assistant(
+          id = "quick-parent-assistant-${parentId}",
+          time = parentDetail.time,
+          spans = listOf(resolvedParentSpan)
+        )
       )
-    )
+    }
 
     children.forEach { detail ->
       detail.question?.takeIf { question -> question.isNotBlank() }?.let { question ->
@@ -979,7 +1055,7 @@ private fun buildQuickFollowupMessages(
           spans = listOf(
             span.copy(
               content = detail.answer,
-              sourceQuestion = detail.question ?: parentSpan.sourceQuestion,
+              sourceQuestion = detail.question ?: (parentSpan?.sourceQuestion ?: sourceQuestion),
               detailId = detail.id
             )
           )
