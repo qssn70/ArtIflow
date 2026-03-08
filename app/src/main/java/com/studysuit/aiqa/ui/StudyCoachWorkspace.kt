@@ -1,7 +1,11 @@
 package com.studysuit.aiqa.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -23,14 +27,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun CoachDigestCard(
   digest: CoachDailyDigest?,
+  hasActiveTraining: Boolean,
   onStartTraining: () -> Unit,
-  onUseRecommendedPrompt: (String) -> Unit,
+  onStartRecommendedTraining: (CoachRecommendedQuestion) -> Unit,
+  onAskAboutRecommendation: (CoachRecommendedQuestion) -> Unit,
+  onJumpToRecommendationBasis: (CoachRecommendedQuestion) -> Unit,
+  onSendQuickAction: (String) -> Unit,
   modifier: Modifier = Modifier
 ) {
   Surface(
@@ -50,6 +59,8 @@ internal fun CoachDigestCard(
         color = Color(0xFF275B4D),
         fontWeight = FontWeight.Bold
       )
+
+      val quickActions = buildCoachQuickActions(digest)
 
       if (digest == null) {
         Text(
@@ -82,18 +93,56 @@ internal fun CoachDigestCard(
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
           Button(onClick = onStartTraining, modifier = Modifier.weight(1f)) {
-            Text(text = "开始今日训练")
+            Text(text = if (hasActiveTraining) "继续今日训练" else "连练3题")
           }
-          OutlinedButton(onClick = { digest.recommendedQuestions.firstOrNull()?.let { question -> onUseRecommendedPrompt(question.prompt) } ?: onStartTraining() }, modifier = Modifier.weight(1f)) {
-            Text(text = "只回填第1题")
+          OutlinedButton(
+            onClick = { digest.recommendedQuestions.firstOrNull()?.let(onStartRecommendedTraining) ?: onStartTraining() },
+            modifier = Modifier.weight(1f)
+          ) {
+            Text(text = if (digest.recommendedQuestions.isNotEmpty()) "一键开练第1题" else "来1题")
           }
         }
 
         Text(
-          text = "下方输入框可直接和 AI 教练对话，问他你到底漏了哪一块。",
+          text = "下面这些按钮都可以直接点，不用先手打，再问教练也会自动发出去。",
           style = MaterialTheme.typography.labelSmall,
           color = Color(0xFF61756D)
         )
+
+        if (quickActions.isNotEmpty()) {
+          Surface(
+            color = Color(0xFFFFFEFB),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .border(1.dp, Color(0x143A5A4F), RoundedCornerShape(12.dp))
+          ) {
+            Column(
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+              verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+              Text(
+                text = "一键问教练",
+                style = MaterialTheme.typography.labelMedium,
+                color = Color(0xFF3B6257)
+              )
+              quickActions.forEach { action ->
+                TextButton(
+                  onClick = { onSendQuickAction(action.prompt) },
+                  contentPadding = PaddingValues(0.dp),
+                  modifier = Modifier.fillMaxWidth()
+                ) {
+                  Text(
+                    text = action.label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF2F6353),
+                    modifier = Modifier.fillMaxWidth()
+                  )
+                }
+              }
+            }
+          }
+        }
 
         if (digest.focusAreas.isNotEmpty()) {
           Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -174,11 +223,47 @@ internal fun CoachDigestCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFF586B64)
                   )
-                  TextButton(
-                    onClick = { onUseRecommendedPrompt(question.prompt) },
-                    contentPadding = PaddingValues(0.dp)
+                  if (question.basis.isNotBlank()) {
+                    Surface(
+                      color = Color(0xFFF4FAF7),
+                      shape = RoundedCornerShape(10.dp),
+                      modifier = Modifier.fillMaxWidth()
+                    ) {
+                      Text(
+                        text = "出题依据：${question.basis}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF587168),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp)
+                      )
+                    }
+                  }
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                   ) {
-                    Text(text = "去主界面练这题")
+                    Button(
+                      onClick = { onStartRecommendedTraining(question) },
+                      modifier = Modifier.weight(1f),
+                      contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                    ) {
+                      Text(text = "一键开练", style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(
+                      onClick = { onAskAboutRecommendation(question) },
+                      modifier = Modifier.weight(1f),
+                      contentPadding = PaddingValues(0.dp)
+                    ) {
+                      Text(text = "问教练为什么", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                  }
+                  if (question.anchorSavedQuestionId != null) {
+                    TextButton(
+                      onClick = { onJumpToRecommendationBasis(question) },
+                      contentPadding = PaddingValues(0.dp)
+                    ) {
+                      Text(text = "跳到依据题", color = Color(0xFF2F6353))
+                    }
                   }
                 }
               }
@@ -218,9 +303,13 @@ internal fun CoachEmptyState(modifier: Modifier = Modifier) {
   }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun CoachMessageBubble(
   message: CoachChatMessage,
+  showQuickActions: Boolean,
+  quickActions: List<CoachReplyQuickAction>,
+  onQuickAction: (String) -> Unit,
   modifier: Modifier = Modifier
 ) {
   val isUser = message.role == CoachMessageRole.USER
@@ -254,17 +343,47 @@ internal fun CoachMessageBubble(
         modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
       ) {
-        Text(
-          text = message.text,
-          style = MaterialTheme.typography.bodySmall,
-          color = if (isUser) Color.White else Color(0xFF40564F)
-        )
+        if (isUser) {
+          Text(
+            text = message.text,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.White
+          )
+        } else {
+          MarkdownBodyText(
+            markdown = message.text,
+            modifier = Modifier.fillMaxWidth()
+          )
+        }
         Text(
           text = message.time,
           style = MaterialTheme.typography.labelSmall,
           color = if (isUser) Color(0xFFE6F3ED) else Color(0xFF7B8A84),
           modifier = Modifier.align(if (isUser) Alignment.End else Alignment.Start)
         )
+        if (!isUser && showQuickActions && quickActions.isNotEmpty()) {
+          FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            quickActions.forEach { action ->
+              Surface(
+                color = Color(0xFFF2F8F5),
+                shape = RoundedCornerShape(999.dp),
+                modifier = Modifier
+                  .border(1.dp, Color(0x213B6257), RoundedCornerShape(999.dp))
+                  .clickable { onQuickAction(action.prompt) }
+              ) {
+                Text(
+                  text = action.label,
+                  style = MaterialTheme.typography.labelSmall,
+                  color = Color(0xFF2F6353),
+                  modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -274,6 +393,9 @@ internal fun CoachMessageBubble(
 internal fun CoachComposerBar(
   input: String,
   isLoading: Boolean,
+  placeholderText: String,
+  sendButtonText: String,
+  sendEnabled: Boolean,
   onInputChanged: (String) -> Unit,
   onSend: () -> Unit,
   modifier: Modifier = Modifier
@@ -303,7 +425,7 @@ internal fun CoachComposerBar(
           Box {
             if (input.isBlank()) {
               Text(
-                text = "问教练：我到底漏了哪个知识点？",
+                text = placeholderText,
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF6A8077)
               )
@@ -316,13 +438,13 @@ internal fun CoachComposerBar(
 
     Button(
       onClick = onSend,
-      enabled = input.isNotBlank(),
+      enabled = sendEnabled,
       shape = RoundedCornerShape(12.dp),
       contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
       modifier = Modifier.heightIn(min = 40.dp, max = 40.dp)
     ) {
       Text(
-        text = if (isLoading) "生成中" else "发送",
+        text = if (isLoading) "生成中" else sendButtonText,
         style = MaterialTheme.typography.bodySmall
       )
     }

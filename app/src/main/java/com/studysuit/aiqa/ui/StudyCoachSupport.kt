@@ -114,6 +114,192 @@ internal fun upsertCoachMessage(
   return messages + target
 }
 
+internal fun buildCoachConversationTurns(messages: List<CoachChatMessage>): List<CoachConversationTurn> {
+  if (messages.isEmpty()) {
+    return emptyList()
+  }
+
+  val turns = mutableListOf<CoachConversationTurn>()
+  val pending = mutableListOf<CoachChatMessage>()
+
+  fun flushPending() {
+    if (pending.isEmpty()) {
+      return
+    }
+    turns += CoachConversationTurn(
+      id = pending.first().id,
+      messages = pending.toList()
+    )
+    pending.clear()
+  }
+
+  messages.forEach { message ->
+    when (message.role) {
+      CoachMessageRole.USER -> {
+        flushPending()
+        pending += message
+      }
+
+      CoachMessageRole.ASSISTANT -> {
+        pending += message
+        flushPending()
+      }
+    }
+  }
+
+  flushPending()
+  return turns
+}
+
+internal data class CoachQuickAction(
+  val label: String,
+  val prompt: String
+)
+
+internal data class CoachReplyQuickAction(
+  val label: String,
+  val prompt: String
+)
+
+internal fun buildCoachQuickActions(digest: CoachDailyDigest?): List<CoachQuickAction> {
+  val actions = mutableListOf(
+    CoachQuickAction(
+      label = "先说核心问题",
+      prompt = "先直接告诉我：今天我最核心的问题是什么？只说最该先补的一点，再给我一个立刻能做的动作。"
+    )
+  )
+
+  digest?.focusAreas?.firstOrNull()?.let { area ->
+    actions += CoachQuickAction(
+      label = "为什么卡${area.point}",
+      prompt = "为什么我在${area.point}上总会卡住？请结合今天的表现，指出我最容易漏掉的判断点，再提醒我做这类题第一眼先看什么。"
+    )
+  }
+
+  digest?.recommendedQuestions?.firstOrNull()?.let { question ->
+    val title = question.title.trim().ifBlank { "这道推荐题" }
+    actions += CoachQuickAction(
+      label = "练前先提醒我",
+      prompt = "如果我现在开始练「$title」这类题，第一眼最该先判断什么？请给我一个很短的检查顺序。"
+    )
+  }
+
+  return actions
+    .mapNotNull { action ->
+      val label = action.label.trim()
+      val prompt = action.prompt.trim()
+      if (label.isBlank() || prompt.isBlank()) {
+        null
+      } else {
+        action.copy(label = label, prompt = prompt)
+      }
+    }
+    .distinctBy { action -> action.prompt }
+    .take(3)
+}
+
+internal fun buildCoachReplyQuickActions(
+  message: CoachChatMessage,
+  digest: CoachDailyDigest?,
+  training: DailyTrainingState
+): List<CoachReplyQuickAction> {
+  if (message.role != CoachMessageRole.ASSISTANT) {
+    return emptyList()
+  }
+
+  val normalizedText = message.text.trim()
+  val focusPoint = digest?.focusAreas?.firstOrNull()?.point.orEmpty()
+  val focusLabel = focusPoint.ifBlank { "这块" }
+  val activeRound = training.currentRound
+
+  val actions = when {
+    training.isActive && training.phase == DailyTrainingPhase.AWAITING_ANSWER -> listOf(
+      CoachReplyQuickAction(
+        label = "先给我一点提示",
+        prompt = "先别直接给答案。请只提醒我这题第一步该看什么，再给我一个很小的提示。"
+      ),
+      CoachReplyQuickAction(
+        label = "这题在考什么",
+        prompt = "这道题本质上在考我什么？请只说核心考点和判断入口，不要直接展开完整解答。"
+      ),
+      CoachReplyQuickAction(
+        label = "换一道同类题",
+        prompt = activeRound?.let { round ->
+          "把当前这道先放下，再给我一道和「${round.title}」同方向、但更容易一点的题，先只给题目不要答案。"
+        } ?: "再给我一道同方向但更容易一点的题，先只给题目不要答案。"
+      )
+    )
+
+    normalizedText.contains("错因") || normalizedText.contains("漏掉") || normalizedText.contains("知识点") -> listOf(
+      CoachReplyQuickAction(
+        label = "再分析其他漏洞",
+        prompt = "除了你刚才说的这个点，再帮我排查一下我还有没有第二个容易漏掉的漏洞。请按轻重缓急说。"
+      ),
+      CoachReplyQuickAction(
+        label = "帮我出一道题",
+        prompt = if (focusPoint.isNotBlank()) {
+          "围绕「${focusPoint}」马上给我出一道典型题，先不要答案，等我作答后你再批改。"
+        } else {
+          "根据你刚才的分析，马上给我出一道最能暴露问题的典型题，先不要答案。"
+        }
+      ),
+      CoachReplyQuickAction(
+        label = "给我一个检查顺序",
+        prompt = "把你刚才说的内容压缩成一个很短的检查顺序，我下次做题时可以直接照着过一遍。"
+      )
+    )
+
+    else -> listOf(
+      CoachReplyQuickAction(
+        label = "帮我出一道题",
+        prompt = if (focusPoint.isNotBlank()) {
+          "围绕「${focusLabel}」给我出一道典型题，先不要答案，等我作答后你再批改。"
+        } else {
+          "根据你刚才的分析给我出一道题，先不要答案，等我作答后你再批改。"
+        }
+      ),
+      CoachReplyQuickAction(
+        label = "再分析分析其他",
+        prompt = "在刚才那段分析之外，再帮我看看我还有没有别的薄弱点，尤其是容易被我忽略的那种。"
+      ),
+      CoachReplyQuickAction(
+        label = "说具体一点",
+        prompt = "把你刚才的判断再说具体一点：到底是哪一步最容易出问题？我第一眼应该先检查什么？"
+      )
+    )
+  }
+
+  return actions
+    .mapNotNull { action ->
+      val label = action.label.trim()
+      val prompt = action.prompt.trim()
+      if (label.isBlank() || prompt.isBlank()) null else action.copy(label = label, prompt = prompt)
+    }
+    .distinctBy { action -> action.prompt }
+    .take(3)
+}
+
+internal fun buildCoachRecommendationFollowupPrompt(question: CoachRecommendedQuestion): String {
+  val title = question.title.trim().ifBlank { "这道推荐题" }
+  val reason = normalizeCoachSentence(question.reason)
+  val basis = normalizeCoachSentence(question.basis)
+  return buildString {
+    append("你为什么今天推荐我练「")
+    append(title)
+    append("」？请直接说清它对应我的哪个漏洞，并提醒我做这类题第一眼先看什么。")
+    if (reason.isNotBlank()) {
+      append("你之前给的理由是：")
+      append(reason)
+      append("。")
+    }
+    if (basis.isNotBlank()) {
+      append("出题依据是：")
+      append(basis)
+      append("。")
+    }
+  }
+}
+
 internal fun buildCoachTrainingPrompt(digest: CoachDailyDigest?): String {
   val firstRecommended = digest?.recommendedQuestions?.firstOrNull()?.prompt?.trim().orEmpty()
   if (firstRecommended.isNotBlank()) {
@@ -149,7 +335,12 @@ internal fun buildCoachTrainingRounds(digest: CoachDailyDigest?): List<CoachReco
         id = "coach-round-$dateKey-$index-${area.point.hashCode()}",
         title = "${area.point} · 加练",
         reason = area.diagnosis,
-        prompt = prompt
+        prompt = prompt,
+        basis = buildCoachRecommendationBasis(
+          area = area,
+          anchor = null,
+          actionHint = normalizeCoachSentence(area.action)
+        )
       )
     }
   }
@@ -166,7 +357,8 @@ internal fun buildCoachTrainingRounds(digest: CoachDailyDigest?): List<CoachReco
         id = "coach-round-$dateKey-generic-$index",
         title = "综合训练 · 第${index + 1}题",
         reason = "补足今天的完整训练轮次。",
-        prompt = prompt
+        prompt = prompt,
+        basis = "用于补足今天的训练闭环，继续验证你当前最容易漏掉的判断点。"
       )
     } else {
       break
@@ -266,13 +458,15 @@ private fun buildCoachRecommendedQuestions(
         id = "coach-rec-$nowMillis-0",
         title = "通用回测题",
         reason = "先给我一道题做样本，教练才能更快定位薄弱点。",
-        prompt = "请给我一道适合我当前年级的中等难度典型题，先不要答案，等我作答后再批改，并指出我漏掉的知识点。"
+        prompt = "请给我一道适合我当前年级的中等难度典型题，先不要答案，等我作答后再批改，并指出我漏掉的知识点。",
+        basis = "当前样本还不够，所以先用一题通用回测题快速补齐样本。"
       ),
       CoachRecommendedQuestion(
         id = "coach-rec-$nowMillis-1",
         title = "思路判断题",
         reason = "先测我是不是会选切入点，而不只是会套步骤。",
-        prompt = "请给我一道需要先判断切入点的典型题，先只给题目，不要答案；等我作答后重点评价我的思路是否正确。"
+        prompt = "请给我一道需要先判断切入点的典型题，先只给题目，不要答案；等我作答后重点评价我的思路是否正确。",
+        basis = "当前先优先排查你是不是卡在切入点判断，而不是只会套步骤。"
       )
     )
   }
@@ -305,8 +499,39 @@ private fun buildCoachRecommendedQuestions(
       id = "coach-rec-$nowMillis-$index-${area.point.hashCode()}",
       title = title,
       reason = reason,
-      prompt = prompt
+      prompt = prompt,
+      basis = buildCoachRecommendationBasis(
+        area = area,
+        anchor = anchor,
+        actionHint = actionHint
+      ),
+      anchorSavedQuestionId = anchor?.id
     )
+  }
+}
+
+private fun buildCoachRecommendationBasis(
+  area: CoachFocusArea,
+  anchor: SavedQuestion?,
+  actionHint: String
+): String {
+  val anchorSnippet = anchor?.question?.let { question -> normalizeCoachSnippet(question, 18) }.orEmpty()
+  return buildString {
+    append("这道题主要围绕“")
+    append(area.point)
+    append("”，因为你今天最集中暴露的问题是：")
+    append(normalizeCoachSentence(area.diagnosis))
+    append("。")
+    if (actionHint.isNotBlank()) {
+      append("训练重点放在：")
+      append(actionHint)
+      append("。")
+    }
+    if (anchorSnippet.isNotBlank()) {
+      append("并参考你之前卡住的依据题《")
+      append(anchorSnippet)
+      append("》。")
+    }
   }
 }
 
