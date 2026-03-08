@@ -1,19 +1,45 @@
 # ArtI flow
 
 <div align="center">
+  <img src="docs/assets/logo.png" alt="ArtI flow logo" width="108" />
 
-**一个面向中学学习场景的 Android AI 辅导应用**  
-支持拍照搜题、公式渲染、语音追问、学习教练、题目归档与复习辅助。
+  <h3>一个面向中学学习场景的 Android AI 辅导应用</h3>
+  <p>支持拍照搜题、LaTeX 公式渲染、语音追问、学习教练、题目归档与复习辅助。</p>
 
-<p>
-  <img src="https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white" alt="Android" />
-  <img src="https://img.shields.io/badge/Language-Kotlin-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
-  <img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
-  <img src="https://img.shields.io/badge/Min%20SDK-26-orange" alt="Min SDK 26" />
-  <img src="https://img.shields.io/badge/Target%20SDK-35-blue" alt="Target SDK 35" />
+  <p>
+    <img src="https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white" alt="Android" />
+    <img src="https://img.shields.io/badge/Language-Kotlin-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
+    <img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
+    <img src="https://img.shields.io/badge/Min%20SDK-26-orange" alt="Min SDK 26" />
+    <img src="https://img.shields.io/badge/Target%20SDK-35-blue" alt="Target SDK 35" />
+  </p>
+</div>
+
+<p align="center">
+  <img src="docs/assets/cover.png" alt="ArtI flow cover" />
 </p>
 
-</div>
+## 🎬 Demo
+
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="ArtI flow demo" width="960" />
+</p>
+
+<p align="center">
+  从图片问答，到公式解释，再到学习教练与手动归档，整个学习流程尽量保持自然、清晰、可复盘。
+</p>
+
+## 📸 Screenshots
+
+<p align="center">
+  <img src="docs/assets/screenshot-chat.png" alt="聊天问答界面" width="31%" />
+  <img src="docs/assets/screenshot-coach.png" alt="学习教练界面" width="31%" />
+  <img src="docs/assets/screenshot-history.png" alt="归档与历史界面" width="31%" />
+</p>
+
+<p align="center">
+  图片问答 · 教练建议 · 题目归档
+</p>
 
 ---
 
@@ -152,6 +178,8 @@ ArtIflow/
 │   │   └── MainActivity.kt
 │   ├── src/main/res/
 │   └── build.gradle.kts
+├── docs/
+│   └── assets/          # README 展示图、封面、GIF、logo
 ├── gradle/
 ├── local.properties.example
 └── README.md
@@ -190,7 +218,7 @@ ArtIflow/
 - 图片问答与多图理解体验
 - 公式渲染边界场景补测试
 - 教练模式提示词与训练流程优化
-- README、演示截图、使用文档补充
+- Demo、截图、使用文档持续补强
 
 ---
 
