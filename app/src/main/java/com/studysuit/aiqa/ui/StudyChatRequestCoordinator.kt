@@ -21,7 +21,7 @@ internal class StudyChatRequestCoordinator(
   private val openSpeechAsrClient: OpenSpeechAsrClient
 ) {
   suspend fun replyForImageQuestion(
-    imageBytes: ByteArray,
+    imageBytesList: List<ByteArray>,
     settings: RuntimeSettings,
     note: String?,
     imageCount: Int
@@ -32,16 +32,15 @@ internal class StudyChatRequestCoordinator(
       imageCount = imageCount
     )
 
-    return arkApiClient.generateReplyWithImage(
+    return arkApiClient.generateReplyWithImages(
       prompt = prompt,
-      imageBytes = imageBytes,
-      mimeType = "image/jpeg",
+      images = toImagePayloads(imageBytesList),
       config = settings.toArkRuntimeConfig()
     )
   }
 
   suspend fun replyForImageQuestionStream(
-    imageBytes: ByteArray,
+    imageBytesList: List<ByteArray>,
     settings: RuntimeSettings,
     note: String?,
     imageCount: Int,
@@ -54,10 +53,9 @@ internal class StudyChatRequestCoordinator(
       imageCount = imageCount
     )
 
-    return arkApiClient.generateReplyWithImageStream(
+    return arkApiClient.generateReplyWithImagesStream(
       prompt = prompt,
-      imageBytes = imageBytes,
-      mimeType = "image/jpeg",
+      images = toImagePayloads(imageBytesList),
       config = settings.toArkRuntimeConfig(),
       onDelta = onDelta,
       onReasoningDelta = onReasoningDelta

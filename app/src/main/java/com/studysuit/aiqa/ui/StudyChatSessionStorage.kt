@@ -496,6 +496,12 @@ private fun JSONObject.toHistories(): Map<String, List<SpanDetail>> {
 }
 
 private fun SavedQuestion.toJson(): JSONObject {
+  val previewList = if (imagePreviewList.isNotEmpty()) {
+    imagePreviewList
+  } else {
+    imagePreviewBytes?.let { bytes -> listOf(bytes) }.orEmpty()
+  }
+
   return JSONObject()
     .put("id", id)
     .put("sourceMessageId", sourceMessageId)
@@ -505,6 +511,18 @@ private fun SavedQuestion.toJson(): JSONObject {
     .put("savedAt", savedAt)
     .put("followupCount", followupCount)
     .put("knowledgeTags", JSONArray(knowledgeTags))
+    .put("subject", subject)
+    .put("questionType", questionType)
+    .put("analysisSummary", analysisSummary)
+    .put("image", previewList.firstOrNull()?.let { bytes -> Base64.encodeToString(bytes, Base64.NO_WRAP) } ?: JSONObject.NULL)
+    .put(
+      "images",
+      JSONArray().apply {
+        previewList.forEach { bytes ->
+          put(Base64.encodeToString(bytes, Base64.NO_WRAP))
+        }
+      }
+    )
 }
 
 private fun JSONArray.toSavedQuestions(): List<SavedQuestion> {
@@ -515,6 +533,32 @@ private fun JSONArray.toSavedQuestions(): List<SavedQuestion> {
       val question = item.optString("question").trim()
       if (id.isBlank() || question.isBlank()) {
         continue
+      }
+      val imageList = item.optJSONArray("images")?.let { array ->
+        buildList {
+          for (imageIndex in 0 until array.length()) {
+            val encoded = array.optString(imageIndex)
+            if (encoded.isBlank() || encoded == "null") {
+              continue
+            }
+            runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()?.let { decoded ->
+              if (decoded.isNotEmpty()) {
+                add(decoded)
+              }
+            }
+          }
+        }
+      }.orEmpty()
+      val encodedImage = item.optString("image")
+      val legacyImage = if (encodedImage.isBlank() || encodedImage == "null") {
+        null
+      } else {
+        runCatching { Base64.decode(encodedImage, Base64.DEFAULT) }.getOrNull()
+      }
+      val previewList = if (imageList.isNotEmpty()) {
+        imageList
+      } else {
+        legacyImage?.let { bytes -> listOf(bytes) }.orEmpty()
       }
       add(
         SavedQuestion(
@@ -534,7 +578,12 @@ private fun JSONArray.toSavedQuestions(): List<SavedQuestion> {
                 }
               }
             }
-          }.orEmpty()
+          }.orEmpty(),
+          subject = item.optString("subject").trim(),
+          questionType = item.optString("questionType").trim(),
+          analysisSummary = item.optString("analysisSummary").trim(),
+          imagePreviewBytes = previewList.firstOrNull(),
+          imagePreviewList = previewList
         )
       )
     }
@@ -735,6 +784,8 @@ private fun CoachRecommendedQuestion.toJson(): JSONObject {
     .put("title", title)
     .put("reason", reason)
     .put("prompt", prompt)
+    .put("basis", basis)
+    .put("anchorSavedQuestionId", anchorSavedQuestionId ?: JSONObject.NULL)
 }
 
 private fun JSONArray.toCoachRecommendedQuestions(): List<CoachRecommendedQuestion> {
@@ -750,7 +801,9 @@ private fun JSONArray.toCoachRecommendedQuestions(): List<CoachRecommendedQuesti
           id = item.optString("id").trim().ifBlank { "coach-rec-$index" },
           title = item.optString("title"),
           reason = item.optString("reason"),
-          prompt = prompt
+          prompt = prompt,
+          basis = item.optString("basis"),
+          anchorSavedQuestionId = item.optString("anchorSavedQuestionId").trim().takeIf { value -> value.isNotBlank() }
         )
       )
     }

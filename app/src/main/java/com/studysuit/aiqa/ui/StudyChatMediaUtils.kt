@@ -1,30 +1,10 @@
 package com.studysuit.aiqa.ui
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Color
 import android.net.Uri
-import java.io.ByteArrayOutputStream
-
-internal fun bitmapToJpeg(bitmap: Bitmap): ByteArray {
-  val stream = ByteArrayOutputStream()
-  if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, stream)) {
-    return ByteArray(0)
-  }
-  return stream.toByteArray()
-}
-
-internal fun transcodeImageToJpeg(rawBytes: ByteArray): ByteArray {
-  if (rawBytes.isEmpty()) {
-    return ByteArray(0)
-  }
-
-  val bitmap = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) ?: return rawBytes
-  val jpegBytes = bitmapToJpeg(bitmap)
-  return if (jpegBytes.isEmpty()) rawBytes else jpegBytes
-}
+import androidx.core.content.FileProvider
+import com.studysuit.aiqa.data.ImagePayload
+import java.io.File
 
 internal fun readImageBytes(context: Context, uri: Uri): ByteArray {
   val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
@@ -33,51 +13,94 @@ internal fun readImageBytes(context: Context, uri: Uri): ByteArray {
   return bytes ?: ByteArray(0)
 }
 
-internal fun mergeImagesForUpload(imageBytesList: List<ByteArray>): ByteArray {
-  val normalized = imageBytesList
+internal fun resolveImageMimeType(context: Context, uri: Uri, rawBytes: ByteArray): String {
+  val contentType = context.contentResolver.getType(uri)
+    ?.trim()
+    ?.lowercase()
+    ?.takeIf { mimeType -> mimeType.startsWith("image/") }
+
+  return contentType ?: detectImageMimeType(rawBytes)
+}
+
+internal fun detectImageMimeType(rawBytes: ByteArray, fallback: String = "image/jpeg"): String {
+  if (rawBytes.size < 12) {
+    return fallback
+  }
+
+  return when {
+    rawBytes.matchesSignature(0xFF, 0xD8, 0xFF) -> "image/jpeg"
+    rawBytes.matchesSignature(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) -> "image/png"
+    rawBytes.matchesSignature(0x47, 0x49, 0x46, 0x38) -> "image/gif"
+    rawBytes.matchesSignature(0x42, 0x4D) -> "image/bmp"
+    rawBytes.matchesAscii("RIFF") && rawBytes.matchesAscii("WEBP", offset = 8) -> "image/webp"
+    rawBytes.matchesAscii("ftyp", offset = 4) -> {
+      when (rawBytes.readAscii(8, 4)) {
+        "heic", "heix", "hevc", "hevx", "heim", "heis" -> "image/heic"
+        "mif1", "msf1" -> "image/heif"
+        "avif", "avis" -> "image/avif"
+        else -> fallback
+      }
+    }
+
+    else -> fallback
+  }
+}
+
+internal fun toImagePayloads(imageBytesList: List<ByteArray>): List<ImagePayload> {
+  return imageBytesList
     .asSequence()
-    .map { raw -> transcodeImageToJpeg(raw) }
     .filter { bytes -> bytes.isNotEmpty() }
+    .map { bytes -> ImagePayload(bytes = bytes, mimeType = detectImageMimeType(bytes)) }
     .toList()
+}
 
-  if (normalized.isEmpty()) {
-    return ByteArray(0)
+internal fun createCameraCaptureUri(context: Context): Uri {
+  val captureDirectory = File(context.cacheDir, "captured_images").apply {
+    mkdirs()
+  }
+  val imageFile = File.createTempFile(
+    "capture-${System.currentTimeMillis()}-",
+    ".jpg",
+    captureDirectory
+  )
+  return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", imageFile)
+}
+
+internal fun deleteCapturedImage(context: Context, uri: Uri?) {
+  if (uri == null) {
+    return
   }
 
-  if (normalized.size == 1) {
-    return normalized.first()
+  runCatching {
+    context.contentResolver.delete(uri, null, null)
+  }
+}
+
+private fun ByteArray.matchesSignature(vararg signature: Int, offset: Int = 0): Boolean {
+  if (size < offset + signature.size) {
+    return false
   }
 
-  val bitmaps = normalized.mapNotNull { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-  if (bitmaps.isEmpty()) {
-    return ByteArray(0)
+  return signature.indices.all { index ->
+    this[offset + index].toInt() and 0xFF == signature[index]
+  }
+}
+
+private fun ByteArray.matchesAscii(value: String, offset: Int = 0): Boolean {
+  val bytes = value.encodeToByteArray()
+  if (size < offset + bytes.size) {
+    return false
   }
 
-  val targetWidth = bitmaps.maxOf { bitmap -> bitmap.width }.coerceAtMost(1440)
-  val scaledBitmaps = bitmaps.map { bitmap ->
-    if (bitmap.width == targetWidth) {
-      bitmap
-    } else {
-      val targetHeight = ((bitmap.height.toFloat() * targetWidth) / bitmap.width).toInt().coerceAtLeast(1)
-      Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
-    }
+  return bytes.indices.all { index ->
+    this[offset + index] == bytes[index]
+  }
+}
+
+private fun ByteArray.readAscii(offset: Int, length: Int): String {
+  if (size < offset + length) {
+    return ""
   }
 
-  val gap = 6
-  val totalHeight = scaledBitmaps.sumOf { bitmap -> bitmap.height } + gap * (scaledBitmaps.size - 1)
-  val mergedBitmap = Bitmap.createBitmap(targetWidth, totalHeight.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
-  val canvas = Canvas(mergedBitmap)
-  canvas.drawColor(Color.WHITE)
-
-  var offsetY = 0f
-  scaledBitmaps.forEachIndexed { index, bitmap ->
-    canvas.drawBitmap(bitmap, 0f, offsetY, null)
-    offsetY += bitmap.height
-    if (index < scaledBitmaps.lastIndex) {
-      offsetY += gap
-    }
-  }
-
-  val mergedBytes = bitmapToJpeg(mergedBitmap)
-  return if (mergedBytes.isEmpty()) normalized.first() else mergedBytes
+  return decodeToString(startIndex = offset, endIndex = offset + length)
 }

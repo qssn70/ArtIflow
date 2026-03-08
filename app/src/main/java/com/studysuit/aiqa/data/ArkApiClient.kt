@@ -137,12 +137,25 @@ class ArkApiClient(
     mimeType: String = "image/jpeg",
     config: ArkRuntimeConfig = ArkRuntimeConfig()
   ): Result<String> {
+    return generateReplyWithImages(
+      prompt = prompt,
+      images = listOf(ImagePayload(bytes = imageBytes, mimeType = mimeType)),
+      config = config
+    )
+  }
+
+  internal suspend fun generateReplyWithImages(
+    prompt: String,
+    images: List<ImagePayload>,
+    config: ArkRuntimeConfig = ArkRuntimeConfig()
+  ): Result<String> {
     val normalizedPrompt = prompt.trim()
     if (normalizedPrompt.isBlank()) {
       return Result.failure(IllegalArgumentException("图片提问提示词为空"))
     }
 
-    if (imageBytes.isEmpty()) {
+    val normalizedImages = images.filter { image -> image.bytes.isNotEmpty() }
+    if (normalizedImages.isEmpty()) {
       return Result.failure(IllegalArgumentException("图片数据为空"))
     }
 
@@ -156,8 +169,7 @@ class ArkApiClient(
         val requestBody = buildImageRequestBody(
           endpoint = endpoint,
           prompt = normalizedPrompt,
-          imageBytes = imageBytes,
-          mimeType = mimeType,
+          images = normalizedImages,
           config = config,
           stream = false
         )
@@ -195,12 +207,29 @@ class ArkApiClient(
     onDelta: (String) -> Unit,
     onReasoningDelta: ((String) -> Unit)? = null
   ): Result<String> {
+    return generateReplyWithImagesStream(
+      prompt = prompt,
+      images = listOf(ImagePayload(bytes = imageBytes, mimeType = mimeType)),
+      config = config,
+      onDelta = onDelta,
+      onReasoningDelta = onReasoningDelta
+    )
+  }
+
+  internal suspend fun generateReplyWithImagesStream(
+    prompt: String,
+    images: List<ImagePayload>,
+    config: ArkRuntimeConfig = ArkRuntimeConfig(),
+    onDelta: (String) -> Unit,
+    onReasoningDelta: ((String) -> Unit)? = null
+  ): Result<String> {
     val normalizedPrompt = prompt.trim()
     if (normalizedPrompt.isBlank()) {
       return Result.failure(IllegalArgumentException("图片提问提示词为空"))
     }
 
-    if (imageBytes.isEmpty()) {
+    val normalizedImages = images.filter { image -> image.bytes.isNotEmpty() }
+    if (normalizedImages.isEmpty()) {
       return Result.failure(IllegalArgumentException("图片数据为空"))
     }
 
@@ -214,8 +243,7 @@ class ArkApiClient(
         val requestBody = buildImageRequestBody(
           endpoint = endpoint,
           prompt = normalizedPrompt,
-          imageBytes = imageBytes,
-          mimeType = mimeType,
+          images = normalizedImages,
           config = config,
           stream = true
         )
@@ -324,12 +352,13 @@ class ArkApiClient(
   private fun buildImageRequestBody(
     endpoint: String,
     prompt: String,
-    imageBytes: ByteArray,
-    mimeType: String,
+    images: List<ImagePayload>,
     config: ArkRuntimeConfig,
     stream: Boolean = false
   ): String {
-    val dataUrl = "data:$mimeType;base64,${Base64.encodeToString(imageBytes, Base64.NO_WRAP)}"
+    val dataUrls = images.map { image ->
+      "data:${image.mimeType};base64,${Base64.encodeToString(image.bytes, Base64.NO_WRAP)}"
+    }
     val systemPrompt = config.systemPrompt.trim()
 
     return if (endpoint == RESPONSES_ENDPOINT) {
@@ -351,16 +380,18 @@ class ArkApiClient(
       }
 
       val userContent = JSONArray()
-        .put(
+      dataUrls.forEach { dataUrl ->
+        userContent.put(
           JSONObject()
             .put("type", "input_image")
             .put("image_url", dataUrl)
         )
-        .put(
-          JSONObject()
-            .put("type", "input_text")
-            .put("text", prompt)
-        )
+      }
+      userContent.put(
+        JSONObject()
+          .put("type", "input_text")
+          .put("text", prompt)
+      )
 
       input.put(
         JSONObject()
@@ -391,11 +422,14 @@ class ArkApiClient(
             .put("type", "text")
             .put("text", prompt)
         )
-        .put(
+
+      dataUrls.forEach { dataUrl ->
+        content.put(
           JSONObject()
             .put("type", "image_url")
             .put("image_url", JSONObject().put("url", dataUrl))
         )
+      }
 
       messages.put(
         JSONObject()

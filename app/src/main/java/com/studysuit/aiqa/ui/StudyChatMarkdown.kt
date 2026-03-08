@@ -176,7 +176,8 @@ internal fun normalizeLatexForMarkwon(markdown: String): String {
     return markdown
   }
 
-  var normalized = markdownBracketBlockRegex.replace(markdown) { match ->
+  var normalized = normalizeIndentedBracketBlocks(markdown)
+  normalized = markdownBracketBlockRegex.replace(normalized) { match ->
     val equation = match.groupValues[1].trim()
     "$$\n$equation\n$$"
   }
@@ -188,6 +189,74 @@ internal fun normalizeLatexForMarkwon(markdown: String): String {
     "$$${match.groupValues[1]}$$"
   }
   return normalized
+}
+
+private fun normalizeIndentedBracketBlocks(markdown: String): String {
+  val normalizedSource = markdown.replace("\r\n", "\n").replace('\r', '\n')
+  val lines = normalizedSource.split('\n')
+  if (lines.none { line -> line.trim() == "\\[" }) {
+    return normalizedSource
+  }
+
+  val output = mutableListOf<String>()
+  var index = 0
+  while (index < lines.size) {
+    val line = lines[index]
+    if (line.trim() != "\\[") {
+      output += line
+      index += 1
+      continue
+    }
+
+    val indent = line.takeWhile { char -> char == ' ' || char == '\t' }
+    val blockLines = mutableListOf<String>()
+    var cursor = index + 1
+    var closed = false
+    while (cursor < lines.size) {
+      val candidate = lines[cursor]
+      if (candidate.trim() == "\\]") {
+        closed = true
+        break
+      }
+      blockLines += candidate
+      cursor += 1
+    }
+
+    if (!closed) {
+      output += line
+      output += blockLines
+      break
+    }
+
+    output += indent + "$$"
+    stripCommonIndent(blockLines).forEach { contentLine ->
+      output += if (contentLine.isBlank()) indent else indent + contentLine
+    }
+    output += indent + "$$"
+    index = cursor + 1
+  }
+
+  return output.joinToString(separator = "\n")
+}
+
+private fun stripCommonIndent(lines: List<String>): List<String> {
+  val nonBlank = lines.filter { line -> line.isNotBlank() }
+  if (nonBlank.isEmpty()) {
+    return lines
+  }
+
+  val commonIndent = nonBlank.minOf { line ->
+    line.indexOfFirst { char -> !char.isWhitespace() }
+      .let { firstNonBlank -> if (firstNonBlank == -1) line.length else firstNonBlank }
+  }
+
+  return lines.map { line ->
+    if (line.isBlank()) {
+      ""
+    } else {
+      line.drop(commonIndent).trimEnd()
+    }
+  }
 }
 
 private fun gravityForTextAlign(textAlign: TextAlign): Int {

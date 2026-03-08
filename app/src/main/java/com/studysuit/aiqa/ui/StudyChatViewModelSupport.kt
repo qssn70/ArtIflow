@@ -495,10 +495,21 @@ internal fun sanitizeSavedQuestion(saved: SavedQuestion): SavedQuestion? {
     return null
   }
 
+  val previewList = if (saved.imagePreviewList.isNotEmpty()) {
+    saved.imagePreviewList.filter { bytes -> bytes.isNotEmpty() }.take(6)
+  } else {
+    saved.imagePreviewBytes?.takeIf { bytes -> bytes.isNotEmpty() }?.let { bytes -> listOf(bytes) }.orEmpty()
+  }
+
   return saved.copy(
     question = question,
     answer = answer,
-    knowledgeTags = filterToHighSchoolKnowledgeTags(saved.knowledgeTags, maxSize = 6)
+    knowledgeTags = filterToHighSchoolKnowledgeTags(saved.knowledgeTags, maxSize = 6),
+    subject = saved.subject.trim(),
+    questionType = saved.questionType.trim(),
+    analysisSummary = saved.analysisSummary.trim(),
+    imagePreviewBytes = previewList.firstOrNull(),
+    imagePreviewList = previewList
   )
 }
 
@@ -872,6 +883,14 @@ internal data class AiAnkiCardPayload(
   val deck: String?
 )
 
+internal data class ImageQuestionArchivePayload(
+  val question: String,
+  val subject: String,
+  val questionType: String,
+  val knowledgeTags: List<String>,
+  val analysisSummary: String
+)
+
 internal data class AnkiDeckSummary(
   val name: String,
   val cardCount: Int,
@@ -1030,6 +1049,122 @@ internal fun normalizeDeckName(raw: String?): String? {
     return null
   }
   return trimmed.replace(Regex("\\s+"), " ").take(12)
+}
+
+internal fun buildImageQuestionArchivePrompt(
+  sourcePrompt: String,
+  assistantAnswer: String
+): String {
+  val promptSnippet = normalizeCardText(sourcePrompt, maxLen = 120)
+  val answerSnippet = normalizeCardText(assistantAnswer, maxLen = 1600)
+  return buildString {
+    append("你要把一道拍照题归档成结构化记录。")
+    append("请直接从题目图片中提取题干，并结合下方讲解提炼归档信息。")
+    appendLine()
+    append(
+      """
+      仅输出JSON，不要代码块，不要解释。
+      JSON格式：{"question":"...","subject":"数学/物理/化学/英语/语文/其他","question_type":"...","knowledge_tags":["..."],"analysis_summary":"..."}
+      要求：
+      1. question 直接提取原题题干，尽量完整，不要写“拍照搜题”这类系统字样；
+      2. subject 优先判断是否属于高中学科，只允许 数学/物理/化学/英语/语文/其他；
+      3. question_type 用简短中文，如 选择题/填空题/解答题/实验题/阅读题/作文题/其他；
+      4. knowledge_tags 只保留高中学科知识点或学科名，最多6个；
+      5. analysis_summary 用1到2句总结这道题主要考什么、最容易卡在哪里。
+      """.trimIndent()
+    )
+    if (promptSnippet.isNotBlank()) {
+      appendLine()
+      appendLine()
+      append("用户补充说明：")
+      append(promptSnippet)
+    }
+    appendLine()
+    appendLine()
+    append("已有讲解：")
+    append(answerSnippet)
+  }
+}
+
+internal fun parseImageQuestionArchivePayload(raw: String): ImageQuestionArchivePayload? {
+  val payload = parseJsonObjectSafely(raw) ?: return null
+  val question = normalizeCardText(payload.optString("question"), maxLen = 300)
+  val subject = payload.optString("subject").trim()
+  val questionType = payload.optString("question_type").trim()
+  val knowledgeTags = filterToHighSchoolKnowledgeTags(
+    payload.optJSONArray("knowledge_tags")?.let { array ->
+      buildList {
+        for (index in 0 until array.length()) {
+          val tag = array.optString(index).trim()
+          if (tag.isNotBlank()) {
+            add(tag)
+          }
+        }
+      }
+    }.orEmpty(),
+    maxSize = 6
+  )
+  val analysisSummary = normalizeCardText(payload.optString("analysis_summary"), maxLen = 180)
+
+  if (question.isBlank()) {
+    return null
+  }
+
+  return ImageQuestionArchivePayload(
+    question = question,
+    subject = subject,
+    questionType = questionType,
+    knowledgeTags = knowledgeTags,
+    analysisSummary = analysisSummary
+  )
+}
+
+internal fun isGenericImageSearchQuestion(text: String): Boolean {
+  val normalized = text.trim()
+  if (normalized.isBlank()) {
+    return false
+  }
+  return normalized.startsWith("拍照搜题：") ||
+    normalized.startsWith("相册搜题：") ||
+    normalized.startsWith("多图搜题：")
+}
+
+internal fun buildFallbackSavedQuestionTitle(sourceQuestion: String, answer: String): String {
+  val questionCandidate = sourceQuestion.trim().takeUnless(::isGenericImageSearchQuestion)
+  if (!questionCandidate.isNullOrBlank()) {
+    return normalizeCardText(questionCandidate, maxLen = 120)
+  }
+
+  val normalizedAnswer = normalizeCardText(answer, maxLen = 180)
+  val candidateLine = normalizedAnswer
+    .lineSequence()
+    .map { line -> line.trim().trimStart('#', '-', '•', '*', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '、', '：', ':', ' ') }
+    .firstOrNull { line -> line.length >= 8 }
+    .orEmpty()
+  return candidateLine.take(120).ifBlank { "图片题目归档" }
+}
+
+internal fun buildFallbackImageArchivePayload(sourceQuestion: String, answer: String): ImageQuestionArchivePayload {
+  val question = buildFallbackSavedQuestionTitle(sourceQuestion = sourceQuestion, answer = answer)
+  val combinedText = listOf(question, answer).joinToString(separator = "\n")
+  val tagged = QuestionTagger.autoTag(combinedText)
+  val knowledgeTags = filterToHighSchoolKnowledgeTags(
+    tagged.knowledgePoints.ifEmpty { inferKnowledgePoints(combinedText) },
+    maxSize = 6
+  )
+  val summary = normalizeCardText(answer, maxLen = 120)
+    .lineSequence()
+    .map { line -> line.trim() }
+    .firstOrNull { line -> line.length >= 10 }
+    .orEmpty()
+
+  return ImageQuestionArchivePayload(
+    question = question,
+    subject = tagged.subject.takeUnless { subject -> subject == "其他" }.orEmpty(),
+    questionType = tagged.questionType.takeUnless { type -> type == "其他" }.orEmpty(),
+    knowledgeTags = knowledgeTags,
+    analysisSummary = summary
+  )
 }
 
 private fun parseJsonObjectSafely(raw: String): JSONObject? {

@@ -77,6 +77,34 @@ class StudyChatMarkdownTest {
   }
 
   @Test
+  fun normalizeLatexForMarkwon_keepsOrderedListTextAroundInlineFormula() {
+    val markdown = "1. 由核反应前后**质量数守恒**：\\(235+1=236\\)，而\\(141+92=233\\)，所以 \\(3X\\) 的总质量数是 3。"
+
+    val normalized = normalizeLatexForMarkwon(markdown)
+
+    assertTrue(normalized.startsWith("1. "))
+    assertTrue(normalized.contains("${'$'}${'$'}235+1=236${'$'}${'$'}"))
+    assertTrue(normalized.contains("${'$'}${'$'}141+92=233${'$'}${'$'}"))
+    assertTrue(normalized.contains("${'$'}${'$'}3X${'$'}${'$'}"))
+  }
+
+  @Test
+  fun normalizeLatexForMarkwon_preservesIndentedBlockFormulaInsideOrderedList() {
+    val markdown = """
+      2. 双缝干涉公式：
+         \[
+         \Delta x=\frac{L\lambda}{d}
+         \]
+      3. 代入数据。
+    """.trimIndent()
+
+    val normalized = normalizeLatexForMarkwon(markdown)
+
+    assertTrue(normalized.contains("2. 双缝干涉公式："))
+    assertTrue(normalized.contains("\n   ${'$'}${'$'}\n   \\Delta x=\\frac{L\\lambda}{d}\n   ${'$'}${'$'}\n3. 代入数据。"))
+  }
+
+  @Test
   fun normalizeLatexForMarkwon_keepsEscapedCurrencyTextUnchanged() {
     val markdown = "价格是 \\$100，不是公式"
 

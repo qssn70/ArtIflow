@@ -1,12 +1,15 @@
 package com.studysuit.aiqa.ui
 
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,7 +40,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -399,10 +405,19 @@ private fun MasteryActionButton(
 @Composable
 internal fun QuestionArchiveWorkspace(
   savedQuestions: List<SavedQuestion>,
+  focusedSavedQuestionId: String?,
   onSwitchToChat: () -> Unit,
   onRestoreQuestion: (String) -> Unit,
   onRemoveQuestion: (String) -> Unit
 ) {
+  val orderedSavedQuestions = remember(savedQuestions, focusedSavedQuestionId) {
+    if (focusedSavedQuestionId.isNullOrBlank()) {
+      savedQuestions
+    } else {
+      savedQuestions.sortedByDescending { saved -> saved.id == focusedSavedQuestionId }
+    }
+  }
+
   Column(
     modifier = Modifier
       .fillMaxSize()
@@ -430,9 +445,10 @@ internal fun QuestionArchiveWorkspace(
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF5E746D)
       )
-      savedQuestions.forEach { saved ->
+      orderedSavedQuestions.forEach { saved ->
         SavedQuestionCard(
           saved = saved,
+          isFocused = saved.id == focusedSavedQuestionId,
           onRestoreQuestion = { onRestoreQuestion(saved.id) },
           onRemoveQuestion = { onRemoveQuestion(saved.id) }
         )
@@ -444,30 +460,72 @@ internal fun QuestionArchiveWorkspace(
 @Composable
 private fun SavedQuestionCard(
   saved: SavedQuestion,
+  isFocused: Boolean,
   onRestoreQuestion: () -> Unit,
   onRemoveQuestion: () -> Unit
 ) {
-  var expanded by remember(saved.id) { mutableStateOf(false) }
+  var expanded by remember(saved.id, isFocused) { mutableStateOf(isFocused) }
+  val previewByteList = remember(saved.imagePreviewList, saved.imagePreviewBytes) {
+    if (saved.imagePreviewList.isNotEmpty()) {
+      saved.imagePreviewList
+    } else {
+      saved.imagePreviewBytes?.let { bytes -> listOf(bytes) }.orEmpty()
+    }
+  }
+  val previewBitmaps = remember(previewByteList) {
+    previewByteList.mapNotNull { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+  }
+  val metaLine = remember(saved.subject, saved.questionType) {
+    listOf(saved.subject.trim(), saved.questionType.trim())
+      .filter { it.isNotBlank() }
+      .joinToString(separator = " · ")
+  }
 
   Surface(
-    color = Color(0xFFFBFEFC),
+    color = if (isFocused) Color(0xFFF2FAF6) else Color(0xFFFBFEFC),
     shape = RoundedCornerShape(14.dp),
     modifier = Modifier
       .fillMaxWidth()
-      .border(1.dp, Color(0x173B5D52), RoundedCornerShape(14.dp))
+      .border(if (isFocused) 1.5.dp else 1.dp, if (isFocused) Color(0xFF4E8E77) else Color(0x173B5D52), RoundedCornerShape(14.dp))
       .clickable { expanded = !expanded }
   ) {
     Column(
       modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
       verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+      if (previewBitmaps.isNotEmpty()) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          previewBitmaps.forEachIndexed { index, bitmap ->
+            Image(
+              bitmap = bitmap.asImageBitmap(),
+              contentDescription = "归档原题图片 ${index + 1}",
+              modifier = Modifier
+                .size(if (previewBitmaps.size == 1) 112.dp else 78.dp)
+                .clip(RoundedCornerShape(10.dp)),
+              contentScale = ContentScale.Crop
+            )
+          }
+        }
+      }
       Text(
         text = saved.question,
         style = MaterialTheme.typography.labelMedium,
         color = Color(0xFF295C4D),
-        maxLines = if (expanded) 4 else 2,
+        maxLines = if (expanded) 5 else 2,
         overflow = TextOverflow.Ellipsis
       )
+      if (metaLine.isNotBlank()) {
+        Text(
+          text = metaLine,
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF587168)
+        )
+      }
       Text(
         text = "原回复 ${saved.sourceTime} · 收藏于 ${formatSessionTime(saved.savedAt)}" +
           if (saved.followupCount > 0) " · 追问 ${saved.followupCount} 条" else "",
@@ -480,6 +538,15 @@ private fun SavedQuestionCard(
           style = MaterialTheme.typography.labelSmall,
           color = Color(0xFF60756E),
           maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+      if (saved.analysisSummary.isNotBlank()) {
+        Text(
+          text = "归档分析：${saved.analysisSummary}",
+          style = MaterialTheme.typography.bodySmall,
+          color = Color(0xFF536760),
+          maxLines = if (expanded) 4 else 2,
           overflow = TextOverflow.Ellipsis
         )
       }

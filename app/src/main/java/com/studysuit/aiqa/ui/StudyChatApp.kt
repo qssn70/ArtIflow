@@ -5,7 +5,6 @@ import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -104,6 +103,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   var activeVoiceSession by remember { mutableStateOf<PcmWavRecorder.Session?>(null) }
   var pendingPermissionSpanId by remember { mutableStateOf<String?>(null) }
   var pendingCameraCapture by remember { mutableStateOf(false) }
+  var pendingCameraImageUri by remember { mutableStateOf<Uri?>(null) }
   var isDeckArchiveOpen by remember { mutableStateOf(false) }
   var isFollowupTreeOpen by remember { mutableStateOf(false) }
   var lastBackPressedAt by remember { mutableLongStateOf(0L) }
@@ -138,17 +138,32 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   }
 
   val cameraImageLauncher = rememberLauncherForActivityResult(
-    contract = ActivityResultContracts.TakePicturePreview()
-  ) { bitmap ->
-    if (bitmap == null) {
+    contract = ActivityResultContracts.TakePicture()
+  ) { captured ->
+    val captureUri = pendingCameraImageUri
+    pendingCameraImageUri = null
+    if (!captured || captureUri == null) {
       viewModel.showImageSearchCanceled()
     } else {
-      val imageBytes = runCatching { bitmapToJpeg(bitmap) }.getOrNull()
+      val imageBytes = runCatching { readImageBytes(context, captureUri) }
+        .onFailure { deleteCapturedImage(context, captureUri) }
+        .getOrNull()
+      deleteCapturedImage(context, captureUri)
       if (imageBytes == null || imageBytes.isEmpty()) {
         viewModel.showImageReadFailed("拍照结果为空")
       } else {
         appendPendingImage("拍照搜题", imageBytes)
       }
+    }
+  }
+
+  fun launchFullQualityCamera() {
+    val captureUri = runCatching { createCameraCaptureUri(context) }.getOrNull()
+    if (captureUri == null) {
+      viewModel.showImageReadFailed("无法创建拍照文件")
+    } else {
+      pendingCameraImageUri = captureUri
+      cameraImageLauncher.launch(captureUri)
     }
   }
 
@@ -158,10 +173,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     if (uri == null) {
       viewModel.showImageSearchCanceled()
     } else {
-      val imageBytes = runCatching {
-        val rawBytes = readImageBytes(context, uri)
-        transcodeImageToJpeg(rawBytes)
-      }.getOrNull()
+      val imageBytes = runCatching { readImageBytes(context, uri) }.getOrNull()
       if (imageBytes == null || imageBytes.isEmpty()) {
         viewModel.showImageReadFailed("相册图片读取失败")
       } else {
@@ -201,7 +213,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
 
     pendingCameraCapture = false
     if (granted) {
-      cameraImageLauncher.launch(null)
+      launchFullQualityCamera()
     } else {
       viewModel.showCameraPermissionDenied()
     }
@@ -217,7 +229,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       ) == PackageManager.PERMISSION_GRANTED
 
       if (granted) {
-        cameraImageLauncher.launch(null)
+        launchFullQualityCamera()
       } else {
         pendingCameraCapture = true
         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -373,6 +385,48 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val isQuestionPage = uiState.activePage == WorkspacePage.CHAT ||
     uiState.activePage == WorkspacePage.QUICK_FOLLOWUP
   val isCoachPage = uiState.activePage == WorkspacePage.COACH
+  val activeCoachTraining = remember(uiState.dailyTraining) {
+    uiState.dailyTraining.takeIf { training ->
+      training.dateKey == currentCoachDateKey() && training.isActive
+    }
+  }
+  val coachComposerPlaceholder = remember(activeCoachTraining) {
+    when (activeCoachTraining?.phase) {
+      DailyTrainingPhase.AWAITING_ANSWER -> "直接写这题答案，发出后自动批改"
+      DailyTrainingPhase.ASKING_QUESTION -> "正在出题，等题目出来后再作答"
+      DailyTrainingPhase.REVIEWING_ANSWER -> "正在批改，稍等一下"
+      else -> "问教练：我到底漏了哪个知识点？"
+    }
+  }
+  val coachSendButtonText = remember(activeCoachTraining) {
+    when (activeCoachTraining?.phase) {
+      DailyTrainingPhase.AWAITING_ANSWER -> "交答案"
+      DailyTrainingPhase.ASKING_QUESTION,
+      DailyTrainingPhase.REVIEWING_ANSWER -> "稍等"
+      else -> "发送"
+    }
+  }
+  val coachSendEnabled = remember(uiState.coachInput, activeCoachTraining) {
+    when (activeCoachTraining?.phase) {
+      DailyTrainingPhase.AWAITING_ANSWER -> uiState.coachInput.isNotBlank()
+      DailyTrainingPhase.ASKING_QUESTION,
+      DailyTrainingPhase.REVIEWING_ANSWER -> false
+      else -> uiState.coachInput.isNotBlank()
+    }
+  }
+  val latestCoachAssistantId = remember(uiState.coachMessages, uiState.isLoading) {
+    if (uiState.isLoading) {
+      null
+    } else {
+      uiState.coachMessages
+        .asReversed()
+        .firstOrNull { message -> message.role == CoachMessageRole.ASSISTANT }
+        ?.id
+    }
+  }
+  val coachTurns = remember(uiState.coachMessages) {
+    buildCoachConversationTurns(uiState.coachMessages)
+  }
 
   LaunchedEffect(uiState.activePage, uiState.messages.size, uiState.isLoading) {
     if (uiState.activePage != WorkspacePage.CHAT) {
@@ -398,7 +452,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
 
     val totalItems = 1 + uiState.coachMessages.size
     if (totalItems > 0) {
-      coachListState.scrollToItem(totalItems - 1)
+      coachListState.scrollToItem(0)
     }
   }
   BackHandler(enabled = !hasModalDialog) {
@@ -699,18 +753,39 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
               item(key = "coach-digest") {
                 CoachDigestCard(
                   digest = uiState.coachDigest,
+                  hasActiveTraining = uiState.dailyTraining.isActive && uiState.dailyTraining.dateKey == currentCoachDateKey(),
                   onStartTraining = viewModel::startCoachTraining,
-                  onUseRecommendedPrompt = viewModel::useCoachRecommendedQuestion
+                  onStartRecommendedTraining = viewModel::startCoachRecommendedTraining,
+                  onAskAboutRecommendation = viewModel::askCoachAboutRecommendation,
+                  onJumpToRecommendationBasis = viewModel::jumpToCoachRecommendationBasis,
+                  onSendQuickAction = viewModel::sendCoachQuickAction
                 )
               }
-
               if (uiState.coachMessages.isEmpty()) {
                 item(key = "coach-empty") {
                   CoachEmptyState()
                 }
               } else {
-                items(uiState.coachMessages, key = { it.id }) { message ->
-                  CoachMessageBubble(message = message)
+                items(coachTurns.asReversed(), key = { it.id }) { turn ->
+                  Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    turn.messages.forEach { message ->
+                      val quickActions = if (message.id == latestCoachAssistantId) {
+                        buildCoachReplyQuickActions(
+                          message = message,
+                          digest = uiState.coachDigest,
+                          training = uiState.dailyTraining
+                        )
+                      } else {
+                        emptyList()
+                      }
+                      CoachMessageBubble(
+                        message = message,
+                        showQuickActions = message.id == latestCoachAssistantId,
+                        quickActions = quickActions,
+                        onQuickAction = viewModel::sendCoachQuickAction
+                      )
+                    }
+                  }
                 }
               }
             } else if (page == WorkspacePage.ARCHIVE) {
@@ -718,6 +793,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                 Box(modifier = Modifier.fillParentMaxSize()) {
                   QuestionArchiveWorkspace(
                     savedQuestions = uiState.savedQuestions,
+                    focusedSavedQuestionId = uiState.archiveFocusSavedQuestionId,
                     onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
                     onRestoreQuestion = viewModel::restoreSavedQuestionToComposer,
                     onRemoveQuestion = viewModel::removeSavedQuestion
@@ -779,8 +855,8 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                 if (pendingImageDrafts.isEmpty()) {
                   viewModel.sendQuestion()
                 } else {
-                  val mergedImages = mergeImagesForUpload(pendingImageDrafts.map { draft -> draft.bytes })
-                  if (mergedImages.isEmpty()) {
+                  val imageBytesList = pendingImageDrafts.map { draft -> draft.bytes }.filter { bytes -> bytes.isNotEmpty() }
+                  if (imageBytesList.isEmpty()) {
                     viewModel.showImageReadFailed("图片处理失败")
                   } else {
                     val note = uiState.input.trim().ifBlank { null }
@@ -790,7 +866,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                       pendingImageDrafts.first().source
                     }
                     viewModel.submitImageQuestion(
-                      imageBytes = mergedImages,
+                      imageBytesList = imageBytesList,
                       source = source,
                       note = note,
                       imageCount = pendingImageDrafts.size,
@@ -828,8 +904,11 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
             CoachComposerBar(
               input = uiState.coachInput,
               isLoading = uiState.isLoading,
+              placeholderText = coachComposerPlaceholder,
+              sendButtonText = coachSendButtonText,
+              sendEnabled = coachSendEnabled,
               onInputChanged = viewModel::onCoachInputChanged,
-              onSend = viewModel::sendCoachMessage
+              onSend = viewModel::sendCoachPageInput
             )
           }
         }

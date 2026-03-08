@@ -243,32 +243,104 @@ class StudyChatViewModel : ViewModel() {
     ensureCoachDigestCurrent()
   }
 
-  fun useCoachRecommendedQuestion(prompt: String) {
-    val normalized = prompt.trim()
-    if (normalized.isBlank()) {
+  fun sendCoachQuickAction(prompt: String) {
+    sendCoachMessageInternal(prompt)
+  }
+
+  fun askCoachAboutRecommendation(question: CoachRecommendedQuestion) {
+    sendCoachMessageInternal(buildCoachRecommendationFollowupPrompt(question))
+  }
+
+  fun jumpToCoachRecommendationBasis(question: CoachRecommendedQuestion) {
+    val targetSavedQuestionId = question.anchorSavedQuestionId
+    if (targetSavedQuestionId.isNullOrBlank()) {
+      postToast("这道题暂时还没有可跳转的依据题")
       return
     }
 
     updateUiState(persistSession = true) { current ->
-      current.copy(
-        activePage = WorkspacePage.CHAT,
-        input = normalized,
-        toastMessage = "已把教练推荐题放到主界面提问框"
-      )
+      val exists = current.savedQuestions.any { saved -> saved.id == targetSavedQuestionId }
+      if (!exists) {
+        current.copy(toastMessage = "依据题暂未归档完成")
+      } else {
+        current.copy(
+          activePage = WorkspacePage.ARCHIVE,
+          archiveFocusSavedQuestionId = targetSavedQuestionId,
+          toastMessage = "已跳到教练出题依据题"
+        )
+      }
     }
   }
 
+  fun startCoachRecommendedTraining(question: CoachRecommendedQuestion) {
+    val current = _uiState.value
+    val normalizedPrompt = question.prompt.trim()
+    if (normalizedPrompt.isBlank()) {
+      postToast("这道推荐题暂时不可用")
+      return
+    }
+    if (current.isLoading) {
+      postToast("当前还有内容在生成，请稍等")
+      return
+    }
+
+    val digest = current.coachDigest?.takeIf { it.dateKey == currentCoachDateKey() } ?: ensureCoachDigestCurrent()
+    val round = question.copy(
+      title = question.title.trim().ifBlank { digest.focusAreas.firstOrNull()?.point?.let { point -> "$point · 典型题" } ?: "教练推荐题" },
+      reason = question.reason.trim(),
+      prompt = normalizedPrompt
+    )
+
+    updateUiState(persistSession = true) { state ->
+      state.copy(
+        activePage = WorkspacePage.COACH,
+        input = "",
+        coachInput = "",
+        dailyTraining = DailyTrainingState(
+          dateKey = digest.dateKey,
+          rounds = listOf(round),
+          currentIndex = 0,
+          phase = DailyTrainingPhase.ASKING_QUESTION,
+          currentQuestionText = ""
+        ),
+        toastMessage = "已开始针对性训练 · 正在出题"
+      )
+    }
+    launchDailyTrainingRound(rounds = listOf(round), roundIndex = 0)
+  }
+
   fun startCoachTraining() {
-    val digest = ensureCoachDigestCurrent()
+    val current = _uiState.value
+    if (current.isLoading) {
+      postToast("当前还有内容在生成，请稍等")
+      return
+    }
+
+    val activeTraining = current.dailyTraining.takeIf { training ->
+      !isDailyTrainingStale(training) && training.isActive
+    }
+    if (activeTraining != null) {
+      updateUiState(persistSession = true) { state ->
+        state.copy(
+          activePage = WorkspacePage.COACH,
+          input = state.input,
+          coachInput = state.coachInput,
+          toastMessage = "已回到今日训练"
+        )
+      }
+      return
+    }
+
+    val digest = current.coachDigest?.takeIf { it.dateKey == currentCoachDateKey() } ?: ensureCoachDigestCurrent()
     val rounds = buildCoachTrainingRounds(digest)
     if (rounds.isEmpty()) {
       postToast("今日训练题暂时不可用")
       return
     }
 
-    updateUiState(persistSession = true) { current ->
-      current.copy(
-        activePage = WorkspacePage.CHAT,
+    updateUiState(persistSession = true) { state ->
+      state.copy(
+        activePage = WorkspacePage.COACH,
         input = "",
         coachInput = "",
         dailyTraining = DailyTrainingState(
@@ -278,7 +350,7 @@ class StudyChatViewModel : ViewModel() {
           phase = DailyTrainingPhase.ASKING_QUESTION,
           currentQuestionText = ""
         ),
-        toastMessage = "已开始今日训练 · 正在打开第1题"
+        toastMessage = "已开始今日训练 · 正在出第1题"
       )
     }
     launchDailyTrainingRound(rounds = rounds, roundIndex = 0)
@@ -309,26 +381,6 @@ class StudyChatViewModel : ViewModel() {
       return
     }
 
-    val activeTraining = current.dailyTraining.takeIf { training ->
-      !isDailyTrainingStale(training) && training.isActive
-    }
-    if (activeTraining != null) {
-      when (activeTraining.phase) {
-        DailyTrainingPhase.AWAITING_ANSWER -> {
-          submitDailyTrainingAnswer(question)
-          return
-        }
-
-        DailyTrainingPhase.ASKING_QUESTION,
-        DailyTrainingPhase.REVIEWING_ANSWER -> {
-          postToast("当前训练题还在准备或批改中，请稍等")
-          return
-        }
-
-        else -> Unit
-      }
-    }
-
     if (isDailyTrainingStale(current.dailyTraining)) {
       updateUiState(persistSession = true) { state ->
         state.copy(dailyTraining = DailyTrainingState())
@@ -342,15 +394,47 @@ class StudyChatViewModel : ViewModel() {
     )
   }
 
+  fun sendCoachPageInput() {
+    val current = _uiState.value
+    val answer = current.coachInput.trim()
+    val activeTraining = current.dailyTraining.takeIf { training ->
+      !isDailyTrainingStale(training) && training.isActive
+    }
+    if (activeTraining != null) {
+      when (activeTraining.phase) {
+        DailyTrainingPhase.AWAITING_ANSWER -> {
+          if (answer.isNotBlank()) {
+            submitDailyTrainingAnswer(answer, fromCoachInput = true)
+          }
+          return
+        }
+
+        DailyTrainingPhase.ASKING_QUESTION,
+        DailyTrainingPhase.REVIEWING_ANSWER -> {
+          postToast("当前训练题还在准备或批改中，请稍等")
+          return
+        }
+
+        else -> Unit
+      }
+    }
+
+    sendCoachMessageInternal()
+  }
+
   fun sendCoachMessage() {
+    sendCoachMessageInternal()
+  }
+
+  private fun sendCoachMessageInternal(questionOverride: String? = null) {
     val initialState = _uiState.value
-    val question = initialState.coachInput.trim()
+    val question = questionOverride?.trim().orEmpty().ifBlank { initialState.coachInput.trim() }
     if (question.isEmpty()) {
       return
     }
 
-    val digest = initialState.coachDigest?.takeIf { current ->
-      current.dateKey == currentCoachDateKey()
+    val digest = initialState.coachDigest?.takeIf { currentDigest ->
+      currentDigest.dateKey == currentCoachDateKey()
     } ?: ensureCoachDigestCurrent()
     val stateSnapshot = _uiState.value
     val requestConversationToken = conversationToken
@@ -394,6 +478,7 @@ class StudyChatViewModel : ViewModel() {
 
     startRequest(clearToast = true) { current ->
       current.copy(
+        activePage = WorkspacePage.COACH,
         coachInput = "",
         coachDigest = digest,
         coachMessages = current.coachMessages + listOf(userMessage, assistantPlaceholder)
@@ -463,13 +548,14 @@ class StudyChatViewModel : ViewModel() {
   }
 
   fun submitImageQuestion(
-    imageBytes: ByteArray,
+    imageBytesList: List<ByteArray>,
     source: String,
     note: String? = null,
     imageCount: Int = 1,
     previewImages: List<ByteArray> = emptyList()
   ) {
-    if (imageBytes.isEmpty()) {
+    val normalizedImages = imageBytesList.filter { bytes -> bytes.isNotEmpty() }
+    if (normalizedImages.isEmpty()) {
       postToast("图片为空，无法搜题")
       return
     }
@@ -486,12 +572,13 @@ class StudyChatViewModel : ViewModel() {
     val assistantMessageTime = currentTime()
     val streamBuffer = StringBuilder()
     val reasoningBuffer = StringBuilder()
+    val previewList = previewImages.take(6).ifEmpty { normalizedImages.take(6) }
     val userMessage = ChatMessage.User(
       id = nextMessageId(),
       time = currentTime(),
       text = question,
-      imagePreviewBytes = previewImages.firstOrNull() ?: imageBytes,
-      imagePreviewList = previewImages.take(6).ifEmpty { listOf(imageBytes) }
+      imagePreviewBytes = previewList.firstOrNull(),
+      imagePreviewList = previewList
     )
     val assistantPlaceholder = createAssistantMessage(
       content = "正在识别题目并生成讲解...",
@@ -536,7 +623,7 @@ class StudyChatViewModel : ViewModel() {
       requestConversationToken = requestConversationToken,
       request = {
         requestCoordinator.replyForImageQuestionStream(
-          imageBytes = imageBytes,
+          imageBytesList = normalizedImages,
           settings = settings,
           note = normalizedNote,
           imageCount = imageCount,
@@ -688,6 +775,7 @@ class StudyChatViewModel : ViewModel() {
     updateUiState(persistSession = true) { current ->
       current.copy(
         savedQuestions = listOf(saved) + current.savedQuestions.filterNot { question -> question.sourceMessageId == messageId },
+        archiveFocusSavedQuestionId = saved.id,
         toastMessage = "已收藏到题目归档"
       )
     }
@@ -701,6 +789,7 @@ class StudyChatViewModel : ViewModel() {
       } else {
         current.copy(
           savedQuestions = current.savedQuestions.filterNot { saved -> saved.id == savedQuestionId },
+          archiveFocusSavedQuestionId = current.archiveFocusSavedQuestionId.takeUnless { focusedId -> focusedId == savedQuestionId },
           toastMessage = "已移出题目归档"
         )
       }
@@ -716,6 +805,7 @@ class StudyChatViewModel : ViewModel() {
         current.copy(
           activePage = WorkspacePage.CHAT,
           input = saved.question,
+          archiveFocusSavedQuestionId = null,
           toastMessage = "已回填到提问框"
         )
       }
@@ -744,6 +834,7 @@ class StudyChatViewModel : ViewModel() {
         activePage = page,
         quickFollowupSpanId = quickSpanId,
         quickFollowupDetailId = quickDetailId,
+        archiveFocusSavedQuestionId = if (page == WorkspacePage.ARCHIVE) current.archiveFocusSavedQuestionId else null,
         isDueReviewMode = false,
         focusedDeckName = null
       )
@@ -1385,8 +1476,8 @@ class StudyChatViewModel : ViewModel() {
     fallbackQuestion: String,
     imageBytesList: List<ByteArray>
   ) {
-    val mergedImage = mergeImagesForUpload(imageBytesList)
-    if (mergedImage.isEmpty()) {
+    val normalizedImages = imageBytesList.filter { bytes -> bytes.isNotEmpty() }
+    if (normalizedImages.isEmpty()) {
       postToast("原图片不可用，无法刷新")
       return
     }
@@ -1438,7 +1529,7 @@ class StudyChatViewModel : ViewModel() {
       requestConversationToken = requestConversationToken,
       request = {
         requestCoordinator.replyForImageQuestionStream(
-          imageBytes = mergedImage,
+          imageBytesList = normalizedImages,
           settings = settings,
           note = note,
           imageCount = imageCount,
@@ -1838,27 +1929,38 @@ class StudyChatViewModel : ViewModel() {
       messageId = assistantMessageId,
       messageTime = assistantMessageTime
     )
+    val coachAssistantPlaceholder = CoachChatMessage(
+      id = assistantMessageId,
+      role = CoachMessageRole.ASSISTANT,
+      time = assistantMessageTime,
+      text = placeholderText
+    )
 
     val pushPartialAssistant: () -> Unit = {
       val partial = streamBuffer.toString().trimStart()
       val reasoning = reasoningBuffer.toString().trim().ifBlank { null }
+      val partialText = partial.ifBlank { placeholderText }
       val partialMessage = createAssistantMessage(
-        content = partial.ifBlank { placeholderText },
+        content = partialText,
         sourceQuestion = round.prompt,
         reasoningSummary = reasoning,
         messageId = assistantMessageId,
         messageTime = assistantMessageTime
       )
+      val coachPartialMessage = coachAssistantPlaceholder.copy(text = partialText)
       updateUiState(persistSession = false) { current ->
-        upsertAssistantMessageState(current, partialMessage)
+        upsertAssistantMessageState(current, partialMessage).copy(
+          coachMessages = upsertCoachMessage(current.coachMessages, coachPartialMessage)
+        )
       }
     }
 
     startRequest(toastMessage = "正在生成今日训练第${roundIndex + 1}题...") { current ->
       val queued = current.copy(
-        activePage = WorkspacePage.CHAT,
-        input = "",
+        activePage = WorkspacePage.COACH,
+        input = current.input,
         coachInput = "",
+        coachMessages = current.coachMessages + coachAssistantPlaceholder,
         messages = current.messages + displayUserMessage,
         profile = current.profile.updateWith(text = round.prompt, isFollowup = false, isVoice = false),
         knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(round.prompt)),
@@ -1906,14 +2008,16 @@ class StudyChatViewModel : ViewModel() {
           messageId = assistantMessageId,
           messageTime = assistantMessageTime
         )
+        val coachAssistantMessage = coachAssistantPlaceholder.copy(text = assistantMessage.fullAnswerText())
         finishRequest { current ->
           val updated = appendAssistantMessageState(
             current = current,
             assistantMessage = assistantMessage,
-            toastMessage = "第${roundIndex + 1}题已发到主界面",
+            toastMessage = "第${roundIndex + 1}题已准备好，直接在教练页作答",
             knowledgeTexts = listOf(resolvedReply)
           )
           updated.copy(
+            coachMessages = upsertCoachMessage(updated.coachMessages, coachAssistantMessage),
             dailyTraining = DailyTrainingState(
               dateKey = currentCoachDateKey(),
               rounds = rounds,
@@ -1935,6 +2039,7 @@ class StudyChatViewModel : ViewModel() {
             messageId = assistantMessageId,
             messageTime = assistantMessageTime
           )
+          val coachRecoveredMessage = coachAssistantPlaceholder.copy(text = recoveredMessage.fullAnswerText())
           finishRequest { current ->
             val updated = appendAssistantMessageState(
               current = current,
@@ -1943,6 +2048,7 @@ class StudyChatViewModel : ViewModel() {
               knowledgeTexts = listOf(partialReply.ifBlank { partialReasoning.orEmpty() })
             )
             updated.copy(
+              coachMessages = upsertCoachMessage(updated.coachMessages, coachRecoveredMessage),
               dailyTraining = DailyTrainingState(
                 dateKey = currentCoachDateKey(),
                 rounds = rounds,
@@ -1963,14 +2069,17 @@ class StudyChatViewModel : ViewModel() {
               current = rolledBackPlaceholder,
               messageId = displayUserMessage.id,
               toastMessage = "今日训练启动失败：$errorHint"
-            ).copy(dailyTraining = DailyTrainingState())
+            ).copy(
+              coachMessages = current.coachMessages.filterNot { message -> message.id == assistantMessageId },
+              dailyTraining = DailyTrainingState()
+            )
           }
         )
       }
     )
   }
 
-  private fun submitDailyTrainingAnswer(answer: String) {
+  private fun submitDailyTrainingAnswer(answer: String, fromCoachInput: Boolean = false) {
     val stateSnapshot = _uiState.value
     val training = stateSnapshot.dailyTraining
     if (isDailyTrainingStale(training)) {
@@ -2015,25 +2124,44 @@ class StudyChatViewModel : ViewModel() {
       messageId = assistantMessageId,
       messageTime = assistantMessageTime
     )
+    val coachUserMessage = CoachChatMessage(
+      id = displayUserMessage.id,
+      role = CoachMessageRole.USER,
+      time = displayUserMessage.time,
+      text = answer
+    )
+    val coachAssistantPlaceholder = CoachChatMessage(
+      id = assistantMessageId,
+      role = CoachMessageRole.ASSISTANT,
+      time = assistantMessageTime,
+      text = placeholderText
+    )
 
     val pushPartialAssistant: () -> Unit = {
       val partial = streamBuffer.toString().trimStart()
       val reasoning = reasoningBuffer.toString().trim().ifBlank { null }
+      val partialText = partial.ifBlank { placeholderText }
       val partialMessage = createAssistantMessage(
-        content = partial.ifBlank { placeholderText },
+        content = partialText,
         sourceQuestion = trainingQuestion,
         reasoningSummary = reasoning,
         messageId = assistantMessageId,
         messageTime = assistantMessageTime
       )
+      val coachPartialMessage = coachAssistantPlaceholder.copy(text = partialText)
       updateUiState(persistSession = false) { current ->
-        upsertAssistantMessageState(current, partialMessage)
+        upsertAssistantMessageState(current, partialMessage).copy(
+          coachMessages = upsertCoachMessage(current.coachMessages, coachPartialMessage)
+        )
       }
     }
 
     startRequest(toastMessage = "正在批改第${roundIndex + 1}题...") { current ->
       val queued = current.copy(
-        input = "",
+        activePage = WorkspacePage.COACH,
+        input = if (fromCoachInput) current.input else "",
+        coachInput = if (fromCoachInput) "" else current.coachInput,
+        coachMessages = current.coachMessages + listOf(coachUserMessage, coachAssistantPlaceholder),
         messages = current.messages + displayUserMessage,
         profile = current.profile.updateWith(text = answer, isFollowup = false, isVoice = false),
         knowledgePoints = mergeKnowledgePoints(current.knowledgePoints, listOf(answer, trainingQuestion)),
@@ -2076,6 +2204,7 @@ class StudyChatViewModel : ViewModel() {
           messageTime = assistantMessageTime
         )
         val hasNextRound = roundIndex + 1 < training.rounds.size
+        val coachAssistantMessage = coachAssistantPlaceholder.copy(text = assistantMessage.fullAnswerText())
         finishRequest { current ->
           val updated = appendAssistantMessageState(
             current = current,
@@ -2088,6 +2217,7 @@ class StudyChatViewModel : ViewModel() {
             knowledgeTexts = listOf(resolvedReply)
           )
           updated.copy(
+            coachMessages = upsertCoachMessage(updated.coachMessages, coachAssistantMessage),
             dailyTraining = if (hasNextRound) {
               current.dailyTraining.copy(
                 phase = DailyTrainingPhase.ASKING_QUESTION,
@@ -2118,6 +2248,7 @@ class StudyChatViewModel : ViewModel() {
             messageId = assistantMessageId,
             messageTime = assistantMessageTime
           )
+          val coachRecoveredMessage = coachAssistantPlaceholder.copy(text = recoveredMessage.fullAnswerText())
           finishRequest { current ->
             val updated = appendAssistantMessageState(
               current = current,
@@ -2130,6 +2261,7 @@ class StudyChatViewModel : ViewModel() {
               knowledgeTexts = listOf(partialReply.ifBlank { partialReasoning.orEmpty() })
             )
             updated.copy(
+              coachMessages = upsertCoachMessage(updated.coachMessages, coachRecoveredMessage),
               dailyTraining = if (hasNextRound) {
                 current.dailyTraining.copy(
                   phase = DailyTrainingPhase.ASKING_QUESTION,
@@ -2157,9 +2289,13 @@ class StudyChatViewModel : ViewModel() {
             rollbackQueuedUserMessageState(
               current = rolledBackPlaceholder,
               messageId = displayUserMessage.id,
-              restoredInput = answer,
+              restoredInput = if (fromCoachInput) rolledBackPlaceholder.input else answer,
               toastMessage = "第${roundIndex + 1}题批改失败：$errorHint（答案已保留，可重发）"
             ).copy(
+              coachInput = if (fromCoachInput) answer else current.coachInput,
+              coachMessages = current.coachMessages.filterNot { message ->
+                message.id == assistantMessageId || message.id == displayUserMessage.id
+              },
               dailyTraining = current.dailyTraining.copy(
                 phase = DailyTrainingPhase.AWAITING_ANSWER,
                 currentQuestionText = trainingQuestion
@@ -2515,12 +2651,12 @@ class StudyChatViewModel : ViewModel() {
       .filterIsInstance<ChatMessage.User>()
       .firstOrNull()
 
-    val question = sourceUser?.text?.trim().orEmpty().ifBlank {
+    val sourceQuestion = sourceUser?.text?.trim().orEmpty().ifBlank {
       assistantMessage.mainSpan?.sourceQuestion?.trim()
         .orEmpty()
         .ifBlank { assistantMessage.spans.firstOrNull()?.sourceQuestion?.trim().orEmpty() }
     }
-    if (question.isBlank()) {
+    if (sourceQuestion.isBlank()) {
       return null
     }
 
@@ -2529,23 +2665,93 @@ class StudyChatViewModel : ViewModel() {
       return null
     }
 
+    val imagePreviewList = sourceUser?.let { user ->
+      if (user.imagePreviewList.isNotEmpty()) {
+        user.imagePreviewList
+      } else {
+        user.imagePreviewBytes?.let { bytes -> listOf(bytes) }.orEmpty()
+      }
+    }.orEmpty()
+    val resolvedQuestion = if (imagePreviewList.isNotEmpty()) {
+      buildFallbackSavedQuestionTitle(sourceQuestion = sourceQuestion, answer = answer)
+    } else {
+      sourceQuestion
+    }
     val historyCount = assistantMessage.interactiveSpans().sumOf { span ->
       state.histories[span.id].orEmpty().size
     }
+    val tagged = com.studysuit.aiqa.data.QuestionTagger.autoTag(listOf(resolvedQuestion, answer).joinToString(separator = "\n"))
     val tags = filterToHighSchoolKnowledgeTags(
-      inferKnowledgePoints(listOf(question, answer).joinToString(separator = "\n")),
+      inferKnowledgePoints(listOf(resolvedQuestion, answer).joinToString(separator = "\n")),
       maxSize = 6
     )
 
     return SavedQuestion(
       id = "saved-${System.currentTimeMillis()}-${messageId}",
       sourceMessageId = assistantMessage.id,
-      question = question,
+      question = resolvedQuestion,
       answer = answer,
       sourceTime = assistantMessage.time,
       savedAt = System.currentTimeMillis(),
       followupCount = historyCount,
-      knowledgeTags = tags
+      knowledgeTags = tags,
+      subject = tagged.subject.takeUnless { subject -> subject == "其他" }.orEmpty(),
+      questionType = tagged.questionType.takeUnless { type -> type == "其他" }.orEmpty(),
+      imagePreviewBytes = imagePreviewList.firstOrNull(),
+      imagePreviewList = imagePreviewList
+    )
+  }
+
+  private fun mergeSavedQuestionSnapshots(
+    existing: SavedQuestion,
+    refreshed: SavedQuestion
+  ): SavedQuestion {
+    val refreshedQuestion = refreshed.question.trim()
+    val existingQuestion = existing.question.trim()
+    val mergedQuestion = when {
+      refreshedQuestion.isBlank() -> existingQuestion
+      isGenericImageSearchQuestion(refreshedQuestion) && existingQuestion.isNotBlank() -> existingQuestion
+      refreshedQuestion == "图片题目归档" && existingQuestion.isNotBlank() -> existingQuestion
+      else -> refreshedQuestion
+    }
+    val previewList = if (refreshed.imagePreviewList.isNotEmpty()) {
+      refreshed.imagePreviewList
+    } else if (existing.imagePreviewList.isNotEmpty()) {
+      existing.imagePreviewList
+    } else {
+      refreshed.imagePreviewBytes?.let { bytes -> listOf(bytes) }
+        ?: existing.imagePreviewBytes?.let { bytes -> listOf(bytes) }
+        ?: emptyList()
+    }
+
+    return refreshed.copy(
+      id = existing.id,
+      question = mergedQuestion.ifBlank { existingQuestion },
+      savedAt = existing.savedAt,
+      knowledgeTags = if (refreshed.knowledgeTags.isNotEmpty()) refreshed.knowledgeTags else existing.knowledgeTags,
+      subject = refreshed.subject.ifBlank { existing.subject },
+      questionType = refreshed.questionType.ifBlank { existing.questionType },
+      analysisSummary = refreshed.analysisSummary.ifBlank { existing.analysisSummary },
+      imagePreviewBytes = previewList.firstOrNull(),
+      imagePreviewList = previewList
+    )
+  }
+
+  private fun upsertSavedQuestionState(
+    current: ChatUiState,
+    saved: SavedQuestion,
+    focusSavedQuestionId: String? = current.archiveFocusSavedQuestionId,
+    toastMessage: String? = current.toastMessage
+  ): ChatUiState {
+    val existing = current.savedQuestions.firstOrNull { question -> question.sourceMessageId == saved.sourceMessageId }
+    val merged = existing?.let { previous ->
+      mergeSavedQuestionSnapshots(previous, saved.copy(id = previous.id, savedAt = previous.savedAt))
+    } ?: saved
+    val updated = listOf(merged) + current.savedQuestions.filterNot { question -> question.sourceMessageId == saved.sourceMessageId }
+    return current.copy(
+      savedQuestions = updated,
+      archiveFocusSavedQuestionId = focusSavedQuestionId,
+      toastMessage = toastMessage
     )
   }
 
@@ -2555,10 +2761,9 @@ class StudyChatViewModel : ViewModel() {
   ): ChatUiState {
     val existing = current.savedQuestions.firstOrNull { saved -> saved.sourceMessageId == assistantMessage.id } ?: return current
     val refreshed = buildSavedQuestionSnapshot(current, assistantMessage.id) ?: return current
-    val merged = refreshed.copy(id = existing.id, savedAt = existing.savedAt)
     return current.copy(
       savedQuestions = current.savedQuestions.map { saved ->
-        if (saved.sourceMessageId == assistantMessage.id) merged else saved
+        if (saved.sourceMessageId == assistantMessage.id) mergeSavedQuestionSnapshots(existing, refreshed) else saved
       }
     )
   }

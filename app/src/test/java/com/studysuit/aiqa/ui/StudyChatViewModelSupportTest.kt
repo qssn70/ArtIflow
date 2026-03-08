@@ -913,6 +913,37 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun parseImageQuestionArchivePayload_parsesQuestionTypeAndTags() {
+    val payload = parseImageQuestionArchivePayload(
+      """
+      {
+        "question": "已知二次函数 y=ax^2+bx+c，求最值并判断单调区间。",
+        "subject": "数学",
+        "question_type": "解答题",
+        "knowledge_tags": ["二次函数", "函数与图像", "套路"],
+        "analysis_summary": "重点考查二次函数图像与最值判断，容易漏掉对称轴。"
+      }
+      """.trimIndent()
+    )
+
+    requireNotNull(payload)
+    assertEquals("数学", payload.subject)
+    assertEquals("解答题", payload.questionType)
+    assertEquals(listOf("二次函数", "函数与图像"), payload.knowledgeTags)
+  }
+
+  @Test
+  fun buildFallbackImageArchivePayload_prefersNonGenericQuestionTitle() {
+    val payload = buildFallbackImageArchivePayload(
+      sourceQuestion = "拍照搜题：请识别并讲解这道题",
+      answer = "题目：已知二次函数 y=ax^2+bx+c，求最值并判断单调区间。先找对称轴。"
+    )
+
+    assertTrue(payload.question.contains("二次函数") || payload.question.contains("最值"))
+    assertTrue(payload.analysisSummary.isNotBlank())
+  }
+
+  @Test
   fun resolveErrorHint_usesFallbackAndTruncatesMessage() {
     val fallback = resolveErrorHint(throwable = null, fallback = "网络不可用")
     val longMessage = "x".repeat(120)

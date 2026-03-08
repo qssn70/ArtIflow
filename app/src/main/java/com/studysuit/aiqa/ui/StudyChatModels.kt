@@ -314,7 +314,9 @@ data class CoachRecommendedQuestion(
   val id: String,
   val title: String,
   val reason: String,
-  val prompt: String
+  val prompt: String,
+  val basis: String = "",
+  val anchorSavedQuestionId: String? = null
 )
 
 data class CoachDailyDigest(
@@ -350,6 +352,11 @@ data class DailyTrainingState(
   val currentRound: CoachRecommendedQuestion?
     get() = rounds.getOrNull(currentIndex.coerceAtLeast(0))
 }
+
+internal data class CoachConversationTurn(
+  val id: String,
+  val messages: List<CoachChatMessage>
+)
 
 internal fun RuntimeSettings.toArkRuntimeConfig(): ArkRuntimeConfig {
   val customConfig = customModelConfigOrNull()
@@ -415,6 +422,7 @@ data class ChatUiState(
   val selectedDetailId: String? = null,
   val quickFollowupSpanId: String? = null,
   val quickFollowupDetailId: String? = null,
+  val archiveFocusSavedQuestionId: String? = null,
   val activePage: WorkspacePage = WorkspacePage.CHAT,
   val coachMessages: List<CoachChatMessage> = emptyList(),
   val coachDigest: CoachDailyDigest? = null,
@@ -531,7 +539,12 @@ data class SavedQuestion(
   val sourceTime: String,
   val savedAt: Long,
   val followupCount: Int = 0,
-  val knowledgeTags: List<String> = emptyList()
+  val knowledgeTags: List<String> = emptyList(),
+  val subject: String = "",
+  val questionType: String = "",
+  val analysisSummary: String = "",
+  val imagePreviewBytes: ByteArray? = null,
+  val imagePreviewList: List<ByteArray> = emptyList()
 )
 
 enum class WorkspacePage {
