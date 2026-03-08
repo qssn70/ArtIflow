@@ -22,23 +22,28 @@
 ## 🎬 Demo
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="ArtI flow demo" width="960" />
+  <img src="screenshots/demo.gif" alt="ArtI flow demo" width="320" />
 </p>
 
 <p align="center">
-  从图片问答，到公式解释，再到学习教练与手动归档，整个学习流程尽量保持自然、清晰、可复盘。
+  使用 `screenshots/demo.mp4` 生成的真实录屏演示，展示图片问答、追问解析、教练复盘与学习切换流程。
 </p>
 
 ## 📸 Screenshots
 
 <p align="center">
-  <img src="docs/assets/screenshot-chat.png" alt="聊天问答界面" width="31%" />
-  <img src="docs/assets/screenshot-coach.png" alt="学习教练界面" width="31%" />
-  <img src="docs/assets/screenshot-history.png" alt="归档与历史界面" width="31%" />
+  <img src="screenshots/qa-answer.jpg" alt="AI 学习问答界面" width="24%" />
+  <img src="screenshots/qa-followup.jpg" alt="段落讲解与追问记录" width="24%" />
+  <img src="screenshots/coach-review.jpg" alt="AI 教练复盘" width="24%" />
 </p>
 
 <p align="center">
-  图片问答 · 教练建议 · 题目归档
+  <img src="screenshots/user-center.jpg" alt="用户中心与学习档案" width="24%" />
+  <img src="screenshots/anki-review.jpg" alt="Anki 测验区" width="24%" />
+</p>
+
+<p align="center">
+  学习问答 · 段落讲解 · AI 教练复盘 · 用户中心 · Anki 测验
 </p>
 
 ---
