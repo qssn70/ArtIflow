@@ -105,11 +105,40 @@ class StudyChatMarkdownTest {
   }
 
   @Test
-  fun normalizeLatexForMarkwon_keepsEscapedCurrencyTextUnchanged() {
-    val markdown = "价格是 \\$100，不是公式"
+  fun splitParagraphs_keepsWholeReplyWhenInlineLatexExists() {
+    val markdown = "先看结论：当 x=1 时，${'$'}f(x)=x^2+1${'$'}。\n\n再代入中文说明。"
 
-    val normalized = normalizeLatexForMarkwon(markdown)
+    val spans = splitParagraphs(markdown)
 
-    assertEquals(markdown, normalized)
+    assertEquals(1, spans.size)
+    assertEquals(markdown.trim(), spans.first())
+  }
+
+  @Test
+  fun splitParagraphs_keepsWholeReplyWhenBlockLatexExists() {
+    val markdown = """
+      解：
+
+      \[
+      x^2 + y^2 = z^2
+      \]
+
+      所以直角三角形满足勾股定理。
+    """.trimIndent()
+
+    val spans = splitParagraphs(markdown)
+
+    assertEquals(1, spans.size)
+    assertEquals(markdown.trim(), spans.first())
+  }
+
+  @Test
+  fun splitParagraphs_stillSplitsPlainTextWithoutLatex() {
+    val markdown = "第一句比较短但是开始铺垫背景。第二句继续补充条件并稍微拉长一点。第三句还是纯文本说明而且继续延长长度避免被并到同一段。第四句继续补充结论。"
+
+    val spans = splitParagraphs(markdown)
+
+    assertTrue(spans.size >= 2)
+    assertTrue(spans.all { !containsLatexMarkdown(it) })
   }
 }

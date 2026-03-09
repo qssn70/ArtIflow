@@ -257,8 +257,19 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     viewModel.consumeToast()
   }
 
-  val quickFollowupSpan = remember(uiState.messages, uiState.quickFollowupSpanId) {
+  val quickFollowupSourceMessage = remember(uiState.messages, uiState.quickFollowupSourceMessageId) {
+    findAssistantMessageById(uiState.messages, uiState.quickFollowupSourceMessageId)
+  }
+  val questionWorkspaceReplySpanId = remember(quickFollowupSourceMessage) {
+    quickFollowupSourceMessage?.mainSpan?.id ?: quickFollowupSourceMessage?.spans?.lastOrNull()?.id
+  }
+  val quickFollowupSpan = remember(
+    uiState.messages,
+    uiState.quickFollowupSpanId,
+    questionWorkspaceReplySpanId
+  ) {
     findSpanById(uiState.messages, uiState.quickFollowupSpanId)
+      ?: questionWorkspaceReplySpanId?.let { spanId -> findSpanById(uiState.messages, spanId) }
       ?: findLatestAssistantQuestionSpan(uiState.messages)
   }
   val quickFollowupHistory = remember(uiState.histories, quickFollowupSpan) {
@@ -271,14 +282,60 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val quickFollowupHistoryForTree = remember(quickFollowupHistory) {
     normalizeHistoryForTree(quickFollowupHistory)
   }
-  val quickFollowupSourceUser = remember(uiState.messages, quickFollowupSpan) {
-    findSourceUserMessageForSpan(uiState.messages, quickFollowupSpan)
+  val isQuestionWorkspaceLayout = remember(
+    quickFollowupSourceMessage,
+    quickFollowupSpan,
+    questionWorkspaceReplySpanId,
+    uiState.quickFollowupDetailId
+  ) {
+    quickFollowupSourceMessage != null &&
+      uiState.quickFollowupDetailId == null &&
+      quickFollowupSpan?.id == questionWorkspaceReplySpanId
   }
-  val quickFollowupHistoriesForUi = remember(quickFollowupSpan, quickFollowupHistoryForTree) {
-    buildQuickFollowupHistories(quickFollowupSpan, quickFollowupHistoryForTree)
+  val quickFollowupSourceUser = remember(
+    uiState.messages,
+    quickFollowupSpan,
+    quickFollowupSourceMessage,
+    isQuestionWorkspaceLayout
+  ) {
+    if (isQuestionWorkspaceLayout) {
+      findSourceUserMessageForAssistant(uiState.messages, quickFollowupSourceMessage)
+    } else {
+      findSourceUserMessageForSpan(uiState.messages, quickFollowupSpan)
+    }
   }
-  val followupTreeScopes = remember(uiState.messages, uiState.histories) {
+  val quickFollowupHistoriesForUi = remember(
+    isQuestionWorkspaceLayout,
+    quickFollowupSourceMessage,
+    uiState.histories,
+    quickFollowupSpan,
+    quickFollowupHistoryForTree
+  ) {
+    if (isQuestionWorkspaceLayout) {
+      buildQuestionWorkspaceHistories(quickFollowupSourceMessage, uiState.histories)
+    } else {
+      buildQuickFollowupHistories(quickFollowupSpan, quickFollowupHistoryForTree)
+    }
+  }
+  val rawFollowupTreeScopes = remember(uiState.messages, uiState.histories) {
     buildFollowupTreeScopes(uiState.messages, uiState.histories)
+  }
+  val followupTreeScopes = remember(
+    rawFollowupTreeScopes,
+    uiState.activePage,
+    quickFollowupSpan,
+    quickFollowupSourceMessage
+  ) {
+    filterFollowupTreeScopesForWorkspace(
+      scopes = rawFollowupTreeScopes,
+      activePage = uiState.activePage,
+      activeSpanId = quickFollowupSpan?.id,
+      questionSpanIds = quickFollowupSourceMessage
+        ?.interactiveSpans()
+        ?.map { span -> span.id }
+        ?.toSet()
+        .orEmpty()
+    )
   }
   val triggerFollowupTreeExport: () -> Unit = {
     if (followupTreeScopes.isEmpty()) {
@@ -298,17 +355,26 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     }
   }
   val quickFollowupMessages = remember(
+    isQuestionWorkspaceLayout,
+    quickFollowupSourceMessage,
     quickFollowupSpan,
     quickFollowupHistoryForTree,
     uiState.quickFollowupDetailId,
     quickFollowupSourceUser
   ) {
-    buildQuickFollowupMessages(
-      span = quickFollowupSpan,
-      history = quickFollowupHistoryForTree,
-      activeDetailId = uiState.quickFollowupDetailId,
-      sourceUserMessage = quickFollowupSourceUser
-    )
+    if (isQuestionWorkspaceLayout) {
+      buildQuestionWorkspaceMessages(
+        assistantMessage = quickFollowupSourceMessage,
+        sourceUserMessage = quickFollowupSourceUser
+      )
+    } else {
+      buildQuickFollowupMessages(
+        span = quickFollowupSpan,
+        history = quickFollowupHistoryForTree,
+        activeDetailId = uiState.quickFollowupDetailId,
+        sourceUserMessage = quickFollowupSourceUser
+      )
+    }
   }
   val selectedSpan = remember(uiState.messages, quickFollowupMessages, uiState.selectedSpanId) {
     findSpanById(uiState.messages, uiState.selectedSpanId)
@@ -795,7 +861,7 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                     savedQuestions = uiState.savedQuestions,
                     focusedSavedQuestionId = uiState.archiveFocusSavedQuestionId,
                     onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
-                    onRestoreQuestion = viewModel::restoreSavedQuestionToComposer,
+                    onOpenQuestionWorkspace = viewModel::openSavedQuestionWorkspace,
                     onRemoveQuestion = viewModel::removeSavedQuestion
                   )
                 }
@@ -1038,7 +1104,7 @@ private fun ArchiveHeaderBar(
         fontWeight = FontWeight.Bold
       )
       Text(
-        text = "已收藏 $savedCount 题 · 可回填到提问框继续练",
+        text = "已收藏 $savedCount 题 · 可进入题目专属界面继续练",
         style = MaterialTheme.typography.labelSmall,
         color = Color(0xFF60756E),
         maxLines = 1
@@ -1210,6 +1276,55 @@ private fun findSourceUserMessageForSpan(
   return null
 }
 
+private fun findSourceUserMessageForAssistant(
+  messages: List<ChatMessage>,
+  assistantMessage: ChatMessage.Assistant?
+): ChatMessage.User? {
+  val targetMessageId = assistantMessage?.id ?: return null
+  val assistantIndex = messages.indexOfFirst { message ->
+    message is ChatMessage.Assistant && message.id == targetMessageId
+  }
+  if (assistantIndex <= 0) {
+    return null
+  }
+
+  for (index in assistantIndex - 1 downTo 0) {
+    val message = messages[index] as? ChatMessage.User ?: continue
+    val hasImages = message.imagePreviewList.isNotEmpty() || message.imagePreviewBytes != null
+    if (message.text.isNotBlank() || hasImages) {
+      return message
+    }
+  }
+  return null
+}
+
+internal fun buildQuestionWorkspaceMessages(
+  assistantMessage: ChatMessage.Assistant?,
+  sourceUserMessage: ChatMessage.User?
+): List<ChatMessage> {
+  val sourceAssistant = assistantMessage ?: return emptyList()
+  val sourceQuestion = sourceAssistant.mainSpan?.sourceQuestion?.trim()
+    .orEmpty()
+    .ifBlank { sourceAssistant.spans.firstOrNull()?.sourceQuestion?.trim().orEmpty() }
+
+  return buildList {
+    when {
+      sourceUserMessage != null -> add(sourceUserMessage)
+      sourceQuestion.isNotBlank() -> {
+        add(
+          ChatMessage.User(
+            id = "quick-root-user-${sourceAssistant.id}",
+            time = "原题",
+            text = sourceQuestion
+          )
+        )
+      }
+    }
+
+    add(sourceAssistant)
+  }
+}
+
 private fun buildQuickFollowupMessages(
   span: SpanData?,
   history: List<SpanDetail>,
@@ -1316,6 +1431,43 @@ private fun buildQuickFollowupHistories(
   }
 
   return mapOf(span.id to history)
+}
+
+internal fun buildQuestionWorkspaceHistories(
+  assistantMessage: ChatMessage.Assistant?,
+  histories: Map<String, List<SpanDetail>>
+): Map<String, List<SpanDetail>> {
+  val sourceAssistant = assistantMessage ?: return emptyMap()
+  return buildMap {
+    sourceAssistant.interactiveSpans().forEach { span ->
+      val normalized = normalizeHistoryForTree(histories[span.id].orEmpty())
+      if (normalized.isNotEmpty()) {
+        put(span.id, normalized)
+      }
+    }
+  }
+}
+
+internal fun filterFollowupTreeScopesForWorkspace(
+  scopes: List<FollowupTreeScope>,
+  activePage: WorkspacePage,
+  activeSpanId: String?,
+  questionSpanIds: Set<String>
+): List<FollowupTreeScope> {
+  if (activePage != WorkspacePage.QUICK_FOLLOWUP) {
+    return scopes
+  }
+
+  val allowedSpanIds = when {
+    questionSpanIds.isNotEmpty() -> questionSpanIds
+    !activeSpanId.isNullOrBlank() -> setOf(activeSpanId)
+    else -> emptySet()
+  }
+  if (allowedSpanIds.isEmpty()) {
+    return emptyList()
+  }
+
+  return scopes.filter { scope -> scope.spanId in allowedSpanIds }
 }
 
 private fun buildFollowupTreeScopes(

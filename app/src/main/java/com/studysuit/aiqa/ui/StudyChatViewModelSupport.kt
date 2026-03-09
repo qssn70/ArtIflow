@@ -222,6 +222,15 @@ private fun resolveQuestionScopeQuestion(span: SpanData, messages: List<ChatMess
 }
 
 internal fun splitParagraphs(content: String): List<String> {
+  val trimmedContent = content.trim()
+  if (trimmedContent.isEmpty()) {
+    return emptyList()
+  }
+
+  if (containsLatexMarkdown(content)) {
+    return listOf(trimmedContent)
+  }
+
   val byBlankLines = content
     .split(Regex("\\n{2,}"))
     .map(String::trim)
@@ -233,7 +242,7 @@ internal fun splitParagraphs(content: String): List<String> {
 
   val sentences = Regex("[^。！？!?]+[。！？!?]?").findAll(content).map { it.value }.toList()
   if (sentences.isEmpty()) {
-    return listOf(content.trim()).filter(String::isNotEmpty)
+    return listOf(trimmedContent)
   }
 
   val chunks = mutableListOf<String>()

@@ -407,7 +407,7 @@ internal fun QuestionArchiveWorkspace(
   savedQuestions: List<SavedQuestion>,
   focusedSavedQuestionId: String?,
   onSwitchToChat: () -> Unit,
-  onRestoreQuestion: (String) -> Unit,
+  onOpenQuestionWorkspace: (String) -> Unit,
   onRemoveQuestion: (String) -> Unit
 ) {
   val orderedSavedQuestions = remember(savedQuestions, focusedSavedQuestionId) {
@@ -449,7 +449,7 @@ internal fun QuestionArchiveWorkspace(
         SavedQuestionCard(
           saved = saved,
           isFocused = saved.id == focusedSavedQuestionId,
-          onRestoreQuestion = { onRestoreQuestion(saved.id) },
+          onOpenQuestionWorkspace = { onOpenQuestionWorkspace(saved.id) },
           onRemoveQuestion = { onRemoveQuestion(saved.id) }
         )
       }
@@ -461,7 +461,7 @@ internal fun QuestionArchiveWorkspace(
 private fun SavedQuestionCard(
   saved: SavedQuestion,
   isFocused: Boolean,
-  onRestoreQuestion: () -> Unit,
+  onOpenQuestionWorkspace: () -> Unit,
   onRemoveQuestion: () -> Unit
 ) {
   var expanded by remember(saved.id, isFocused) { mutableStateOf(isFocused) }
@@ -565,8 +565,8 @@ private fun SavedQuestionCard(
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically
       ) {
-        TextButton(onClick = onRestoreQuestion) {
-          Text(text = "回填提问")
+        TextButton(onClick = onOpenQuestionWorkspace) {
+          Text(text = "进入专属界面")
         }
         TextButton(onClick = onRemoveQuestion) {
           Text(text = "取消收藏", color = Color(0xFF8E4D4D))

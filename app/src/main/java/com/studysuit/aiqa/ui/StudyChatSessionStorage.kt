@@ -20,6 +20,7 @@ internal data class StoredSession(
   val activePage: WorkspacePage,
   val quickFollowupSpanId: String? = null,
   val quickFollowupDetailId: String? = null,
+  val quickFollowupSourceMessageId: String? = null,
   val coachMessages: List<CoachChatMessage> = emptyList(),
   val coachDigest: CoachDailyDigest? = null,
   val dailyTraining: DailyTrainingState = DailyTrainingState(),
@@ -211,6 +212,7 @@ private fun StoredSession.toJson(): JSONObject {
     .put("activePage", activePage.name)
     .put("quickFollowupSpanId", quickFollowupSpanId ?: JSONObject.NULL)
     .put("quickFollowupDetailId", quickFollowupDetailId ?: JSONObject.NULL)
+    .put("quickFollowupSourceMessageId", quickFollowupSourceMessageId ?: JSONObject.NULL)
     .put("coachMessages", JSONArray().apply { coachMessages.forEach { message -> put(message.toJson()) } })
     .put("coachDigest", coachDigest?.toJson() ?: JSONObject.NULL)
     .put("dailyTraining", dailyTraining.toJson())
@@ -242,6 +244,7 @@ private fun JSONObject.toStoredSession(): StoredSession? {
   val activePage = optString("activePage").toWorkspacePageOrDefault()
   val quickFollowupSpanId = optString("quickFollowupSpanId").trim().ifBlank { null }
   val quickFollowupDetailId = optString("quickFollowupDetailId").trim().ifBlank { null }
+  val quickFollowupSourceMessageId = optString("quickFollowupSourceMessageId").trim().ifBlank { null }
   val coachMessages = optJSONArray("coachMessages")?.toCoachMessages().orEmpty()
   val coachDigest = optJSONObject("coachDigest")?.toCoachDailyDigest()
   val dailyTraining = optJSONObject("dailyTraining")?.toDailyTrainingState() ?: DailyTrainingState()
@@ -262,6 +265,7 @@ private fun JSONObject.toStoredSession(): StoredSession? {
     activePage = activePage,
     quickFollowupSpanId = quickFollowupSpanId,
     quickFollowupDetailId = quickFollowupDetailId,
+    quickFollowupSourceMessageId = quickFollowupSourceMessageId,
     coachMessages = coachMessages,
     coachDigest = coachDigest,
     dailyTraining = dailyTraining,

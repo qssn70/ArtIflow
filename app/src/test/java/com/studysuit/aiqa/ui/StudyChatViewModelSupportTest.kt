@@ -170,6 +170,89 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun buildQuestionWorkspaceMessages_preservesOriginalSpanCards() {
+    val assistant = ChatMessage.Assistant(
+      id = "msg-assistant",
+      time = "10:01",
+      spans = listOf(
+        SpanData(id = "span-1", content = "第一张卡", sourceQuestion = "原题"),
+        SpanData(id = "span-2", content = "第二张卡", sourceQuestion = "原题")
+      ),
+      mainSpan = SpanData(id = "span-main", content = "整题回答", sourceQuestion = "原题")
+    )
+    val sourceUser = ChatMessage.User(id = "msg-user", time = "10:00", text = "原题")
+
+    val messages = buildQuestionWorkspaceMessages(assistantMessage = assistant, sourceUserMessage = sourceUser)
+
+    assertEquals(2, messages.size)
+    assertEquals("msg-user", (messages[0] as ChatMessage.User).id)
+    val rebuiltAssistant = messages[1] as ChatMessage.Assistant
+    assertEquals("msg-assistant", rebuiltAssistant.id)
+    assertEquals(listOf("span-1", "span-2"), rebuiltAssistant.spans.map { span -> span.id })
+    assertEquals("span-main", rebuiltAssistant.mainSpan?.id)
+  }
+
+  @Test
+  fun buildQuestionWorkspaceHistories_preservesFollowupsForEachCard() {
+    val assistant = ChatMessage.Assistant(
+      id = "msg-assistant",
+      time = "10:01",
+      spans = listOf(
+        SpanData(id = "span-1", content = "第一张卡", sourceQuestion = "原题"),
+        SpanData(id = "span-2", content = "第二张卡", sourceQuestion = "原题")
+      ),
+      mainSpan = SpanData(id = "span-main", content = "整题回答", sourceQuestion = "原题")
+    )
+    val histories = mapOf(
+      "span-main" to listOf(SpanDetail(id = "detail-main", mode = "精细追问", time = "10:02", question = "整题追问", answer = "整题答复")),
+      "span-1" to listOf(SpanDetail(id = "detail-1", mode = "自动讲解", time = "10:03", question = "卡1追问", answer = "卡1答复")),
+      "span-2" to listOf(SpanDetail(id = "detail-2", mode = "自动讲解", time = "10:04", question = "卡2追问", answer = "卡2答复"))
+    )
+
+    val rebuilt = buildQuestionWorkspaceHistories(assistantMessage = assistant, histories = histories)
+
+    assertEquals(3, rebuilt.size)
+    assertEquals(listOf("detail-main"), rebuilt["span-main"]?.map { detail -> detail.id })
+    assertEquals(listOf("detail-1"), rebuilt["span-1"]?.map { detail -> detail.id })
+    assertEquals(listOf("detail-2"), rebuilt["span-2"]?.map { detail -> detail.id })
+  }
+
+  @Test
+  fun filterFollowupTreeScopesForWorkspace_keepsOnlyCurrentQuestionInQuestionWorkspace() {
+    val scopes = listOf(
+      FollowupTreeScope(spanId = "span-main", spanContent = "整题", sourceQuestion = "题1", details = emptyList()),
+      FollowupTreeScope(spanId = "span-1", spanContent = "分卡1", sourceQuestion = "题1", details = emptyList()),
+      FollowupTreeScope(spanId = "span-other", spanContent = "别的题", sourceQuestion = "题2", details = emptyList())
+    )
+
+    val filtered = filterFollowupTreeScopesForWorkspace(
+      scopes = scopes,
+      activePage = WorkspacePage.QUICK_FOLLOWUP,
+      activeSpanId = "span-main",
+      questionSpanIds = setOf("span-main", "span-1")
+    )
+
+    assertEquals(listOf("span-main", "span-1"), filtered.map { scope -> scope.spanId })
+  }
+
+  @Test
+  fun filterFollowupTreeScopesForWorkspace_keepsOnlyActiveSpanInSingleSpanFollowup() {
+    val scopes = listOf(
+      FollowupTreeScope(spanId = "span-1", spanContent = "当前卡", sourceQuestion = "题1", details = emptyList()),
+      FollowupTreeScope(spanId = "span-2", spanContent = "别的卡", sourceQuestion = "题2", details = emptyList())
+    )
+
+    val filtered = filterFollowupTreeScopesForWorkspace(
+      scopes = scopes,
+      activePage = WorkspacePage.QUICK_FOLLOWUP,
+      activeSpanId = "span-1",
+      questionSpanIds = emptySet()
+    )
+
+    assertEquals(listOf("span-1"), filtered.map { scope -> scope.spanId })
+  }
+
+  @Test
   fun buildFollowupTreeExportFileName_usesTimestampPatternAndMarkdownSuffix() {
     val fileName = buildFollowupTreeExportFileName(exportedAtMillis = 0L)
 

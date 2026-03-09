@@ -64,6 +64,76 @@ class StudyChatStateReducersTest {
   }
 
   @Test
+  fun restoreSavedQuestionState_opensQuestionWorkspaceWhenSourceMessageExists() {
+    val mainSpan = SpanData(id = "span-main", content = "整题回答", sourceQuestion = "函数题")
+    val base = ChatUiState(
+      input = "旧输入",
+      activePage = WorkspacePage.ARCHIVE,
+      selectedSpanId = "selected-old",
+      selectedDetailId = "detail-old",
+      isDueReviewMode = true,
+      focusedDeckName = "数学",
+      messages = listOf(
+        ChatMessage.User(id = "msg-user", time = "10:00", text = "函数题"),
+        ChatMessage.Assistant(
+          id = "msg-assistant",
+          time = "10:01",
+          spans = listOf(SpanData(id = "span-1", content = "分段说明", sourceQuestion = "函数题")),
+          mainSpan = mainSpan
+        )
+      ),
+      savedQuestions = listOf(
+        SavedQuestion(
+          id = "saved-1",
+          sourceMessageId = "msg-assistant",
+          question = "函数题",
+          answer = "整题回答",
+          sourceTime = "10:01",
+          savedAt = 1L
+        )
+      )
+    )
+
+    val updated = restoreSavedQuestionState(base, "saved-1")
+
+    assertEquals(WorkspacePage.QUICK_FOLLOWUP, updated.activePage)
+    assertEquals("", updated.input)
+    assertEquals("span-main", updated.quickFollowupSpanId)
+    assertEquals(null, updated.quickFollowupDetailId)
+    assertEquals("msg-assistant", updated.quickFollowupSourceMessageId)
+    assertEquals(null, updated.selectedSpanId)
+    assertEquals(null, updated.selectedDetailId)
+    assertFalse(updated.isDueReviewMode)
+    assertEquals(null, updated.focusedDeckName)
+    assertEquals("已进入题目专属界面", updated.toastMessage)
+  }
+
+  @Test
+  fun restoreSavedQuestionState_fallsBackToComposerWhenSourceMessageMissing() {
+    val base = ChatUiState(
+      input = "旧输入",
+      activePage = WorkspacePage.ARCHIVE,
+      savedQuestions = listOf(
+        SavedQuestion(
+          id = "saved-2",
+          sourceMessageId = "msg-missing",
+          question = "圆锥曲线题",
+          answer = "答案",
+          sourceTime = "10:05",
+          savedAt = 2L
+        )
+      )
+    )
+
+    val updated = restoreSavedQuestionState(base, "saved-2")
+
+    assertEquals(WorkspacePage.CHAT, updated.activePage)
+    assertEquals("圆锥曲线题", updated.input)
+    assertEquals(null, updated.quickFollowupSourceMessageId)
+    assertEquals("原题上下文缺失，已回填到提问框", updated.toastMessage)
+  }
+
+  @Test
   fun appendAssistantMessageState_appendsMessageAndToast() {
     val base = ChatUiState(
       messages = listOf(ChatMessage.User(id = "msg-1", time = "10:00", text = "问题"))

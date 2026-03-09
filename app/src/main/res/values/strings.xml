@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="app_name">ArtI flow</string>
+  <string name="background_ai_channel_name">后台生成</string>
+  <string name="background_ai_channel_description">AI 输出在锁屏或切后台时继续生成</string>
+  <string name="background_ai_notification_title">ArtI flow 正在后台输出</string>
+  <string name="background_ai_notification_subtitle">锁屏或切屏时会继续生成</string>
+  <string name="background_ai_default_status">正在处理当前请求</string>
 </resources>

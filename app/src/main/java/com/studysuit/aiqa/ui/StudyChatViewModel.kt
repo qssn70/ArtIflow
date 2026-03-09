@@ -3,6 +3,7 @@ package com.studysuit.aiqa.ui
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.studysuit.aiqa.AiGenerationForegroundService
 import com.studysuit.aiqa.data.ArkApiClient
 import com.studysuit.aiqa.data.FlowStudySyncClient
 import com.studysuit.aiqa.data.OpenSpeechAsrClient
@@ -28,6 +29,10 @@ class StudyChatViewModel : ViewModel() {
   private var sessionSeed = 0
   private var conversationToken = 0L
   private var inFlightRequests = 0
+  private var appContext: Context? = null
+  private var lastBackgroundProgressPushAt = 0L
+  private var lastBackgroundProgressPreview = ""
+  private var lastInFlightPersistAt = 0L
   private val requestCoordinator = StudyChatRequestCoordinator(
     arkApiClient = ArkApiClient(),
     openSpeechAsrClient = OpenSpeechAsrClient()
@@ -46,11 +51,16 @@ class StudyChatViewModel : ViewModel() {
   }
 
   fun ensureStorage(context: Context) {
+    val applicationContext = context.applicationContext
+    appContext = applicationContext
     if (sessionStorage != null) {
+      if (inFlightRequests > 0) {
+        syncBackgroundRequestService(status = _uiState.value.toastMessage)
+      }
       return
     }
 
-    sessionStorage = SessionStorage(context.applicationContext)
+    sessionStorage = SessionStorage(applicationContext)
     restoreSessionsFromStorage()
   }
 
@@ -474,6 +484,10 @@ class StudyChatViewModel : ViewModel() {
           coachDigest = current.coachDigest ?: digest
         )
       }
+      publishBackgroundProgress(
+        preview = partialMessage.text,
+        status = "正在生成教练建议..."
+      )
     }
 
     startRequest(clearToast = true) { current ->
@@ -604,6 +618,10 @@ class StudyChatViewModel : ViewModel() {
           assistantMessage = partialMessage
         )
       }
+      publishBackgroundProgress(
+        preview = partial.ifBlank { "正在识别题目并生成讲解..." },
+        status = "$source 处理中..."
+      )
     }
 
     startRequest(toastMessage = "$source 处理中...") { current ->
@@ -796,26 +814,23 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
-  fun restoreSavedQuestionToComposer(savedQuestionId: String) {
+  fun openSavedQuestionWorkspace(savedQuestionId: String) {
     updateUiState(persistSession = true) { current ->
-      val saved = current.savedQuestions.firstOrNull { question -> question.id == savedQuestionId }
-      if (saved == null) {
-        current.copy(toastMessage = "未找到已收藏题目")
-      } else {
-        current.copy(
-          activePage = WorkspacePage.CHAT,
-          input = saved.question,
-          archiveFocusSavedQuestionId = null,
-          toastMessage = "已回填到提问框"
-        )
-      }
+      restoreSavedQuestionState(current = current, savedQuestionId = savedQuestionId)
     }
   }
 
   fun switchWorkspacePage(page: WorkspacePage) {
     updateUiState(persistSession = true) { current ->
+      val quickSourceMessageId = if (page == WorkspacePage.QUICK_FOLLOWUP) {
+        findAssistantMessageById(current.messages, current.quickFollowupSourceMessageId)?.id
+      } else {
+        current.quickFollowupSourceMessageId
+      }
+      val quickSourceMessage = findAssistantMessageById(current.messages, quickSourceMessageId)
       val quickSpanId = if (page == WorkspacePage.QUICK_FOLLOWUP) {
         findSpanById(current.messages, current.quickFollowupSpanId)?.id
+          ?: quickSourceMessage?.let { message -> (message.mainSpan ?: message.spans.lastOrNull())?.id }
           ?: findLatestAssistantQuestionSpan(current.messages)?.id
       } else {
         current.quickFollowupSpanId
@@ -834,6 +849,7 @@ class StudyChatViewModel : ViewModel() {
         activePage = page,
         quickFollowupSpanId = quickSpanId,
         quickFollowupDetailId = quickDetailId,
+        quickFollowupSourceMessageId = quickSourceMessageId,
         archiveFocusSavedQuestionId = if (page == WorkspacePage.ARCHIVE) current.archiveFocusSavedQuestionId else null,
         isDueReviewMode = false,
         focusedDeckName = null
@@ -867,6 +883,7 @@ class StudyChatViewModel : ViewModel() {
         val shouldKeepCurrent = current.activePage == WorkspacePage.QUICK_FOLLOWUP &&
           !current.isDueReviewMode &&
           current.focusedDeckName == null &&
+          current.quickFollowupSourceMessageId == null &&
           current.quickFollowupSpanId == targetSpanId &&
           current.quickFollowupDetailId == normalizedDetailId &&
           current.selectedSpanId == null &&
@@ -879,6 +896,7 @@ class StudyChatViewModel : ViewModel() {
             activePage = WorkspacePage.QUICK_FOLLOWUP,
             quickFollowupSpanId = targetSpanId,
             quickFollowupDetailId = normalizedDetailId,
+            quickFollowupSourceMessageId = null,
             selectedSpanId = null,
             selectedDetailId = null,
             isDueReviewMode = false,
@@ -1252,6 +1270,10 @@ class StudyChatViewModel : ViewModel() {
               detail = partialDetail
             )
           }
+          publishBackgroundProgress(
+            preview = partialDetail.answer,
+            status = "正在生成该段讲解..."
+          )
         }
       },
       onStale = {
@@ -1406,6 +1428,10 @@ class StudyChatViewModel : ViewModel() {
           assistantMessage = partialMessage
         )
       }
+      publishBackgroundProgress(
+        preview = partial.ifBlank { "正在刷新回答..." },
+        status = "正在刷新整条回复..."
+      )
     }
 
     startRequest(toastMessage = "正在刷新整条回复...") { current ->
@@ -1518,6 +1544,10 @@ class StudyChatViewModel : ViewModel() {
           assistantMessage = partialMessage
         )
       }
+      publishBackgroundProgress(
+        preview = partial.ifBlank { "正在刷新图片回答..." },
+        status = "正在刷新整条回复..."
+      )
     }
 
     startRequest(toastMessage = "正在刷新整条回复...") { current ->
@@ -1591,6 +1621,7 @@ class StudyChatViewModel : ViewModel() {
     val removedSpanIds = assistantMessage.interactiveSpans().map { span -> span.id }.toSet()
     val nextHistories = current.histories.filterKeys { key -> key !in removedSpanIds }
     val shouldResetQuick = current.quickFollowupSpanId in removedSpanIds
+    val shouldResetQuickSource = current.quickFollowupSourceMessageId == assistantMessage.id
     val shouldResetSelected = current.selectedSpanId in removedSpanIds
 
     return current.copy(
@@ -1598,9 +1629,10 @@ class StudyChatViewModel : ViewModel() {
       processingSpanIds = current.processingSpanIds - removedSpanIds,
       quickFollowupSpanId = if (shouldResetQuick) null else current.quickFollowupSpanId,
       quickFollowupDetailId = if (shouldResetQuick) null else current.quickFollowupDetailId,
+      quickFollowupSourceMessageId = if (shouldResetQuickSource) null else current.quickFollowupSourceMessageId,
       selectedSpanId = if (shouldResetSelected) null else current.selectedSpanId,
       selectedDetailId = if (shouldResetSelected) null else current.selectedDetailId,
-      activePage = if (shouldResetQuick && current.activePage == WorkspacePage.QUICK_FOLLOWUP) {
+      activePage = if ((shouldResetQuick || shouldResetQuickSource) && current.activePage == WorkspacePage.QUICK_FOLLOWUP) {
         WorkspacePage.CHAT
       } else {
         current.activePage
@@ -1774,6 +1806,10 @@ class StudyChatViewModel : ViewModel() {
               detail = partialDetail
             )
           }
+          publishBackgroundProgress(
+            preview = partialDetail.answer,
+            status = "正在生成追问回答..."
+          )
         }
       },
       onStale = {
@@ -1852,6 +1888,8 @@ class StudyChatViewModel : ViewModel() {
 
   private fun resolveQuickFollowupSpan(state: ChatUiState): SpanData? {
     return findSpanById(state.messages, state.quickFollowupSpanId)
+      ?: findAssistantMessageById(state.messages, state.quickFollowupSourceMessageId)
+        ?.let { message -> message.mainSpan ?: message.spans.lastOrNull() }
       ?: findLatestAssistantQuestionSpan(state.messages)
   }
 
@@ -1953,6 +1991,10 @@ class StudyChatViewModel : ViewModel() {
           coachMessages = upsertCoachMessage(current.coachMessages, coachPartialMessage)
         )
       }
+      publishBackgroundProgress(
+        preview = partialText,
+        status = "正在生成今日训练第${roundIndex + 1}题..."
+      )
     }
 
     startRequest(toastMessage = "正在生成今日训练第${roundIndex + 1}题...") { current ->
@@ -2154,6 +2196,10 @@ class StudyChatViewModel : ViewModel() {
           coachMessages = upsertCoachMessage(current.coachMessages, coachPartialMessage)
         )
       }
+      publishBackgroundProgress(
+        preview = partialText,
+        status = "正在批改第${roundIndex + 1}题..."
+      )
     }
 
     startRequest(toastMessage = "正在批改第${roundIndex + 1}题...") { current ->
@@ -2345,6 +2391,10 @@ class StudyChatViewModel : ViewModel() {
           assistantMessage = partialMessage
         )
       }
+      publishBackgroundProgress(
+        preview = partial.ifBlank { "正在生成回答..." },
+        status = "正在生成回答..."
+      )
     }
 
     startRequest(clearToast = true) { current ->
@@ -2500,9 +2550,14 @@ class StudyChatViewModel : ViewModel() {
     transform: (ChatUiState) -> ChatUiState = { state -> state }
   ) {
     inFlightRequests += 1
+    if (inFlightRequests == 1) {
+      resetBackgroundProgressTracking()
+    }
+
+    var latestStatus: String? = null
     updateUiState(persistSession = true) { current ->
       val base = transform(current)
-      base.copy(
+      val updated = base.copy(
         isLoading = inFlightRequests > 0,
         toastMessage = when {
           toastMessage != null -> toastMessage
@@ -2510,15 +2565,25 @@ class StudyChatViewModel : ViewModel() {
           else -> base.toastMessage
         }
       )
+      latestStatus = updated.toastMessage
+      updated
     }
+    syncBackgroundRequestService(status = latestStatus)
   }
 
   private fun finishRequest(transform: (ChatUiState) -> ChatUiState = { state -> state }) {
     inFlightRequests = (inFlightRequests - 1).coerceAtLeast(0)
+    var latestStatus: String? = null
     updateUiState(persistSession = true) { current ->
       val base = transform(current)
-      base.copy(isLoading = inFlightRequests > 0)
+      val updated = base.copy(isLoading = inFlightRequests > 0)
+      latestStatus = updated.toastMessage
+      updated
     }
+    if (inFlightRequests == 0) {
+      resetBackgroundProgressTracking()
+    }
+    syncBackgroundRequestService(status = latestStatus)
   }
 
   private fun updateUiState(
@@ -2552,6 +2617,62 @@ class StudyChatViewModel : ViewModel() {
 
     sessionRegistry.replaceAll(listOf(updated))
 
+  }
+
+  private fun syncBackgroundRequestService(
+    status: String? = _uiState.value.toastMessage,
+    preview: String? = null
+  ) {
+    val context = appContext ?: return
+    runCatching {
+      if (inFlightRequests > 0) {
+        AiGenerationForegroundService.startOrUpdate(
+          context = context,
+          activeCount = inFlightRequests,
+          status = status,
+          preview = preview
+        )
+      } else {
+        AiGenerationForegroundService.stop(context)
+      }
+    }
+  }
+
+  private fun publishBackgroundProgress(preview: String, status: String? = null) {
+    if (inFlightRequests <= 0) {
+      return
+    }
+
+    val normalizedPreview = preview.trim()
+    if (normalizedPreview.isBlank()) {
+      return
+    }
+
+    val now = System.currentTimeMillis()
+    val previewGrowth = normalizedPreview.length - lastBackgroundProgressPreview.length
+    val shouldPushNotification = normalizedPreview != lastBackgroundProgressPreview && (
+      now - lastBackgroundProgressPushAt >= BACKGROUND_PROGRESS_PUSH_INTERVAL_MS ||
+        previewGrowth >= BACKGROUND_PROGRESS_MIN_CHARS
+      )
+
+    if (shouldPushNotification) {
+      lastBackgroundProgressPushAt = now
+      lastBackgroundProgressPreview = normalizedPreview
+      syncBackgroundRequestService(status = status, preview = normalizedPreview)
+    }
+
+    if (now - lastInFlightPersistAt >= IN_FLIGHT_PERSIST_INTERVAL_MS) {
+      lastInFlightPersistAt = now
+      val state = _uiState.value
+      syncActiveSessionSnapshot(state)
+      persistSessionsAsync()
+    }
+  }
+
+  private fun resetBackgroundProgressTracking() {
+    lastBackgroundProgressPushAt = 0L
+    lastBackgroundProgressPreview = ""
+    lastInFlightPersistAt = 0L
   }
 
   private fun restoreSessionsFromStorage() {
@@ -2906,6 +3027,8 @@ class StudyChatViewModel : ViewModel() {
   private fun resetRequestTracking() {
     conversationToken += 1
     inFlightRequests = 0
+    resetBackgroundProgressTracking()
+    syncBackgroundRequestService()
   }
 
   private fun <T> launchTokenAwareRequest(
@@ -2952,6 +3075,11 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
+  override fun onCleared() {
+    resetRequestTracking()
+    super.onCleared()
+  }
+
   private fun nextMessageId(): String {
     messageSeed += 1
     return "msg-$messageSeed"
@@ -2986,5 +3114,11 @@ class StudyChatViewModel : ViewModel() {
   private fun currentDateTime(): String {
     val formatter = SimpleDateFormat("MM-dd HH:mm", Locale.SIMPLIFIED_CHINESE)
     return formatter.format(Date())
+  }
+
+  private companion object {
+    private const val BACKGROUND_PROGRESS_PUSH_INTERVAL_MS = 1200L
+    private const val BACKGROUND_PROGRESS_MIN_CHARS = 48
+    private const val IN_FLIGHT_PERSIST_INTERVAL_MS = 3000L
   }
 }

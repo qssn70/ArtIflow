@@ -21,6 +21,26 @@ internal fun findSpanById(messages: List<ChatMessage>, spanId: String?): SpanDat
   return null
 }
 
+internal fun findAssistantMessageById(messages: List<ChatMessage>, messageId: String?): ChatMessage.Assistant? {
+  if (messageId.isNullOrBlank()) {
+    return null
+  }
+
+  return messages.firstOrNull { message ->
+    message is ChatMessage.Assistant && message.id == messageId
+  } as? ChatMessage.Assistant
+}
+
+internal fun findAssistantMessageBySpanId(messages: List<ChatMessage>, spanId: String?): ChatMessage.Assistant? {
+  if (spanId.isNullOrBlank()) {
+    return null
+  }
+
+  return messages.firstOrNull { message ->
+    message is ChatMessage.Assistant && message.findSpan(spanId) != null
+  } as? ChatMessage.Assistant
+}
+
 internal fun findLatestAssistantSpan(messages: List<ChatMessage>): SpanData? {
   messages.asReversed().forEach { message ->
     if (message is ChatMessage.Assistant) {
@@ -422,6 +442,7 @@ data class ChatUiState(
   val selectedDetailId: String? = null,
   val quickFollowupSpanId: String? = null,
   val quickFollowupDetailId: String? = null,
+  val quickFollowupSourceMessageId: String? = null,
   val archiveFocusSavedQuestionId: String? = null,
   val activePage: WorkspacePage = WorkspacePage.CHAT,
   val coachMessages: List<CoachChatMessage> = emptyList(),
