@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -83,6 +84,17 @@ private data class FollowupTreeExportDraft(
   val content: String
 )
 
+private data class PendingMistakeAnswerJudgement(
+  val itemId: String,
+  val userAnswer: String
+)
+
+private enum class ImageInputTarget {
+  CHAT,
+  MISTAKE,
+  MISTAKE_ANSWER
+}
+
 private fun writeFollowupTreeExportToUri(context: Context, uri: Uri, content: String): Boolean {
   return runCatching {
     context.contentResolver.openOutputStream(uri)?.use { stream ->
@@ -93,7 +105,10 @@ private fun writeFollowupTreeExportToUri(context: Context, uri: Uri, content: St
 
 @Composable
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
+fun StudyChatApp(
+  viewModel: StudyChatViewModel = viewModel(),
+  mistakeReviewOpenRequest: Int = 0
+) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val snackbarHostState = remember { SnackbarHostState() }
   val appScope = rememberCoroutineScope()
@@ -102,8 +117,9 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   var activeVoiceSpanId by remember { mutableStateOf<String?>(null) }
   var activeVoiceSession by remember { mutableStateOf<PcmWavRecorder.Session?>(null) }
   var pendingPermissionSpanId by remember { mutableStateOf<String?>(null) }
-  var pendingCameraCapture by remember { mutableStateOf(false) }
+  var pendingCameraTarget by remember { mutableStateOf<ImageInputTarget?>(null) }
   var pendingCameraImageUri by remember { mutableStateOf<Uri?>(null) }
+  var pendingMistakeAnswerJudgement by remember { mutableStateOf<PendingMistakeAnswerJudgement?>(null) }
   var isDeckArchiveOpen by remember { mutableStateOf(false) }
   var isFollowupTreeOpen by remember { mutableStateOf(false) }
   var lastBackPressedAt by remember { mutableLongStateOf(0L) }
@@ -137,12 +153,44 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     }
   }
 
+  val recognizeMistakeImages: (String, List<ByteArray>) -> Unit = { source, images ->
+    val validImages = images.filter { bytes -> bytes.isNotEmpty() }
+    if (validImages.isEmpty()) {
+      viewModel.showImageReadFailed("图片读取失败")
+    } else {
+      viewModel.recognizeMistakeFromImages(
+        imageBytesList = validImages,
+        source = source
+      )
+    }
+  }
+
+  val judgeMistakeAnswerImages: (List<ByteArray>) -> Unit = { images ->
+    val pending = pendingMistakeAnswerJudgement
+    pendingMistakeAnswerJudgement = null
+    val validImages = images.filter { bytes -> bytes.isNotEmpty() }
+    when {
+      pending == null -> viewModel.showImageReadFailed("未找到待判题错题")
+      validImages.isEmpty() -> viewModel.showImageReadFailed("图片读取失败")
+      else -> viewModel.requestMistakeAnswerJudgement(
+        itemId = pending.itemId,
+        userAnswer = pending.userAnswer,
+        answerImageBytesList = validImages
+      )
+    }
+  }
+
   val cameraImageLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.TakePicture()
   ) { captured ->
     val captureUri = pendingCameraImageUri
+    val target = pendingCameraTarget ?: ImageInputTarget.CHAT
     pendingCameraImageUri = null
+    pendingCameraTarget = null
     if (!captured || captureUri == null) {
+      if (target == ImageInputTarget.MISTAKE_ANSWER) {
+        pendingMistakeAnswerJudgement = null
+      }
       viewModel.showImageSearchCanceled()
     } else {
       val imageBytes = runCatching { readImageBytes(context, captureUri) }
@@ -150,18 +198,27 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
         .getOrNull()
       deleteCapturedImage(context, captureUri)
       if (imageBytes == null || imageBytes.isEmpty()) {
+        if (target == ImageInputTarget.MISTAKE_ANSWER) {
+          pendingMistakeAnswerJudgement = null
+        }
         viewModel.showImageReadFailed("拍照结果为空")
       } else {
-        appendPendingImage("拍照搜题", imageBytes)
+        when (target) {
+          ImageInputTarget.CHAT -> appendPendingImage("拍照搜题", imageBytes)
+          ImageInputTarget.MISTAKE -> recognizeMistakeImages("拍照录入错题", listOf(imageBytes))
+          ImageInputTarget.MISTAKE_ANSWER -> judgeMistakeAnswerImages(listOf(imageBytes))
+        }
       }
     }
   }
 
-  fun launchFullQualityCamera() {
+  fun launchFullQualityCamera(target: ImageInputTarget) {
     val captureUri = runCatching { createCameraCaptureUri(context) }.getOrNull()
     if (captureUri == null) {
+      pendingCameraTarget = null
       viewModel.showImageReadFailed("无法创建拍照文件")
     } else {
+      pendingCameraTarget = target
       pendingCameraImageUri = captureUri
       cameraImageLauncher.launch(captureUri)
     }
@@ -179,6 +236,33 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       } else {
         appendPendingImage("相册搜题", imageBytes)
       }
+    }
+  }
+
+  val mistakeGalleryImageLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.PickMultipleVisualMedia(6)
+  ) { uris ->
+    if (uris.isEmpty()) {
+      viewModel.showImageSearchCanceled()
+    } else {
+      val imageBytesList = uris.mapNotNull { uri ->
+        runCatching { readImageBytes(context, uri) }.getOrNull()?.takeIf { bytes -> bytes.isNotEmpty() }
+      }
+      recognizeMistakeImages("相册录入错题", imageBytesList)
+    }
+  }
+
+  val mistakeAnswerGalleryImageLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.PickMultipleVisualMedia(3)
+  ) { uris ->
+    if (uris.isEmpty()) {
+      pendingMistakeAnswerJudgement = null
+      viewModel.showImageSearchCanceled()
+    } else {
+      val imageBytesList = uris.mapNotNull { uri ->
+        runCatching { readImageBytes(context, uri) }.getOrNull()?.takeIf { bytes -> bytes.isNotEmpty() }
+      }
+      judgeMistakeAnswerImages(imageBytesList)
     }
   }
 
@@ -207,19 +291,30 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
   val cameraPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestPermission()
   ) { granted ->
-    if (!pendingCameraCapture) {
+    val target = pendingCameraTarget ?: return@rememberLauncherForActivityResult
+    if (!granted) {
+      pendingCameraTarget = null
+      if (target == ImageInputTarget.MISTAKE_ANSWER) {
+        pendingMistakeAnswerJudgement = null
+      }
+      viewModel.showCameraPermissionDenied()
       return@rememberLauncherForActivityResult
     }
 
-    pendingCameraCapture = false
+    launchFullQualityCamera(target)
+  }
+
+  val notificationPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission()
+  ) { granted ->
     if (granted) {
-      launchFullQualityCamera()
+      viewModel.refreshMistakeReviewReminder()
     } else {
-      viewModel.showCameraPermissionDenied()
+      Toast.makeText(context, "未开启通知权限，错题仍会保存在复习队列", Toast.LENGTH_SHORT).show()
     }
   }
 
-  val onCameraQuestionSearch: () -> Unit = {
+  fun requestCameraCapture(target: ImageInputTarget) {
     if (activeVoiceSession != null) {
       viewModel.showRecordingBusy()
     } else {
@@ -229,12 +324,16 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
       ) == PackageManager.PERMISSION_GRANTED
 
       if (granted) {
-        launchFullQualityCamera()
+        launchFullQualityCamera(target)
       } else {
-        pendingCameraCapture = true
+        pendingCameraTarget = target
         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
       }
     }
+  }
+
+  val onCameraQuestionSearch: () -> Unit = {
+    requestCameraCapture(ImageInputTarget.CHAT)
   }
 
   val onGalleryQuestionSearch: () -> Unit = {
@@ -247,8 +346,62 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
     }
   }
 
+  val onCameraMistakeCapture: () -> Unit = {
+    requestCameraCapture(ImageInputTarget.MISTAKE)
+  }
+
+  val onGalleryMistakePick: () -> Unit = {
+    if (activeVoiceSession != null) {
+      viewModel.showRecordingBusy()
+    } else {
+      mistakeGalleryImageLauncher.launch(
+        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+      )
+    }
+  }
+
+  val onCameraMistakeAnswerCapture: (String, String) -> Unit = { itemId, userAnswer ->
+    if (activeVoiceSession != null) {
+      viewModel.showRecordingBusy()
+    } else {
+      pendingMistakeAnswerJudgement = PendingMistakeAnswerJudgement(itemId = itemId, userAnswer = userAnswer)
+      requestCameraCapture(ImageInputTarget.MISTAKE_ANSWER)
+    }
+  }
+
+  val onGalleryMistakeAnswerPick: (String, String) -> Unit = { itemId, userAnswer ->
+    if (activeVoiceSession != null) {
+      viewModel.showRecordingBusy()
+    } else {
+      pendingMistakeAnswerJudgement = PendingMistakeAnswerJudgement(itemId = itemId, userAnswer = userAnswer)
+      mistakeAnswerGalleryImageLauncher.launch(
+        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+      )
+    }
+  }
+
+  val onRefreshMistakeReminder: () -> Unit = {
+    val needsNotificationPermission = Build.VERSION.SDK_INT >= 33 &&
+      ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.POST_NOTIFICATIONS
+      ) != PackageManager.PERMISSION_GRANTED
+    if (needsNotificationPermission) {
+      notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    } else {
+      viewModel.refreshMistakeReviewReminder()
+    }
+  }
+
   LaunchedEffect(Unit) {
     viewModel.ensureStorage(context)
+  }
+
+  LaunchedEffect(mistakeReviewOpenRequest) {
+    if (mistakeReviewOpenRequest > 0) {
+      viewModel.ensureStorage(context)
+      viewModel.openDueMistakeReviewQueue()
+    }
   }
 
   LaunchedEffect(uiState.toastMessage) {
@@ -706,6 +859,15 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
               )
             }
 
+            WorkspacePage.MISTAKES -> {
+              HeaderBar(
+                onOpenSettings = viewModel::openSettings,
+                onOpenFollowupTree = { isWorkspaceJumpOpen = true },
+                title = "StudySuit · 错题本",
+                subtitle = "拍照录入、按记忆曲线复习、记录做对做错"
+              )
+            }
+
             WorkspacePage.ANKI -> {
               AnkiHeaderBar(
                 cardCount = visibleAnkiCards.size,
@@ -862,7 +1024,47 @@ fun StudyChatApp(viewModel: StudyChatViewModel = viewModel()) {
                     focusedSavedQuestionId = uiState.archiveFocusSavedQuestionId,
                     onSwitchToChat = { viewModel.switchWorkspacePage(WorkspacePage.CHAT) },
                     onOpenQuestionWorkspace = viewModel::openSavedQuestionWorkspace,
+                    onAddToMistakeBook = viewModel::addSavedQuestionToMistakeBook,
                     onRemoveQuestion = viewModel::removeSavedQuestion
+                  )
+                }
+              }
+            } else if (page == WorkspacePage.MISTAKES) {
+              item(key = "mistake-workspace") {
+                Box(modifier = Modifier.fillParentMaxSize()) {
+                  MistakeBookWorkspace(
+                    items = uiState.mistakeItems,
+                    drafts = uiState.mistakeRecognitionDrafts,
+                    activeDraftId = uiState.activeMistakeDraftId,
+                    activeReviewId = uiState.activeMistakeReviewId,
+                    activeReviewSuggestion = uiState.activeMistakeReviewSuggestion,
+                    isDueReviewMode = uiState.isMistakeDueReviewMode,
+                    searchQuery = uiState.mistakeSearchQuery,
+                    onSearchQueryChange = viewModel::updateMistakeSearchQuery,
+                    onCameraCapture = onCameraMistakeCapture,
+                    onGalleryPick = onGalleryMistakePick,
+                    onOpenDueQueue = viewModel::openDueMistakeReviewQueue,
+                    onRefreshReminder = onRefreshMistakeReminder,
+                    onConfirmDraft = viewModel::confirmMistakeDraft,
+                    onRecordReview = { itemId, isCorrect, userAnswer ->
+                      viewModel.recordMistakeReview(
+                        itemId = itemId,
+                        isCorrect = isCorrect,
+                        userAnswer = userAnswer
+                      )
+                    },
+                    onRequestJudgement = { itemId, userAnswer ->
+                      viewModel.requestMistakeAnswerJudgement(
+                        itemId = itemId,
+                        userAnswer = userAnswer
+                      )
+                    },
+                    onCameraAnswerCapture = onCameraMistakeAnswerCapture,
+                    onGalleryAnswerPick = onGalleryMistakeAnswerPick,
+                    onConfirmJudgement = viewModel::confirmMistakeAnswerJudgement,
+                    onAddToAnki = viewModel::addMistakeToAnki,
+                    onDeleteItem = viewModel::deleteMistakeItem,
+                    onReopenItem = viewModel::reopenMistakeItem
                   )
                 }
               }

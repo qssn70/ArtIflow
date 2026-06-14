@@ -230,4 +230,31 @@ class StudyChatModelsTest {
     assertEquals("https://api.openai.com/v1", config.baseUrl)
     assertEquals("chat/completions", config.endpoint)
   }
+
+  @Test
+  fun toMistakeRecognitionPipelineConfig_mapsOneTwoThreeModelModes() {
+    val settings = RuntimeSettings.defaults().copy(
+      customModelBaseUrl = "https://api.primary.example/v1",
+      customModelApiKey = "primary-key",
+      customModelName = "vision-primary",
+      mistakeRecognitionModelCount = 3,
+      mistakeSecondModelBaseUrl = "https://api.secondary.example/v1",
+      mistakeSecondModelApiKey = "secondary-key",
+      mistakeSecondModelName = "vision-secondary",
+      mistakeFusionModelBaseUrl = "https://api.fusion.example/v1",
+      mistakeFusionModelApiKey = "fusion-key",
+      mistakeFusionModelName = "fusion-judge"
+    )
+
+    val oneModel = settings.copy(mistakeRecognitionModelCount = 1).toMistakeRecognitionPipelineConfig()
+    val twoModels = settings.copy(mistakeRecognitionModelCount = 2).toMistakeRecognitionPipelineConfig()
+    val threeModels = settings.toMistakeRecognitionPipelineConfig()
+
+    assertEquals(listOf("vision-primary"), oneModel.visionConfigs.map { config -> config.model })
+    assertNull(oneModel.fusionConfig)
+    assertEquals(listOf("vision-primary"), twoModels.visionConfigs.map { config -> config.model })
+    assertEquals("fusion-judge", twoModels.fusionConfig?.model)
+    assertEquals(listOf("vision-primary", "vision-secondary"), threeModels.visionConfigs.map { config -> config.model })
+    assertEquals("fusion-judge", threeModels.fusionConfig?.model)
+  }
 }

@@ -209,6 +209,49 @@ internal fun SettingsDialog(
 
         HorizontalDivider(color = Color(0x1633564B))
 
+        Text(text = "错题识别模型", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
+        MistakeRecognitionModelCountSelector(
+          count = settings.mistakeRecognitionModelCount.coerceIn(1, 3),
+          onCountChanged = { count -> onSettingsChanged(settings.copy(mistakeRecognitionModelCount = count)) }
+        )
+        Text(
+          text = "OCR+1 使用主多模态；OCR+2 增加融合裁判；OCR+3 再加入第二多模态。",
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF728880)
+        )
+        SettingsTextField(
+          label = "第二多模态 BASEURL",
+          value = settings.mistakeSecondModelBaseUrl,
+          onValueChange = { value -> onSettingsChanged(settings.copy(mistakeSecondModelBaseUrl = value)) }
+        )
+        SettingsTextField(
+          label = "第二多模态 APIKEY",
+          value = settings.mistakeSecondModelApiKey,
+          onValueChange = { value -> onSettingsChanged(settings.copy(mistakeSecondModelApiKey = value)) }
+        )
+        SettingsTextField(
+          label = "第二多模态 MODELNAME",
+          value = settings.mistakeSecondModelName,
+          onValueChange = { value -> onSettingsChanged(settings.copy(mistakeSecondModelName = value)) }
+        )
+        SettingsTextField(
+          label = "融合模型 BASEURL",
+          value = settings.mistakeFusionModelBaseUrl,
+          onValueChange = { value -> onSettingsChanged(settings.copy(mistakeFusionModelBaseUrl = value)) }
+        )
+        SettingsTextField(
+          label = "融合模型 APIKEY",
+          value = settings.mistakeFusionModelApiKey,
+          onValueChange = { value -> onSettingsChanged(settings.copy(mistakeFusionModelApiKey = value)) }
+        )
+        SettingsTextField(
+          label = "融合模型 MODELNAME",
+          value = settings.mistakeFusionModelName,
+          onValueChange = { value -> onSettingsChanged(settings.copy(mistakeFusionModelName = value)) }
+        )
+
+        HorizontalDivider(color = Color(0x1633564B))
+
         Text(text = "Ark（豆包）", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
 
         SettingsTextField(
@@ -381,6 +424,41 @@ internal fun SettingsDialog(
   )
 }
 
+
+@Composable
+private fun MistakeRecognitionModelCountSelector(
+  count: Int,
+  onCountChanged: (Int) -> Unit
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(8.dp)
+  ) {
+    listOf(1 to "OCR+1", 2 to "OCR+2", 3 to "OCR+3").forEach { (value, label) ->
+      val selected = count == value
+      Surface(
+        color = if (selected) Color(0xFFDCEFE6) else Color(0xFFF8FCF9),
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+          .weight(1f)
+          .border(
+            width = 1.dp,
+            color = if (selected) Color(0xFF6A9B86) else Color(0x1F3A5A4F),
+            shape = RoundedCornerShape(10.dp)
+          )
+          .clickable { onCountChanged(value) }
+      ) {
+        Text(
+          text = label,
+          style = MaterialTheme.typography.labelMedium,
+          color = if (selected) Color(0xFF255E4D) else Color(0xFF60766E),
+          textAlign = TextAlign.Center,
+          modifier = Modifier.padding(vertical = 8.dp)
+        )
+      }
+    }
+  }
+}
 
 @Composable
 private fun ModelPresetActionRow(

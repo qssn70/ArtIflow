@@ -5,8 +5,21 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.studysuit.aiqa.AiGenerationForegroundService
 import com.studysuit.aiqa.data.ArkApiClient
+import com.studysuit.aiqa.data.ArkMistakeFusionClient
+import com.studysuit.aiqa.data.ArkMistakeVisionClient
 import com.studysuit.aiqa.data.FlowStudySyncClient
+import com.studysuit.aiqa.data.MistakeAnswerJudgement
+import com.studysuit.aiqa.data.MistakeRecognitionCoordinator
+import com.studysuit.aiqa.data.MistakeBookItem
+import com.studysuit.aiqa.data.MistakeBookStorage
+import com.studysuit.aiqa.data.MistakeRecognitionDraft
+import com.studysuit.aiqa.data.MistakeRecognitionStatus
+import com.studysuit.aiqa.data.MistakeReviewJudgementSource
+import com.studysuit.aiqa.data.MistakeReviewScheduler
+import com.studysuit.aiqa.data.MistakeSrsEngine
+import com.studysuit.aiqa.data.MlKitMistakeOcrClient
 import com.studysuit.aiqa.data.OpenSpeechAsrClient
+import com.studysuit.aiqa.data.UnavailableMistakeOcrClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +39,7 @@ class StudyChatViewModel : ViewModel() {
   private var spanSeed = 0
   private var detailSeed = 0
   private var cardSeed = 0
+  private var mistakeSeed = 0
   private var sessionSeed = 0
   private var conversationToken = 0L
   private var inFlightRequests = 0
@@ -37,8 +51,12 @@ class StudyChatViewModel : ViewModel() {
     arkApiClient = ArkApiClient(),
     openSpeechAsrClient = OpenSpeechAsrClient()
   )
+  private val mistakeVisionClient = ArkMistakeVisionClient()
+  private val secondaryMistakeVisionClient = ArkMistakeVisionClient()
+  private val mistakeFusionClient = ArkMistakeFusionClient()
   private val flowStudySyncClient = FlowStudySyncClient()
   private var sessionStorage: SessionStorage? = null
+  private var mistakeBookStorage: MistakeBookStorage? = null
   private val sessionRegistry = SessionRegistry()
   private val persistMutex = Mutex()
   private val latestPersistRequestId = AtomicLong(0L)
@@ -53,15 +71,20 @@ class StudyChatViewModel : ViewModel() {
   fun ensureStorage(context: Context) {
     val applicationContext = context.applicationContext
     appContext = applicationContext
+    if (mistakeBookStorage == null) {
+      mistakeBookStorage = MistakeBookStorage(applicationContext)
+    }
     if (sessionStorage != null) {
       if (inFlightRequests > 0) {
         syncBackgroundRequestService(status = _uiState.value.toastMessage)
       }
+      restoreMistakeBookItems()
       return
     }
 
     sessionStorage = SessionStorage(applicationContext)
     restoreSessionsFromStorage()
+    restoreMistakeBookItems()
   }
 
   fun pairFlowStudy(pairCode: String) {
@@ -452,6 +475,7 @@ class StudyChatViewModel : ViewModel() {
     val profileSnapshot = stateSnapshot.profile
     val knowledgeSnapshot = stateSnapshot.knowledgePoints
     val savedQuestionsSnapshot = stateSnapshot.savedQuestions
+    val mistakeItemsSnapshot = stateSnapshot.mistakeItems
     val knowledgeGapSnapshot = buildKnowledgeGapInsights(
       messages = stateSnapshot.messages,
       histories = stateSnapshot.histories,
@@ -509,6 +533,7 @@ class StudyChatViewModel : ViewModel() {
           knowledgePoints = knowledgeSnapshot,
           knowledgeGapInsights = knowledgeGapSnapshot,
           savedQuestions = savedQuestionsSnapshot,
+          mistakeItems = mistakeItemsSnapshot,
           settings = settings,
           onDelta = { delta ->
             if (isTokenStale(requestConversationToken, conversationToken) || delta.isBlank()) {
@@ -820,6 +845,331 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
+  fun saveMistakeRecognitionDraft(draft: MistakeRecognitionDraft) {
+    updateUiState(persistSession = false) { current ->
+      saveMistakeRecognitionDraftState(current, draft)
+    }
+  }
+
+  fun confirmMistakeDraft(draft: MistakeRecognitionDraft) {
+    upsertMistakeRecognitionDraft(draft)
+    confirmMistakeDraft(draft.id)
+  }
+
+  fun recognizeMistakeFromImages(
+    imageBytesList: List<ByteArray>,
+    source: String = "错题图片",
+    note: String = ""
+  ) {
+    val normalizedImages = imageBytesList.filter { bytes -> bytes.isNotEmpty() }
+    if (normalizedImages.isEmpty()) {
+      postToast("图片为空，无法录入错题")
+      return
+    }
+
+    val draftId = "draft-${System.currentTimeMillis()}"
+    val imageRefs = saveMistakeImages(imageBytesList = normalizedImages, idPrefix = draftId)
+    val settings = _uiState.value.settings
+    val pipelineConfig = settings.toMistakeRecognitionPipelineConfig()
+    val promptNote = listOf(source.trim(), note.trim())
+      .filter(String::isNotBlank)
+      .joinToString(separator = "；")
+    val coordinator = MistakeRecognitionCoordinator(
+      ocrClient = if (appContext != null) MlKitMistakeOcrClient() else UnavailableMistakeOcrClient,
+      visionClient = mistakeVisionClient,
+      additionalVisionClients = if (pipelineConfig.visionConfigs.size > 1) {
+        listOf(secondaryMistakeVisionClient)
+      } else {
+        emptyList()
+      },
+      fusionClient = if (pipelineConfig.fusionConfig != null) mistakeFusionClient else null,
+      idProvider = { draftId },
+      clock = { System.currentTimeMillis() }
+    )
+
+    startRequest(toastMessage = "正在识别错题...") { current ->
+      current.copy(activePage = WorkspacePage.MISTAKES)
+    }
+    viewModelScope.launch {
+      val draft = coordinator.recognizeFromImages(
+        imageBytesList = normalizedImages,
+        imageRefs = imageRefs,
+        note = promptNote,
+        config = pipelineConfig.visionConfigs.firstOrNull() ?: settings.toArkRuntimeConfig(),
+        pipelineConfig = pipelineConfig
+      )
+      finishRequest { current ->
+        saveMistakeRecognitionDraftState(current, draft).copy(toastMessage = mistakeRecognitionToast(draft))
+      }
+    }
+  }
+
+  fun confirmMistakeDraft(draftId: String) {
+    val draft = _uiState.value.mistakeRecognitionDrafts.firstOrNull { item -> item.id == draftId }
+    if (draft == null) {
+      postToast("未找到错题草稿")
+      return
+    }
+
+    val now = System.currentTimeMillis()
+    val existingItem = _uiState.value.mistakeItems.firstOrNull { item -> item.recognitionDraftId == draft.id }
+    val createdItem = createMistakeBookItemFromDraft(
+      draft = draft,
+      itemId = existingItem?.id ?: nextMistakeItemId(),
+      now = now
+    )
+    val item = existingItem?.let { existing ->
+      when {
+        !createdItem.isReadyForReview -> createdItem.copy(
+          createdAt = existing.createdAt,
+          updatedAt = now,
+          reviewAttempts = existing.reviewAttempts
+        )
+
+        !existing.isReadyForReview -> createdItem.copy(
+          createdAt = existing.createdAt,
+          updatedAt = now,
+          reviewAttempts = existing.reviewAttempts
+        )
+
+        else -> createdItem.copy(
+          createdAt = existing.createdAt,
+          updatedAt = now,
+          status = existing.status,
+          reviewState = existing.reviewState,
+          reviewAttempts = existing.reviewAttempts
+        )
+      }
+    } ?: createdItem
+    updateMistakeItems(persistMistakes = true) { current ->
+      upsertMistakeItemState(
+        current = current,
+        item = item,
+        toastMessage = if (item.isReadyForReview) "已加入错题本" else "已保存到待完善"
+      )
+    }
+  }
+
+  private fun upsertMistakeRecognitionDraft(draft: MistakeRecognitionDraft) {
+    updateUiState(persistSession = false) { current ->
+      val updatedDraft = draft.copy(updatedAt = System.currentTimeMillis())
+      current.copy(
+        mistakeRecognitionDrafts = listOf(updatedDraft) + current.mistakeRecognitionDrafts.filterNot { item -> item.id == draft.id },
+        activeMistakeDraftId = draft.id
+      )
+    }
+  }
+
+  fun addSavedQuestionToMistakeBook(savedQuestionId: String) {
+    val state = _uiState.value
+    val saved = state.savedQuestions.firstOrNull { question -> question.id == savedQuestionId }
+    if (saved == null) {
+      postToast("未找到归档题")
+      return
+    }
+
+    val itemId = state.mistakeItems.firstOrNull { item -> item.sourceSavedQuestionId == saved.id }?.id ?: nextMistakeItemId()
+    val imageRefs = saveSavedQuestionImages(saved = saved, itemId = itemId)
+    updateMistakeItems(persistMistakes = true) { current ->
+      addSavedQuestionToMistakeBookState(
+        current = current,
+        savedQuestionId = savedQuestionId,
+        itemId = itemId,
+        imageRefs = imageRefs,
+        now = System.currentTimeMillis()
+      )
+    }
+  }
+
+  fun addMistakeToAnki(itemId: String) {
+    val item = _uiState.value.mistakeItems.firstOrNull { mistake -> mistake.id == itemId }
+    if (item == null) {
+      postToast("未找到错题")
+      return
+    }
+    if (!item.isReadyForReview) {
+      postToast("题干和正确答案补齐后才能生成 Anki")
+      return
+    }
+
+    updateUiState(persistSession = true) { current ->
+      val latestItem = current.mistakeItems.firstOrNull { mistake -> mistake.id == itemId }
+      if (latestItem == null) {
+        current.copy(toastMessage = "未找到错题")
+      } else {
+        val tags = buildMistakeAnkiTags(latestItem)
+        val deckName = resolveDeckNameForAutoCard(
+          suggestedDeck = null,
+          tags = tags,
+          existingCards = current.ankiCards
+        )
+        val card = createAnkiCard(
+          front = buildMistakeAnkiFront(latestItem),
+          back = buildMistakeAnkiBack(latestItem),
+          source = "错题本：${latestItem.question.take(32)}",
+          tags = tags,
+          deckName = deckName
+        )
+        current.copy(
+          ankiCards = sortAnkiCardsForReview(prependAnkiCard(current.ankiCards, card)),
+          toastMessage = "已生成 Anki 卡片"
+        )
+      }
+    }
+  }
+
+  fun recordMistakeReview(
+    itemId: String,
+    isCorrect: Boolean,
+    userAnswer: String = "",
+    judgementSource: MistakeReviewJudgementSource = MistakeReviewJudgementSource.USER,
+    modelSuggestion: String = "",
+    note: String = ""
+  ) {
+    updateMistakeItems(persistMistakes = true) { current ->
+      recordMistakeReviewState(
+        current = current,
+        itemId = itemId,
+        isCorrect = isCorrect,
+        reviewedAt = System.currentTimeMillis(),
+        userAnswer = userAnswer,
+        judgementSource = judgementSource,
+        modelSuggestion = modelSuggestion,
+        note = note
+      )
+    }
+  }
+
+  fun requestMistakeAnswerJudgement(
+    itemId: String,
+    userAnswer: String,
+    answerImageBytesList: List<ByteArray> = emptyList()
+  ) {
+    val item = _uiState.value.mistakeItems.firstOrNull { mistake -> mistake.id == itemId }
+    if (item == null) {
+      postToast("未找到错题")
+      return
+    }
+    if (!item.isReadyForReview) {
+      postToast("题干和正确答案补齐后才能判题")
+      return
+    }
+    val normalizedImages = answerImageBytesList.filter { bytes -> bytes.isNotEmpty() }
+    if (userAnswer.isBlank() && normalizedImages.isEmpty()) {
+      postToast("先输入作答或上传作答图片")
+      return
+    }
+
+    val settings = _uiState.value.settings
+    startRequest(toastMessage = "正在请求模型判题...") { current ->
+      current.copy(
+        activePage = WorkspacePage.MISTAKES,
+        activeMistakeReviewId = itemId
+      )
+    }
+    viewModelScope.launch {
+      val answerOcrText = recognizeMistakeAnswerText(normalizedImages)
+      val result = requestCoordinator.judgeMistakeAnswer(
+        item = item,
+        userAnswer = userAnswer,
+        answerOcrText = answerOcrText,
+        answerImageBytesList = normalizedImages,
+        settings = settings
+      )
+
+      finishRequest { current ->
+        val judgement = result.getOrNull()
+        if (judgement == null) {
+          current.copy(toastMessage = "模型暂未给出判题建议，请手动记录")
+        } else {
+          setMistakeReviewSuggestionState(
+            current = current,
+            suggestion = judgement.toMistakeReviewSuggestion(
+              itemId = itemId,
+              userAnswer = userAnswer,
+              answerOcrText = answerOcrText
+            )
+          )
+        }
+      }
+    }
+  }
+
+  fun applyMistakeAnswerJudgement(
+    itemId: String,
+    userAnswer: String,
+    judgement: MistakeAnswerJudgement,
+    answerOcrText: String = ""
+  ) {
+    updateUiState(persistSession = false) { current ->
+      setMistakeReviewSuggestionState(
+        current = current,
+        suggestion = judgement.toMistakeReviewSuggestion(
+          itemId = itemId,
+          userAnswer = userAnswer,
+          answerOcrText = answerOcrText
+        )
+      )
+    }
+  }
+
+  fun confirmMistakeAnswerJudgement(itemId: String, finalIsCorrect: Boolean) {
+    updateMistakeItems(persistMistakes = true) { current ->
+      confirmMistakeReviewSuggestionState(
+        current = current,
+        itemId = itemId,
+        finalIsCorrect = finalIsCorrect,
+        reviewedAt = System.currentTimeMillis()
+      )
+    }
+  }
+
+  fun deleteMistakeItem(itemId: String) {
+    updateMistakeItems(persistMistakes = true) { current ->
+      deleteMistakeItemState(current, itemId)
+    }
+  }
+
+  fun reopenMistakeItem(itemId: String) {
+    updateMistakeItems(persistMistakes = true) { current ->
+      reopenMistakeItemState(current = current, itemId = itemId, reopenedAt = System.currentTimeMillis())
+    }
+  }
+
+  fun openDueMistakeReviewQueue() {
+    val dueItems = MistakeSrsEngine.dueMistakes(_uiState.value.mistakeItems)
+    if (dueItems.isEmpty()) {
+      postToast("当前暂无到期错题")
+      return
+    }
+
+    updateUiState(persistSession = true) { current ->
+      current.copy(
+        activePage = WorkspacePage.MISTAKES,
+        activeMistakeReviewId = dueItems.first().id,
+        activeMistakeDraftId = null,
+        isMistakeDueReviewMode = true,
+        toastMessage = "进入错题复习（${dueItems.size} 道）"
+      )
+    }
+  }
+
+  fun refreshMistakeReviewReminder() {
+    val context = appContext
+    if (context == null) {
+      postToast("存储未初始化，暂时无法安排提醒")
+      return
+    }
+    MistakeReviewScheduler.reschedule(context, _uiState.value.mistakeItems)
+    postToast("错题复习提醒已更新")
+  }
+
+  fun updateMistakeSearchQuery(query: String) {
+    updateUiState(persistSession = false) { current ->
+      current.copy(mistakeSearchQuery = query)
+    }
+  }
+
   fun switchWorkspacePage(page: WorkspacePage) {
     updateUiState(persistSession = true) { current ->
       val quickSourceMessageId = if (page == WorkspacePage.QUICK_FOLLOWUP) {
@@ -851,7 +1201,9 @@ class StudyChatViewModel : ViewModel() {
         quickFollowupDetailId = quickDetailId,
         quickFollowupSourceMessageId = quickSourceMessageId,
         archiveFocusSavedQuestionId = if (page == WorkspacePage.ARCHIVE) current.archiveFocusSavedQuestionId else null,
+        activeMistakeDraftId = if (page == WorkspacePage.MISTAKES) current.activeMistakeDraftId else null,
         isDueReviewMode = false,
+        isMistakeDueReviewMode = false,
         focusedDeckName = null
       )
       if (current.activePage == page && !current.isDueReviewMode && current.focusedDeckName == null) {
@@ -1904,7 +2256,8 @@ class StudyChatViewModel : ViewModel() {
       messages = current.messages,
       histories = current.histories,
       savedQuestions = current.savedQuestions,
-      knowledgePoints = current.knowledgePoints
+      knowledgePoints = current.knowledgePoints,
+      mistakeItems = current.mistakeItems
     )
     updateUiState(persistSession = true) { state ->
       if (state.coachDigest?.dateKey == digest.dateKey) {
@@ -2527,6 +2880,9 @@ class StudyChatViewModel : ViewModel() {
       settings = settings,
       settingsDraft = settingsDraft,
       showIntroToast = showIntroToast
+    ).copy(
+      mistakeItems = _uiState.value.mistakeItems,
+      mistakeRecognitionDrafts = _uiState.value.mistakeRecognitionDrafts
     )
 
     sessionRegistry.replaceAll(
@@ -2603,6 +2959,73 @@ class StudyChatViewModel : ViewModel() {
         persistSessionsAsync()
       }
     }
+  }
+
+  private fun updateMistakeItems(
+    persistMistakes: Boolean,
+    transform: (ChatUiState) -> ChatUiState
+  ) {
+    updateUiState(persistSession = false, transform = transform)
+    rescheduleMistakeReviewReminder(_uiState.value.mistakeItems)
+    if (persistMistakes) {
+      persistMistakeBookAsync(_uiState.value.mistakeItems)
+    }
+  }
+
+  private fun restoreMistakeBookItems() {
+    val store = mistakeBookStorage ?: return
+    val restored = refreshMistakeDueStatuses(store.load(), now = System.currentTimeMillis())
+    mistakeSeed = deriveMistakeSeed(restored)
+    _uiState.update { current ->
+      current.copy(mistakeItems = restored)
+    }
+    rescheduleMistakeReviewReminder(restored)
+  }
+
+  private fun rescheduleMistakeReviewReminder(items: List<MistakeBookItem>) {
+    val context = appContext ?: return
+    MistakeReviewScheduler.reschedule(context, items)
+  }
+
+  private fun persistMistakeBookAsync(items: List<MistakeBookItem>) {
+    val store = mistakeBookStorage ?: return
+    viewModelScope.launch(Dispatchers.IO) {
+      val result = store.save(items)
+      if (result.isFailure) {
+        val message = result.exceptionOrNull()?.message.orEmpty().ifBlank { "未知错误" }
+        launch {
+          postToast("错题本保存失败：$message")
+        }
+      }
+    }
+  }
+
+  private fun saveSavedQuestionImages(saved: SavedQuestion, itemId: String): List<String> {
+    val store = mistakeBookStorage ?: return emptyList()
+    val images = if (saved.imagePreviewList.isNotEmpty()) {
+      saved.imagePreviewList
+    } else {
+      saved.imagePreviewBytes?.let(::listOf).orEmpty()
+    }
+    return images.mapIndexedNotNull { index, bytes ->
+      store.saveImageBytes(bytes, "$itemId-$index.jpg").getOrNull()
+    }
+  }
+
+  private fun saveMistakeImages(imageBytesList: List<ByteArray>, idPrefix: String): List<String> {
+    val store = mistakeBookStorage ?: return emptyList()
+    return imageBytesList.mapIndexedNotNull { index, bytes ->
+      store.saveImageBytes(bytes, "$idPrefix-$index.jpg").getOrNull()
+    }
+  }
+
+  private suspend fun recognizeMistakeAnswerText(imageBytesList: List<ByteArray>): String {
+    val normalizedImages = imageBytesList.filter { bytes -> bytes.isNotEmpty() }
+    if (normalizedImages.isEmpty()) {
+      return ""
+    }
+    val ocrClient = if (appContext != null) MlKitMistakeOcrClient() else UnavailableMistakeOcrClient
+    return ocrClient.recognizeText(normalizedImages).getOrNull().orEmpty().trim()
   }
 
   private fun syncActiveSessionSnapshot(state: ChatUiState) {
@@ -2937,6 +3360,70 @@ class StudyChatViewModel : ViewModel() {
     )
   }
 
+  private fun buildMistakeAnkiFront(item: MistakeBookItem): String {
+    return buildString {
+      append("错题复习\n\n")
+      append(item.question)
+      val labels = buildMistakeAnkiTags(item).take(3)
+      if (labels.isNotEmpty()) {
+        append("\n\n标签：")
+        append(labels.joinToString(separator = " / "))
+      }
+    }
+  }
+
+  private fun buildMistakeAnkiBack(item: MistakeBookItem): String {
+    return buildString {
+      append("正确答案：")
+      append(item.correctAnswer)
+      if (item.studentAnswer.isNotBlank()) {
+        append("\n\n原作答：")
+        append(item.studentAnswer)
+      }
+      if (item.explanation.isNotBlank()) {
+        append("\n\n解析：")
+        append(item.explanation)
+      }
+      if (item.mistakeReason.isNotBlank()) {
+        append("\n\n错因：")
+        append(item.mistakeReason)
+      }
+      item.mistakeType?.let { type ->
+        append("\n\n错误类型：")
+        append(mistakeTypeLabel(type))
+      }
+    }
+  }
+
+  private fun buildMistakeAnkiTags(item: MistakeBookItem): List<String> {
+    return buildList {
+      addAll(item.knowledgeTags)
+      if (item.subject.isNotBlank()) {
+        add(item.subject)
+      }
+      if (item.questionType.isNotBlank()) {
+        add(item.questionType)
+      }
+      item.mistakeType?.let { type -> add(mistakeTypeLabel(type)) }
+    }
+  }
+
+  private fun MistakeAnswerJudgement.toMistakeReviewSuggestion(
+    itemId: String,
+    userAnswer: String,
+    answerOcrText: String
+  ): MistakeReviewSuggestion {
+    return MistakeReviewSuggestion(
+      itemId = itemId,
+      userAnswer = userAnswer,
+      isCorrect = isCorrect,
+      confidence = confidence,
+      reason = reason,
+      suggestedScore = suggestedScore,
+      answerOcrText = answerOcrText
+    )
+  }
+
   private fun generateAnkiCardByAiAsync(
     requestConversationToken: Long,
     source: String,
@@ -3100,10 +3587,44 @@ class StudyChatViewModel : ViewModel() {
     return "card-$cardSeed"
   }
 
+  private fun nextMistakeItemId(): String {
+    mistakeSeed += 1
+    return "mistake-$mistakeSeed"
+  }
+
   private fun deriveCardSeed(cards: List<AnkiCard>): Int {
     return cards
       .mapNotNull { card -> card.id.removePrefix("card-").toIntOrNull() }
       .maxOrNull() ?: 0
+  }
+
+  private fun deriveMistakeSeed(items: List<MistakeBookItem>): Int {
+    return items
+      .mapNotNull { item -> item.id.removePrefix("mistake-").toIntOrNull() }
+      .maxOrNull() ?: 0
+  }
+
+  private fun refreshMistakeDueStatuses(items: List<MistakeBookItem>, now: Long): List<MistakeBookItem> {
+    val dueIds = MistakeSrsEngine.dueMistakes(items, now = now).map { item -> item.id }.toSet()
+    return sortMistakeItems(
+      items.map { item ->
+        if (item.id in dueIds) {
+          item.copy(status = com.studysuit.aiqa.data.MistakeStatus.DUE)
+        } else {
+          item
+        }
+      }
+    )
+  }
+
+  private fun mistakeRecognitionToast(draft: MistakeRecognitionDraft): String {
+    return when (draft.status) {
+      MistakeRecognitionStatus.AI_READY -> "已识别错题，可确认加入复习"
+      MistakeRecognitionStatus.OCR_READY -> "模型暂不可用，已保留 OCR 草稿"
+      MistakeRecognitionStatus.FAILED -> "识别失败，请手动补全错题"
+      MistakeRecognitionStatus.MANUAL -> "已保存手动草稿"
+      MistakeRecognitionStatus.PENDING -> "错题草稿待处理"
+    }
   }
 
   private fun currentTime(): String {

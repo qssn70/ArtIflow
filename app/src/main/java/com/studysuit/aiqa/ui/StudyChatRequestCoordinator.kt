@@ -2,7 +2,11 @@ package com.studysuit.aiqa.ui
 
 import com.studysuit.aiqa.data.ArkApiClient
 import com.studysuit.aiqa.data.ArkRequestMessage
+import com.studysuit.aiqa.data.MistakeAnswerJudgement
+import com.studysuit.aiqa.data.MistakeBookItem
 import com.studysuit.aiqa.data.OpenSpeechAsrClient
+import com.studysuit.aiqa.data.buildMistakeAnswerJudgementPrompt
+import com.studysuit.aiqa.data.parseMistakeAnswerJudgement
 
 internal data class AnkiGenerationInput(
   val mode: String,
@@ -149,6 +153,7 @@ internal class StudyChatRequestCoordinator(
     knowledgePoints: Map<String, Int>,
     knowledgeGapInsights: List<KnowledgeGapInsight>,
     savedQuestions: List<SavedQuestion>,
+    mistakeItems: List<com.studysuit.aiqa.data.MistakeBookItem> = emptyList(),
     settings: RuntimeSettings,
     onDelta: (String) -> Unit,
     onReasoningDelta: ((String) -> Unit)? = null
@@ -160,7 +165,8 @@ internal class StudyChatRequestCoordinator(
         profile = profile,
         knowledgePoints = knowledgePoints,
         knowledgeGapInsights = knowledgeGapInsights,
-        savedQuestions = savedQuestions
+        savedQuestions = savedQuestions,
+        mistakeItems = mistakeItems
       ),
       config = settings.toArkRuntimeConfig().copy(systemPrompt = COACH_SYSTEM_PROMPT),
       onDelta = onDelta,
@@ -198,6 +204,36 @@ internal class StudyChatRequestCoordinator(
     ).map { raw ->
       parseAiAnkiCardPayload(raw)
     }
+  }
+
+  suspend fun judgeMistakeAnswer(
+    item: MistakeBookItem,
+    userAnswer: String,
+    answerOcrText: String,
+    answerImageBytesList: List<ByteArray>,
+    settings: RuntimeSettings
+  ): Result<MistakeAnswerJudgement?> {
+    val prompt = buildMistakeAnswerJudgementPrompt(
+      item = item,
+      userAnswer = userAnswer,
+      answerOcrText = answerOcrText
+    )
+    val normalizedImages = answerImageBytesList.filter { bytes -> bytes.isNotEmpty() }
+    val config = settings.toArkRuntimeConfig()
+    val result = if (normalizedImages.isEmpty()) {
+      arkApiClient.generateReply(
+        messages = listOf(ArkRequestMessage(role = "user", text = prompt)),
+        config = config
+      )
+    } else {
+      arkApiClient.generateReplyWithImages(
+        prompt = prompt,
+        images = toImagePayloads(normalizedImages),
+        config = config
+      )
+    }
+
+    return result.map { raw -> parseMistakeAnswerJudgement(raw) }
   }
 
   private fun buildImageQuestionPrompt(

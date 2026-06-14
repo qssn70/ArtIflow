@@ -69,6 +69,36 @@ class StudyChatSessionStorageParsingTest {
   }
 
   @Test
+  fun parsePersistedSessionsJsonRestoresMistakeRecognitionModelSettings() {
+    val raw = """
+      {
+        "version": 1,
+        "activeSessionId": "",
+        "settings": {
+          "mistakeRecognitionModelCount": 3,
+          "mistakeSecondModelBaseUrl": "https://api.secondary.example/v1",
+          "mistakeSecondModelApiKey": "secondary-key",
+          "mistakeSecondModelName": "vision-secondary",
+          "mistakeFusionModelBaseUrl": "https://api.fusion.example/v1",
+          "mistakeFusionModelApiKey": "fusion-key",
+          "mistakeFusionModelName": "fusion-judge"
+        },
+        "sessions": []
+      }
+    """.trimIndent()
+
+    val parsed = parsePersistedSessionsJson(raw).getOrThrow()
+
+    assertEquals(3, parsed.settings.mistakeRecognitionModelCount)
+    assertEquals("https://api.secondary.example/v1", parsed.settings.mistakeSecondModelBaseUrl)
+    assertEquals("secondary-key", parsed.settings.mistakeSecondModelApiKey)
+    assertEquals("vision-secondary", parsed.settings.mistakeSecondModelName)
+    assertEquals("https://api.fusion.example/v1", parsed.settings.mistakeFusionModelBaseUrl)
+    assertEquals("fusion-key", parsed.settings.mistakeFusionModelApiKey)
+    assertEquals("fusion-judge", parsed.settings.mistakeFusionModelName)
+  }
+
+  @Test
   fun parsePersistedSessionsJsonWithLegacyModelNormalizesToDefault() {
     val raw = """
       {
