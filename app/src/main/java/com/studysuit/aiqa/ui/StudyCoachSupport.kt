@@ -1,6 +1,7 @@
 package com.studysuit.aiqa.ui
 
 import com.studysuit.aiqa.data.ArkRequestMessage
+import com.studysuit.aiqa.data.MistakeBookItem
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -21,6 +22,7 @@ internal fun buildCoachDailyDigest(
   histories: Map<String, List<SpanDetail>>,
   savedQuestions: List<SavedQuestion>,
   knowledgePoints: Map<String, Int>,
+  mistakeItems: List<MistakeBookItem> = emptyList(),
   nowMillis: Long = System.currentTimeMillis()
 ): CoachDailyDigest {
   val insights = buildKnowledgeGapInsights(
@@ -28,7 +30,8 @@ internal fun buildCoachDailyDigest(
     histories = histories,
     knowledgePoints = knowledgePoints
   )
-  val focusAreas = insights
+  val mistakeSignals = buildMistakeCoachSignals(mistakeItems)
+  val knowledgeFocusAreas = insights
     .take(3)
     .map { insight ->
       CoachFocusArea(
@@ -39,6 +42,18 @@ internal fun buildCoachDailyDigest(
         evidence = normalizeCoachText(insight.evidence)
       )
     }
+  val mistakeFocusAreas = mistakeSignals.topWeakLabels.take(3).map { label ->
+    CoachFocusArea(
+      point = label,
+      level = KnowledgeGapLevel.HIGH,
+      diagnosis = "错题本里这个点反复出错或到期未稳",
+      action = "先复盘错因，再做一道同类变式",
+      evidence = normalizeCoachText(mistakeSignals.summary)
+    )
+  }
+  val focusAreas = (mistakeFocusAreas + knowledgeFocusAreas)
+    .distinctBy { area -> area.point }
+    .take(3)
 
   val practiceCount = messages.count { message -> message is ChatMessage.User }
   val headline = when {
@@ -51,7 +66,9 @@ internal fun buildCoachDailyDigest(
     focusAreas = focusAreas,
     practiceCount = practiceCount,
     savedCount = savedQuestions.size
-  )
+  ).let { base ->
+    if (mistakeItems.isEmpty()) base else "$base；${mistakeSignals.summary}"
+  }
   val recommendedQuestions = buildCoachRecommendedQuestions(
     focusAreas = focusAreas,
     savedQuestions = savedQuestions,
@@ -74,7 +91,8 @@ internal fun buildCoachConversationMessages(
   profile: ProfileState,
   knowledgePoints: Map<String, Int>,
   knowledgeGapInsights: List<KnowledgeGapInsight>,
-  savedQuestions: List<SavedQuestion>
+  savedQuestions: List<SavedQuestion>,
+  mistakeItems: List<MistakeBookItem> = emptyList()
 ): List<ArkRequestMessage> {
   val contextMessage = ArkRequestMessage(
     role = "user",
@@ -83,7 +101,8 @@ internal fun buildCoachConversationMessages(
       profile = profile,
       knowledgePoints = knowledgePoints,
       knowledgeGapInsights = knowledgeGapInsights,
-      savedQuestions = savedQuestions
+      savedQuestions = savedQuestions,
+      mistakeItems = mistakeItems
     )
   )
 
@@ -557,7 +576,8 @@ private fun buildCoachContextText(
   profile: ProfileState,
   knowledgePoints: Map<String, Int>,
   knowledgeGapInsights: List<KnowledgeGapInsight>,
-  savedQuestions: List<SavedQuestion>
+  savedQuestions: List<SavedQuestion>,
+  mistakeItems: List<MistakeBookItem>
 ): String {
   val topKnowledge = knowledgePoints.entries
     .sortedByDescending { entry -> entry.value }
@@ -579,6 +599,8 @@ private fun buildCoachContextText(
     }
     .ifBlank { "- 暂无收藏题" }
 
+  val mistakeSummary = buildMistakeCoachSignals(mistakeItems).summary
+
   val digestSummary = digest?.let { current ->
     buildString {
       append(current.headline)
@@ -596,6 +618,8 @@ private fun buildCoachContextText(
     $gapSummary
     - 最近收藏题：
     $savedSummary
+    - 错题本：
+    $mistakeSummary
 
     请你像学习教练一样回答：
     1. 先指出最核心的问题；

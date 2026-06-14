@@ -1,6 +1,8 @@
 package com.studysuit.aiqa.ui
 
 import com.studysuit.aiqa.data.ArkRequestMessage
+import com.studysuit.aiqa.data.MistakeBookItem
+import com.studysuit.aiqa.data.MistakeSrsEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -334,5 +336,62 @@ class StudyCoachSupportTest {
       ),
       requestMessages.drop(1)
     )
+  }
+
+  @Test
+  fun buildCoachDailyDigest_usesMistakeBookWeakSignals() {
+    val mistake = MistakeSrsEngine.recordReview(
+      item = MistakeBookItem.create(
+        id = "mistake-1",
+        question = "函数图像题",
+        correctAnswer = "先判断定义域和单调性",
+        knowledgeTags = listOf("函数与图像"),
+        mistakeReason = "定义域漏看",
+        createdAt = 1L
+      ),
+      isCorrect = false,
+      reviewedAt = 2L
+    )
+
+    val digest = buildCoachDailyDigest(
+      messages = emptyList(),
+      histories = emptyMap(),
+      savedQuestions = emptyList(),
+      mistakeItems = listOf(mistake),
+      knowledgePoints = emptyMap(),
+      nowMillis = 1000L
+    )
+
+    assertTrue(digest.focusAreas.any { area -> area.point == "函数与图像" })
+    assertTrue(digest.summary.contains("错题"))
+  }
+
+  @Test
+  fun buildCoachConversationMessages_mentionsMistakeBookSignals() {
+    val mistake = MistakeSrsEngine.recordReview(
+      item = MistakeBookItem.create(
+        id = "mistake-1",
+        question = "函数图像题",
+        correctAnswer = "先判断定义域和单调性",
+        knowledgeTags = listOf("函数与图像"),
+        mistakeReason = "定义域漏看",
+        createdAt = 1L
+      ),
+      isCorrect = false,
+      reviewedAt = 2L
+    )
+
+    val requestMessages = buildCoachConversationMessages(
+      digest = null,
+      coachMessages = emptyList(),
+      profile = ProfileState(level = "高二"),
+      knowledgePoints = emptyMap(),
+      knowledgeGapInsights = emptyList(),
+      savedQuestions = emptyList(),
+      mistakeItems = listOf(mistake)
+    )
+
+    assertTrue(requestMessages.first().text.contains("错题本"))
+    assertTrue(requestMessages.first().text.contains("函数与图像"))
   }
 }

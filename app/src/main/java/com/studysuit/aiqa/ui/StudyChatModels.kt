@@ -2,6 +2,9 @@ package com.studysuit.aiqa.ui
 
 import com.studysuit.aiqa.BuildConfig
 import com.studysuit.aiqa.data.ArkRuntimeConfig
+import com.studysuit.aiqa.data.MistakeBookItem
+import com.studysuit.aiqa.data.MistakeRecognitionPipelineConfig
+import com.studysuit.aiqa.data.MistakeRecognitionDraft
 import com.studysuit.aiqa.data.OpenSpeechRuntimeConfig
 import java.util.Locale
 
@@ -185,7 +188,14 @@ data class RuntimeSettings(
   val customModelBaseUrl: String = "",
   val customModelApiKey: String = "",
   val customModelName: String = "",
-  val customModelPresets: List<ModelPreset> = emptyList()
+  val customModelPresets: List<ModelPreset> = emptyList(),
+  val mistakeRecognitionModelCount: Int = 1,
+  val mistakeSecondModelBaseUrl: String = "",
+  val mistakeSecondModelApiKey: String = "",
+  val mistakeSecondModelName: String = "",
+  val mistakeFusionModelBaseUrl: String = "",
+  val mistakeFusionModelApiKey: String = "",
+  val mistakeFusionModelName: String = ""
 ) {
   companion object {
     fun defaults(): RuntimeSettings {
@@ -393,10 +403,63 @@ internal fun RuntimeSettings.toArkRuntimeConfig(): ArkRuntimeConfig {
   )
 }
 
+internal fun RuntimeSettings.toMistakeRecognitionPipelineConfig(): MistakeRecognitionPipelineConfig {
+  val modelCount = mistakeRecognitionModelCount.coerceIn(1, 3)
+  val primaryConfig = toArkRuntimeConfig()
+  val visionConfigs = buildList {
+    add(primaryConfig)
+    if (modelCount >= 3) {
+      mistakeSecondModelConfigOrNull()?.let(::add)
+    }
+  }
+  val fusionConfig = if (modelCount >= 2) {
+    mistakeFusionModelConfigOrNull() ?: primaryConfig
+  } else {
+    null
+  }
+
+  return MistakeRecognitionPipelineConfig(
+    visionConfigs = visionConfigs,
+    fusionConfig = fusionConfig
+  )
+}
+
 private fun RuntimeSettings.customModelConfigOrNull(): ArkRuntimeConfig? {
-  val baseUrlInput = customModelBaseUrl.trim()
-  val apiKeyInput = customModelApiKey.trim()
-  val modelInput = customModelName.trim()
+  return compatibleModelConfigOrNull(
+    baseUrl = customModelBaseUrl,
+    apiKey = customModelApiKey,
+    modelName = customModelName,
+    systemPrompt = arkSystemPrompt
+  )
+}
+
+private fun RuntimeSettings.mistakeSecondModelConfigOrNull(): ArkRuntimeConfig? {
+  return compatibleModelConfigOrNull(
+    baseUrl = mistakeSecondModelBaseUrl,
+    apiKey = mistakeSecondModelApiKey,
+    modelName = mistakeSecondModelName,
+    systemPrompt = arkSystemPrompt
+  )
+}
+
+private fun RuntimeSettings.mistakeFusionModelConfigOrNull(): ArkRuntimeConfig? {
+  return compatibleModelConfigOrNull(
+    baseUrl = mistakeFusionModelBaseUrl,
+    apiKey = mistakeFusionModelApiKey,
+    modelName = mistakeFusionModelName,
+    systemPrompt = arkSystemPrompt
+  )
+}
+
+private fun compatibleModelConfigOrNull(
+  baseUrl: String,
+  apiKey: String,
+  modelName: String,
+  systemPrompt: String
+): ArkRuntimeConfig? {
+  val baseUrlInput = baseUrl.trim()
+  val apiKeyInput = apiKey.trim()
+  val modelInput = modelName.trim()
   if (baseUrlInput.isBlank() || apiKeyInput.isBlank() || modelInput.isBlank()) {
     return null
   }
@@ -407,7 +470,7 @@ private fun RuntimeSettings.customModelConfigOrNull(): ArkRuntimeConfig? {
     normalizedBase.endsWith("/responses", ignoreCase = true) -> "responses"
     else -> "chat/completions"
   }
-  val baseUrl = when (endpoint) {
+  val resolvedBaseUrl = when (endpoint) {
     "chat/completions" -> normalizedBase.removeSuffix("/chat/completions")
     "responses" -> normalizedBase.removeSuffix("/responses")
     else -> normalizedBase
@@ -416,9 +479,9 @@ private fun RuntimeSettings.customModelConfigOrNull(): ArkRuntimeConfig? {
   return ArkRuntimeConfig(
     apiKey = apiKeyInput,
     model = modelInput,
-    baseUrl = baseUrl,
+    baseUrl = resolvedBaseUrl,
     endpoint = endpoint,
-    systemPrompt = normalizeSystemPrompt(arkSystemPrompt)
+    systemPrompt = normalizeSystemPrompt(systemPrompt)
   )
 }
 
@@ -449,6 +512,13 @@ data class ChatUiState(
   val coachDigest: CoachDailyDigest? = null,
   val dailyTraining: DailyTrainingState = DailyTrainingState(),
   val savedQuestions: List<SavedQuestion> = emptyList(),
+  val mistakeItems: List<MistakeBookItem> = emptyList(),
+  val mistakeRecognitionDrafts: List<MistakeRecognitionDraft> = emptyList(),
+  val activeMistakeDraftId: String? = null,
+  val activeMistakeReviewId: String? = null,
+  val activeMistakeReviewSuggestion: MistakeReviewSuggestion? = null,
+  val isMistakeDueReviewMode: Boolean = false,
+  val mistakeSearchQuery: String = "",
   val knowledgePoints: Map<String, Int> = emptyMap(),
   val ankiCards: List<AnkiCard> = emptyList(),
   val isDueReviewMode: Boolean = false,
@@ -462,6 +532,16 @@ data class ChatUiState(
   val isSettingsOpen: Boolean = false,
   val settings: RuntimeSettings = RuntimeSettings.defaults(),
   val settingsDraft: RuntimeSettings = RuntimeSettings.defaults()
+)
+
+data class MistakeReviewSuggestion(
+  val itemId: String,
+  val userAnswer: String,
+  val isCorrect: Boolean,
+  val confidence: Double,
+  val reason: String,
+  val suggestedScore: Int? = null,
+  val answerOcrText: String = ""
 )
 
 data class DeckPracticeSummary(
@@ -573,6 +653,7 @@ enum class WorkspacePage {
   QUICK_FOLLOWUP,
   COACH,
   ARCHIVE,
+  MISTAKES,
   ANKI,
   PROFILE
 }

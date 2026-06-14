@@ -129,6 +129,13 @@ private fun RuntimeSettings.toJson(): JSONObject {
     .put("customModelBaseUrl", customModelBaseUrl)
     .put("customModelApiKey", customModelApiKey)
     .put("customModelName", customModelName)
+    .put("mistakeRecognitionModelCount", mistakeRecognitionModelCount.coerceIn(1, 3))
+    .put("mistakeSecondModelBaseUrl", mistakeSecondModelBaseUrl)
+    .put("mistakeSecondModelApiKey", mistakeSecondModelApiKey)
+    .put("mistakeSecondModelName", mistakeSecondModelName)
+    .put("mistakeFusionModelBaseUrl", mistakeFusionModelBaseUrl)
+    .put("mistakeFusionModelApiKey", mistakeFusionModelApiKey)
+    .put("mistakeFusionModelName", mistakeFusionModelName)
     .put(
       "customModelPresets",
       JSONArray().apply {
@@ -165,7 +172,17 @@ private fun JSONObject.toRuntimeSettings(): RuntimeSettings {
     customModelBaseUrl = optString("customModelBaseUrl", defaults.customModelBaseUrl),
     customModelApiKey = optString("customModelApiKey", defaults.customModelApiKey),
     customModelName = optString("customModelName", defaults.customModelName),
-    customModelPresets = optJSONArray("customModelPresets")?.toModelPresets().orEmpty()
+    customModelPresets = optJSONArray("customModelPresets")?.toModelPresets().orEmpty(),
+    mistakeRecognitionModelCount = optInt(
+      "mistakeRecognitionModelCount",
+      defaults.mistakeRecognitionModelCount
+    ).coerceIn(1, 3),
+    mistakeSecondModelBaseUrl = optString("mistakeSecondModelBaseUrl", defaults.mistakeSecondModelBaseUrl),
+    mistakeSecondModelApiKey = optString("mistakeSecondModelApiKey", defaults.mistakeSecondModelApiKey),
+    mistakeSecondModelName = optString("mistakeSecondModelName", defaults.mistakeSecondModelName),
+    mistakeFusionModelBaseUrl = optString("mistakeFusionModelBaseUrl", defaults.mistakeFusionModelBaseUrl),
+    mistakeFusionModelApiKey = optString("mistakeFusionModelApiKey", defaults.mistakeFusionModelApiKey),
+    mistakeFusionModelName = optString("mistakeFusionModelName", defaults.mistakeFusionModelName)
   )
 }
 

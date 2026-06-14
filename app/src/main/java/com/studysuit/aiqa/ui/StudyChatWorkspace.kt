@@ -408,6 +408,7 @@ internal fun QuestionArchiveWorkspace(
   focusedSavedQuestionId: String?,
   onSwitchToChat: () -> Unit,
   onOpenQuestionWorkspace: (String) -> Unit,
+  onAddToMistakeBook: (String) -> Unit,
   onRemoveQuestion: (String) -> Unit
 ) {
   val orderedSavedQuestions = remember(savedQuestions, focusedSavedQuestionId) {
@@ -450,6 +451,7 @@ internal fun QuestionArchiveWorkspace(
           saved = saved,
           isFocused = saved.id == focusedSavedQuestionId,
           onOpenQuestionWorkspace = { onOpenQuestionWorkspace(saved.id) },
+          onAddToMistakeBook = { onAddToMistakeBook(saved.id) },
           onRemoveQuestion = { onRemoveQuestion(saved.id) }
         )
       }
@@ -462,6 +464,7 @@ private fun SavedQuestionCard(
   saved: SavedQuestion,
   isFocused: Boolean,
   onOpenQuestionWorkspace: () -> Unit,
+  onAddToMistakeBook: () -> Unit,
   onRemoveQuestion: () -> Unit
 ) {
   var expanded by remember(saved.id, isFocused) { mutableStateOf(isFocused) }
@@ -568,6 +571,9 @@ private fun SavedQuestionCard(
         TextButton(onClick = onOpenQuestionWorkspace) {
           Text(text = "进入专属界面")
         }
+        TextButton(onClick = onAddToMistakeBook) {
+          Text(text = "加入错题本", color = Color(0xFF2D6F5D))
+        }
         TextButton(onClick = onRemoveQuestion) {
           Text(text = "取消收藏", color = Color(0xFF8E4D4D))
         }
@@ -643,6 +649,7 @@ private fun workspacePageTitle(page: WorkspacePage): String {
     WorkspacePage.QUICK_FOLLOWUP -> "精细追问"
     WorkspacePage.COACH -> "AI教练"
     WorkspacePage.ARCHIVE -> "题目归档"
+    WorkspacePage.MISTAKES -> "错题本"
     WorkspacePage.ANKI -> "Anki 练习"
     WorkspacePage.PROFILE -> "用户中心"
   }
@@ -653,6 +660,7 @@ internal val workspacePageRing: List<WorkspacePage> = listOf(
   WorkspacePage.CHAT,
   WorkspacePage.QUICK_FOLLOWUP,
   WorkspacePage.COACH,
+  WorkspacePage.MISTAKES,
   WorkspacePage.PROFILE,
   WorkspacePage.ARCHIVE
 )
@@ -691,6 +699,7 @@ private fun workspacePageSummary(page: WorkspacePage): String {
     WorkspacePage.QUICK_FOLLOWUP -> "只围绕当前题目继续深挖"
     WorkspacePage.COACH -> "每天首次自动复盘，并给你推荐典型题"
     WorkspacePage.ARCHIVE -> "查看已收藏的题目与答案归档"
+    WorkspacePage.MISTAKES -> "拍照录入错题，并按记忆曲线复习"
     WorkspacePage.ANKI -> "自动制卡、待复习与卡组练习"
     WorkspacePage.PROFILE -> "学习画像、薄弱点与模型入口"
   }
