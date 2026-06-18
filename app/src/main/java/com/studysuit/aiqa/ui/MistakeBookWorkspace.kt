@@ -55,6 +55,7 @@ internal fun MistakeBookWorkspace(
   activeDraftId: String?,
   activeReviewId: String?,
   activeReviewSuggestion: MistakeReviewSuggestion?,
+  mistakeAiAnalysis: MistakeBookAiAnalysis?,
   isDueReviewMode: Boolean,
   searchQuery: String,
   onSearchQueryChange: (String) -> Unit,
@@ -62,6 +63,9 @@ internal fun MistakeBookWorkspace(
   onGalleryPick: () -> Unit,
   onOpenDueQueue: () -> Unit,
   onRefreshReminder: () -> Unit,
+  onExport: () -> Unit,
+  onImport: () -> Unit,
+  onAnalyzeWithAi: () -> Unit,
   onConfirmDraft: (MistakeRecognitionDraft) -> Unit,
   onRecordReview: (itemId: String, isCorrect: Boolean, userAnswer: String) -> Unit,
   onRequestJudgement: (itemId: String, userAnswer: String) -> Unit,
@@ -113,7 +117,10 @@ internal fun MistakeBookWorkspace(
       onCameraCapture = onCameraCapture,
       onGalleryPick = onGalleryPick,
       onOpenDueQueue = onOpenDueQueue,
-      onRefreshReminder = onRefreshReminder
+      onRefreshReminder = onRefreshReminder,
+      onExport = onExport,
+      onImport = onImport,
+      onAnalyzeWithAi = onAnalyzeWithAi
     )
 
     MistakeBookTabs(
@@ -137,7 +144,11 @@ internal fun MistakeBookWorkspace(
     )
 
     when (selectedTab) {
-      MistakeBookTab.STATS -> MistakeStatsPanel(stats = stats, items = items)
+      MistakeBookTab.STATS -> MistakeStatsPanel(
+        stats = stats,
+        items = items,
+        analysis = mistakeAiAnalysis
+      )
       MistakeBookTab.DRAFTS -> {
         if (activeDraft != null) {
           MistakeDraftEditor(draft = activeDraft, onConfirmDraft = onConfirmDraft)
@@ -319,7 +330,10 @@ private fun MistakeBookActionStrip(
   onCameraCapture: () -> Unit,
   onGalleryPick: () -> Unit,
   onOpenDueQueue: () -> Unit,
-  onRefreshReminder: () -> Unit
+  onRefreshReminder: () -> Unit,
+  onExport: () -> Unit,
+  onImport: () -> Unit,
+  onAnalyzeWithAi: () -> Unit
 ) {
   Surface(
     color = Color(0xFFFBFEFC),
@@ -369,6 +383,15 @@ private fun MistakeBookActionStrip(
         }
         OutlinedButton(onClick = onOpenDueQueue) {
           Text(text = "今日复习")
+        }
+        OutlinedButton(onClick = onImport) {
+          Text(text = "导入")
+        }
+        OutlinedButton(onClick = onExport) {
+          Text(text = "导出")
+        }
+        OutlinedButton(onClick = onAnalyzeWithAi) {
+          Text(text = "AI分析")
         }
         TextButton(onClick = onRefreshReminder) {
           Text(text = "更新提醒", color = Color(0xFF2D6F5D))
@@ -848,7 +871,8 @@ private fun MistakeAnswerBlock(item: MistakeBookItem) {
 @Composable
 private fun MistakeStatsPanel(
   stats: MistakeBookStats,
-  items: List<MistakeBookItem>
+  items: List<MistakeBookItem>,
+  analysis: MistakeBookAiAnalysis?
 ) {
   Surface(
     color = Color(0xFFFBFEFC),
@@ -885,6 +909,7 @@ private fun MistakeStatsPanel(
         style = MaterialTheme.typography.bodySmall,
         color = Color(0xFF536760)
       )
+      MistakeAiAnalysisPanel(analysis = analysis)
       val latestAttempts = items.flatMap { item -> item.reviewAttempts.map { attempt -> item to attempt } }
         .sortedByDescending { pair -> pair.second.reviewedAt }
         .take(5)
@@ -899,6 +924,69 @@ private fun MistakeStatsPanel(
           )
         }
       }
+    }
+  }
+}
+
+@Composable
+private fun MistakeAiAnalysisPanel(analysis: MistakeBookAiAnalysis?) {
+  Surface(
+    color = Color(0xFFF4F8FF),
+    shape = RoundedCornerShape(12.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .border(1.dp, Color(0x1A567AC8), RoundedCornerShape(12.dp))
+  ) {
+    Column(
+      modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+      Text(
+        text = "AI 学情分析",
+        style = MaterialTheme.typography.labelMedium,
+        color = Color(0xFF37599A)
+      )
+      if (analysis == null) {
+        Text(
+          text = "还没有生成分析。导入错题本后可直接让 AI 总结薄弱点、安排复习节奏和今日行动。",
+          style = MaterialTheme.typography.bodySmall,
+          color = Color(0xFF5C6B86)
+        )
+        return@Column
+      }
+
+      Text(
+        text = analysis.summary,
+        style = MaterialTheme.typography.bodySmall,
+        color = Color(0xFF3C4E71)
+      )
+      MistakeAiAnalysisSection(title = "薄弱点", items = analysis.weaknesses)
+      MistakeAiAnalysisSection(title = "学习计划", items = analysis.plan)
+      MistakeAiAnalysisSection(title = "下一步", items = analysis.nextActions)
+    }
+  }
+}
+
+@Composable
+private fun MistakeAiAnalysisSection(
+  title: String,
+  items: List<String>
+) {
+  if (items.isEmpty()) {
+    return
+  }
+  Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Text(
+      text = title,
+      style = MaterialTheme.typography.labelSmall,
+      color = Color(0xFF5B6F9B)
+    )
+    items.forEach { item ->
+      Text(
+        text = "• $item",
+        style = MaterialTheme.typography.bodySmall,
+        color = Color(0xFF425578)
+      )
     }
   }
 }

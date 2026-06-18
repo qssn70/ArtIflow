@@ -260,6 +260,13 @@ class StudyChatViewModelSupportTest {
   }
 
   @Test
+  fun buildMistakeBookExportFileName_usesTimestampPatternAndJsonSuffix() {
+    val fileName = buildMistakeBookExportFileName(exportedAtMillis = 0L)
+
+    assertTrue(fileName.matches(Regex("错题本-\\d{8}-\\d{6}\\.json")))
+  }
+
+  @Test
   fun splitParagraphs_prefersBlankLineBlocks() {
     val content = "第一段\n\n第二段\n\n第三段"
 
@@ -1013,6 +1020,37 @@ class StudyChatViewModelSupportTest {
     assertEquals("数学", payload.subject)
     assertEquals("解答题", payload.questionType)
     assertEquals(listOf("二次函数", "函数与图像"), payload.knowledgeTags)
+  }
+
+  @Test
+  fun parseMistakeBookAiAnalysis_parsesStructuredJsonPayload() {
+    val payload = parseMistakeBookAiAnalysis(
+      """
+      {
+        "summary": "函数与图像是当前最明显短板。",
+        "weaknesses": ["函数与图像", "审题稳定性"],
+        "plan": ["先复盘近7天错题", "每天2题同类训练"],
+        "next_actions": ["今晚先复习到期错题", "整理二次函数判断清单"]
+      }
+      """.trimIndent()
+    )
+
+    requireNotNull(payload)
+    assertEquals("函数与图像是当前最明显短板。", payload.summary)
+    assertEquals(listOf("函数与图像", "审题稳定性"), payload.weaknesses)
+    assertEquals(listOf("先复盘近7天错题", "每天2题同类训练"), payload.plan)
+    assertEquals(listOf("今晚先复习到期错题", "整理二次函数判断清单"), payload.nextActions)
+  }
+
+  @Test
+  fun parseMistakeBookAiAnalysis_fallsBackToRawTextWhenJsonMissing() {
+    val payload = parseMistakeBookAiAnalysis(
+      "你目前主要卡在函数与图像。建议先集中复习到期错题，再做两道同类题。"
+    )
+
+    requireNotNull(payload)
+    assertTrue(payload.summary.contains("函数与图像"))
+    assertTrue(payload.rawText.contains("集中复习到期错题"))
   }
 
   @Test

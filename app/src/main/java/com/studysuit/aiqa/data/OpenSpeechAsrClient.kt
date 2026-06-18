@@ -1,7 +1,10 @@
 package com.studysuit.aiqa.data
 
 import android.util.Base64
-import com.studysuit.aiqa.BuildConfig
+import com.studysuit.aiqa.DEFAULT_OPENSPEECH_QUERY_URL
+import com.studysuit.aiqa.DEFAULT_OPENSPEECH_RESOURCE_ID
+import com.studysuit.aiqa.DEFAULT_OPENSPEECH_SUBMIT_URL
+import com.studysuit.aiqa.DEFAULT_OPENSPEECH_UID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -14,11 +17,11 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 data class OpenSpeechRuntimeConfig(
-  val apiKey: String = BuildConfig.OPENSPEECH_API_KEY,
-  val resourceId: String = BuildConfig.OPENSPEECH_RESOURCE_ID,
-  val submitUrl: String = BuildConfig.OPENSPEECH_SUBMIT_URL,
-  val queryUrl: String = BuildConfig.OPENSPEECH_QUERY_URL,
-  val uid: String = BuildConfig.OPENSPEECH_UID
+  val apiKey: String = "",
+  val resourceId: String = DEFAULT_OPENSPEECH_RESOURCE_ID,
+  val submitUrl: String = DEFAULT_OPENSPEECH_SUBMIT_URL,
+  val queryUrl: String = DEFAULT_OPENSPEECH_QUERY_URL,
+  val uid: String = DEFAULT_OPENSPEECH_UID
 )
 
 class OpenSpeechAsrClient(
@@ -33,7 +36,7 @@ class OpenSpeechAsrClient(
     config: OpenSpeechRuntimeConfig = OpenSpeechRuntimeConfig()
   ): Result<String> {
     if (!isConfigured(config)) {
-      return Result.failure(IllegalStateException("请先在 local.properties 配置 OpenSpeech 参数"))
+      return Result.failure(IllegalStateException("请先在设置中配置 OpenSpeech 参数"))
     }
 
     if (audioBytes.isEmpty()) {

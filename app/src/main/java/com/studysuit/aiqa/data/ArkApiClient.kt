@@ -1,7 +1,9 @@
 package com.studysuit.aiqa.data
 
 import android.util.Base64
-import com.studysuit.aiqa.BuildConfig
+import com.studysuit.aiqa.DEFAULT_ARK_BASE_URL
+import com.studysuit.aiqa.DEFAULT_ARK_ENDPOINT
+import com.studysuit.aiqa.DEFAULT_ARK_MODEL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -19,11 +21,11 @@ data class ArkRequestMessage(
 )
 
 data class ArkRuntimeConfig(
-  val apiKey: String = BuildConfig.ARK_API_KEY,
-  val model: String = BuildConfig.ARK_MODEL,
-  val baseUrl: String = BuildConfig.ARK_BASE_URL,
-  val endpoint: String = BuildConfig.ARK_ENDPOINT,
-  val systemPrompt: String = BuildConfig.ARK_SYSTEM_PROMPT
+  val apiKey: String = "",
+  val model: String = DEFAULT_ARK_MODEL,
+  val baseUrl: String = DEFAULT_ARK_BASE_URL,
+  val endpoint: String = DEFAULT_ARK_ENDPOINT,
+  val systemPrompt: String = ""
 )
 
 class ArkApiClient(
@@ -42,7 +44,7 @@ class ArkApiClient(
     }
 
     if (!isConfigured(config)) {
-      return Result.failure(IllegalStateException("请先在 local.properties 配置 ARK_API_KEY"))
+      return Result.failure(IllegalStateException("请先在设置中配置 ARK_API_KEY"))
     }
 
     return withContext(Dispatchers.IO) {
@@ -85,7 +87,7 @@ class ArkApiClient(
     }
 
     if (!isConfigured(config)) {
-      return Result.failure(IllegalStateException("请先在 local.properties 配置 ARK_API_KEY"))
+      return Result.failure(IllegalStateException("请先在设置中配置 ARK_API_KEY"))
     }
 
     return withContext(Dispatchers.IO) {
@@ -160,7 +162,7 @@ class ArkApiClient(
     }
 
     if (!isConfigured(config)) {
-      return Result.failure(IllegalStateException("请先在 local.properties 配置 ARK_API_KEY"))
+      return Result.failure(IllegalStateException("请先在设置中配置 ARK_API_KEY"))
     }
 
     return withContext(Dispatchers.IO) {
@@ -234,7 +236,7 @@ class ArkApiClient(
     }
 
     if (!isConfigured(config)) {
-      return Result.failure(IllegalStateException("请先在 local.properties 配置 ARK_API_KEY"))
+      return Result.failure(IllegalStateException("请先在设置中配置 ARK_API_KEY"))
     }
 
     return withContext(Dispatchers.IO) {

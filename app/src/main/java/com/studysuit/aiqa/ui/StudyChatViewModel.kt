@@ -20,6 +20,9 @@ import com.studysuit.aiqa.data.MistakeSrsEngine
 import com.studysuit.aiqa.data.MlKitMistakeOcrClient
 import com.studysuit.aiqa.data.OpenSpeechAsrClient
 import com.studysuit.aiqa.data.UnavailableMistakeOcrClient
+import com.studysuit.aiqa.data.exportMistakeBookText
+import com.studysuit.aiqa.data.importMistakeBookText
+import com.studysuit.aiqa.data.mergeImportedMistakeBookItems
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,7 +37,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
-class StudyChatViewModel : ViewModel() {
+class StudyChatViewModel() : ViewModel() {
   private var messageSeed = 0
   private var spanSeed = 0
   private var detailSeed = 0
@@ -51,6 +54,8 @@ class StudyChatViewModel : ViewModel() {
     arkApiClient = ArkApiClient(),
     openSpeechAsrClient = OpenSpeechAsrClient()
   )
+  private var mistakeBookAnalysisRequester: suspend (List<MistakeBookItem>, RuntimeSettings) -> Result<MistakeBookAiAnalysis?> =
+    { items, settings -> requestCoordinator.analyzeMistakeBook(items, settings) }
   private val mistakeVisionClient = ArkMistakeVisionClient()
   private val secondaryMistakeVisionClient = ArkMistakeVisionClient()
   private val mistakeFusionClient = ArkMistakeFusionClient()
@@ -66,6 +71,12 @@ class StudyChatViewModel : ViewModel() {
 
   init {
     resetConversation()
+  }
+
+  internal constructor(
+    mistakeBookAnalysisRequester: suspend (List<MistakeBookItem>, RuntimeSettings) -> Result<MistakeBookAiAnalysis?>
+  ) : this() {
+    this.mistakeBookAnalysisRequester = mistakeBookAnalysisRequester
   }
 
   fun ensureStorage(context: Context) {
@@ -1170,6 +1181,69 @@ class StudyChatViewModel : ViewModel() {
     }
   }
 
+  fun buildMistakeBookExportJson(): String {
+    return exportMistakeBookText(_uiState.value.mistakeItems)
+  }
+
+  fun importMistakeBookJson(raw: String) {
+    val imported = importMistakeBookText(raw).getOrNull()
+    if (imported == null) {
+      postToast("错题本导入失败：文件格式无效")
+      return
+    }
+
+    updateMistakeItems(persistMistakes = true) { current ->
+      val merged = sortMistakeItems(
+        mergeImportedMistakeBookItems(
+          current = current.mistakeItems,
+          imported = imported
+        )
+      )
+      mistakeSeed = maxOf(mistakeSeed, deriveMistakeSeed(merged))
+      current.copy(
+        activePage = WorkspacePage.MISTAKES,
+        mistakeItems = merged,
+        activeMistakeReviewId = merged.firstOrNull()?.id,
+        activeMistakeDraftId = null,
+        isMistakeDueReviewMode = false,
+        toastMessage = "已导入 ${imported.size} 道错题"
+      )
+    }
+  }
+
+  fun analyzeMistakeBookWithAi() {
+    val items = _uiState.value.mistakeItems
+    if (items.isEmpty()) {
+      postToast("错题本暂无可分析内容")
+      return
+    }
+
+    val settings = _uiState.value.settings
+    startRequest(toastMessage = "正在分析错题本...") { current ->
+      current.copy(activePage = WorkspacePage.MISTAKES)
+    }
+    viewModelScope.launch {
+      val result = mistakeBookAnalysisRequester(items, settings)
+      finishRequest { current ->
+        result.fold(
+          onSuccess = { analysis ->
+            if (analysis == null) {
+              current.copy(toastMessage = "AI 暂未返回有效分析")
+            } else {
+              current.copy(
+                mistakeAiAnalysis = analysis,
+                toastMessage = "AI 已更新错题本分析"
+              )
+            }
+          },
+          onFailure = { error ->
+            current.copy(toastMessage = "错题本分析失败：${resolveErrorHint(error, "网络不可用")}")
+          }
+        )
+      }
+    }
+  }
+
   fun switchWorkspacePage(page: WorkspacePage) {
     updateUiState(persistSession = true) { current ->
       val quickSourceMessageId = if (page == WorkspacePage.QUICK_FOLLOWUP) {
@@ -1415,7 +1489,7 @@ class StudyChatViewModel : ViewModel() {
 
   fun resetSettingsDraft() {
     updateUiState { current ->
-      current.copy(settingsDraft = RuntimeSettings.defaults())
+      current.copy(settingsDraft = current.settings.defaultResetSettings())
     }
   }
 

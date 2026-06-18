@@ -1,26 +1,6 @@
-import java.util.Properties
-
 plugins {
   id("com.android.application")
   id("org.jetbrains.kotlin.android")
-}
-
-val localProperties = Properties().apply {
-  val localFile = rootProject.file("local.properties")
-  if (localFile.exists()) {
-    localFile.inputStream().reader(Charsets.UTF_8).use { reader ->
-      load(reader)
-    }
-  }
-}
-
-fun localValue(key: String, defaultValue: String = ""): String {
-  return localProperties.getProperty(key)?.trim().orEmpty().ifEmpty { defaultValue }
-}
-
-fun String.toBuildConfigString(): String {
-  val escaped = replace("\\", "\\\\").replace("\"", "\\\"")
-  return "\"$escaped\""
 }
 
 android {
@@ -28,31 +8,6 @@ android {
   compileSdk = 35
 
   defaultConfig {
-    val arkApiKey = localValue("ARK_API_KEY")
-    val arkModel = localValue("ARK_MODEL", "doubao-seed-2-0-pro-260215")
-    val arkBaseUrl = localValue("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-    val arkEndpoint = localValue("ARK_ENDPOINT", "responses")
-    val arkSystemPrompt = localValue(
-      "ARK_SYSTEM_PROMPT",
-      "你是中学学习辅导助手。回答简洁明了：先给结论，再给关键点；默认3-6行；不要套话，不要长篇大论。"
-    )
-    val openSpeechApiKey = localValue("OPENSPEECH_API_KEY")
-    val openSpeechResourceId = localValue("OPENSPEECH_RESOURCE_ID", "volc.seedasr.auc")
-    val openSpeechSubmitUrl = localValue(
-      "OPENSPEECH_SUBMIT_URL",
-      "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit"
-    )
-    val openSpeechQueryUrl = localValue(
-      "OPENSPEECH_QUERY_URL",
-      "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query"
-    )
-    val openSpeechAudioUrl = localValue(
-      "OPENSPEECH_AUDIO_URL",
-      "https://lf3-static.bytednsdoc.com/obj/eden-cn/lm_hz_ihsph/ljhwZthlaukjlkulzlp/console/bigtts/zh_female_cancan_mars_bigtts.mp3"
-    )
-    val openSpeechUid = localValue("OPENSPEECH_UID", "豆包语音")
-    val flowStudyServerUrl = localValue("FLOWSTUDY_SERVER_URL")
-
     applicationId = "com.studysuit.aiqa"
     minSdk = 26
     targetSdk = 35
@@ -60,19 +15,6 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-    buildConfigField("String", "ARK_API_KEY", arkApiKey.toBuildConfigString())
-    buildConfigField("String", "ARK_MODEL", arkModel.toBuildConfigString())
-    buildConfigField("String", "ARK_BASE_URL", arkBaseUrl.toBuildConfigString())
-    buildConfigField("String", "ARK_ENDPOINT", arkEndpoint.toBuildConfigString())
-    buildConfigField("String", "ARK_SYSTEM_PROMPT", arkSystemPrompt.toBuildConfigString())
-    buildConfigField("String", "OPENSPEECH_API_KEY", openSpeechApiKey.toBuildConfigString())
-    buildConfigField("String", "OPENSPEECH_RESOURCE_ID", openSpeechResourceId.toBuildConfigString())
-    buildConfigField("String", "OPENSPEECH_SUBMIT_URL", openSpeechSubmitUrl.toBuildConfigString())
-    buildConfigField("String", "OPENSPEECH_QUERY_URL", openSpeechQueryUrl.toBuildConfigString())
-    buildConfigField("String", "OPENSPEECH_AUDIO_URL", openSpeechAudioUrl.toBuildConfigString())
-    buildConfigField("String", "OPENSPEECH_UID", openSpeechUid.toBuildConfigString())
-    buildConfigField("String", "FLOWSTUDY_SERVER_URL", flowStudyServerUrl.toBuildConfigString())
   }
 
   buildTypes {
@@ -138,6 +80,7 @@ dependencies {
   debugImplementation("androidx.compose.ui:ui-test-manifest")
 
   testImplementation("junit:junit:4.13.2")
+  testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
   testImplementation("org.json:json:20240303")
   androidTestImplementation("androidx.test.ext:junit:1.2.1")
   androidTestImplementation("androidx.test:rules:1.6.1")

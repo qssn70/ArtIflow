@@ -3,14 +3,24 @@ package com.studysuit.aiqa.ui
 import com.studysuit.aiqa.data.MistakeRecognitionDraft
 import com.studysuit.aiqa.data.MistakeRecognitionStatus
 import com.studysuit.aiqa.data.MistakeAnswerJudgement
+import com.studysuit.aiqa.data.MistakeBookItem
 import com.studysuit.aiqa.data.MistakeReviewJudgementSource
 import com.studysuit.aiqa.data.MistakeStatus
 import com.studysuit.aiqa.data.MistakeType
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class StudyChatViewModelMistakeBookTest {
+
+  @get:Rule
+  val mainDispatcherRule = MainDispatcherRule()
 
   @Test
   fun confirmMistakeDraftCreatesDueMistakeItem() {
@@ -160,5 +170,126 @@ class StudyChatViewModelMistakeBookTest {
     assertTrue(card.back.contains("错因"))
     assertTrue(card.tags.contains("导数与应用"))
     assertTrue(card.source.contains("错题本"))
+  }
+
+  @Test
+  fun importMistakeBookJson_mergesImportedItemsIntoState() {
+    val viewModel = StudyChatViewModel()
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-old",
+        question = "旧题",
+        correctAnswer = "旧答",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+
+    viewModel.importMistakeBookJson(
+      """
+      {
+        "version": 1,
+        "items": [
+          {
+            "id": "mistake-1",
+            "question": "导入后覆盖的旧题",
+            "correctAnswer": "新答案",
+            "status": "DUE",
+            "createdAt": 2,
+            "updatedAt": 3,
+            "reviewState": {
+              "nextReviewAt": 2,
+              "reviewCount": 0,
+              "correctStreak": 0,
+              "easeFactor": 2.5,
+              "currentIntervalMillis": 0
+            },
+            "reviewAttempts": []
+          },
+          {
+            "id": "mistake-new",
+            "question": "新增导入题",
+            "correctAnswer": "新增答案",
+            "status": "DUE",
+            "createdAt": 4,
+            "updatedAt": 4,
+            "reviewState": {
+              "nextReviewAt": 4,
+              "reviewCount": 0,
+              "correctStreak": 0,
+              "easeFactor": 2.5,
+              "currentIntervalMillis": 0
+            },
+            "reviewAttempts": []
+          }
+        ]
+      }
+      """.trimIndent()
+    )
+
+    val state = viewModel.uiState.value
+    assertEquals(2, state.mistakeItems.size)
+    assertEquals(listOf("mistake-1", "mistake-new"), state.mistakeItems.map { it.id })
+    assertEquals("导入后覆盖的旧题", state.mistakeItems.first().question)
+  }
+
+  @Test
+  fun buildMistakeBookExportJson_returnsSerializedState() {
+    val viewModel = StudyChatViewModel()
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-1",
+        question = "导数题",
+        correctAnswer = "2x",
+        subject = "数学",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+
+    val exported = viewModel.buildMistakeBookExportJson()
+
+    assertTrue(exported.contains("\"version\":1"))
+    assertTrue(exported.contains("导数题"))
+    assertTrue(exported.contains("\"subject\":\"数学\""))
+  }
+
+  @Test
+  fun analyzeMistakeBookWithAi_updatesAnalysisState() = runTest {
+    val viewModel = StudyChatViewModel(
+      mistakeBookAnalysisRequester = { items, _ ->
+        assertEquals(1, items.size)
+        Result.success(
+          MistakeBookAiAnalysis(
+            summary = "函数与图像是当前核心短板",
+            weaknesses = listOf("函数与图像"),
+            plan = listOf("先复习到期错题"),
+            nextActions = listOf("今晚完成2题同类训练"),
+            rawText = ""
+          )
+        )
+      }
+    )
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-1",
+        question = "函数图像题",
+        correctAnswer = "先看定义域",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+
+    viewModel.analyzeMistakeBookWithAi()
+    advanceUntilIdle()
+
+    val analysis = viewModel.uiState.value.mistakeAiAnalysis
+    assertNotNull(analysis)
+    assertEquals("函数与图像是当前核心短板", analysis?.summary)
+    assertEquals(listOf("函数与图像"), analysis?.weaknesses)
+    assertTrue(viewModel.uiState.value.toastMessage?.contains("AI") == true)
   }
 }

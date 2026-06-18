@@ -1,6 +1,13 @@
 package com.studysuit.aiqa.ui
 
-import com.studysuit.aiqa.BuildConfig
+import com.studysuit.aiqa.DEFAULT_ARK_BASE_URL
+import com.studysuit.aiqa.DEFAULT_ARK_ENDPOINT
+import com.studysuit.aiqa.DEFAULT_ARK_MODEL
+import com.studysuit.aiqa.DEFAULT_ARK_SYSTEM_PROMPT
+import com.studysuit.aiqa.DEFAULT_OPENSPEECH_QUERY_URL
+import com.studysuit.aiqa.DEFAULT_OPENSPEECH_RESOURCE_ID
+import com.studysuit.aiqa.DEFAULT_OPENSPEECH_SUBMIT_URL
+import com.studysuit.aiqa.DEFAULT_OPENSPEECH_UID
 import com.studysuit.aiqa.data.ArkRuntimeConfig
 import com.studysuit.aiqa.data.MistakeBookItem
 import com.studysuit.aiqa.data.MistakeRecognitionPipelineConfig
@@ -145,9 +152,6 @@ internal val knowledgeRules = listOf(
 private const val LEGACY_ARK_SYSTEM_PROMPT =
   "你是一个有用的AI学习辅导助手，擅长把复杂知识点讲清楚，优先给步骤化解释。"
 
-private const val DEFAULT_ARK_SYSTEM_PROMPT =
-  "你是中学学习辅导助手。回答简洁明了：先给结论，再给关键点；默认3-6行；不要套话，不要长篇大论。"
-
 internal const val ANKI_CARD_SYSTEM_PROMPT =
   "你是Anki制卡助手。根据学习交互自选最合适卡型，输出可直接测验的卡片；内容简洁准确，不套模板。"
 
@@ -200,18 +204,18 @@ data class RuntimeSettings(
   companion object {
     fun defaults(): RuntimeSettings {
       return RuntimeSettings(
-        arkApiKey = BuildConfig.ARK_API_KEY,
-        arkModel = BuildConfig.ARK_MODEL,
-        arkBaseUrl = BuildConfig.ARK_BASE_URL,
-        arkEndpoint = BuildConfig.ARK_ENDPOINT,
-        arkSystemPrompt = BuildConfig.ARK_SYSTEM_PROMPT,
+        arkApiKey = "",
+        arkModel = DEFAULT_ARK_MODEL,
+        arkBaseUrl = DEFAULT_ARK_BASE_URL,
+        arkEndpoint = DEFAULT_ARK_ENDPOINT,
+        arkSystemPrompt = DEFAULT_ARK_SYSTEM_PROMPT,
         imagePrompt = DEFAULT_IMAGE_PROMPT,
-        openSpeechApiKey = BuildConfig.OPENSPEECH_API_KEY,
-        openSpeechResourceId = BuildConfig.OPENSPEECH_RESOURCE_ID,
-        openSpeechSubmitUrl = BuildConfig.OPENSPEECH_SUBMIT_URL,
-        openSpeechQueryUrl = BuildConfig.OPENSPEECH_QUERY_URL,
-        openSpeechUid = BuildConfig.OPENSPEECH_UID,
-        flowStudyServerUrl = BuildConfig.FLOWSTUDY_SERVER_URL,
+        openSpeechApiKey = "",
+        openSpeechResourceId = DEFAULT_OPENSPEECH_RESOURCE_ID,
+        openSpeechSubmitUrl = DEFAULT_OPENSPEECH_SUBMIT_URL,
+        openSpeechQueryUrl = DEFAULT_OPENSPEECH_QUERY_URL,
+        openSpeechUid = DEFAULT_OPENSPEECH_UID,
+        flowStudyServerUrl = "",
         flowStudyDeviceId = "",
         flowStudyDeviceToken = ""
       )
@@ -403,6 +407,13 @@ internal fun RuntimeSettings.toArkRuntimeConfig(): ArkRuntimeConfig {
   )
 }
 
+internal fun RuntimeSettings.defaultResetSettings(): RuntimeSettings {
+  return RuntimeSettings.defaults().copy(
+    flowStudyDeviceId = flowStudyDeviceId,
+    flowStudyDeviceToken = flowStudyDeviceToken
+  )
+}
+
 internal fun RuntimeSettings.toMistakeRecognitionPipelineConfig(): MistakeRecognitionPipelineConfig {
   val modelCount = mistakeRecognitionModelCount.coerceIn(1, 3)
   val primaryConfig = toArkRuntimeConfig()
@@ -517,6 +528,7 @@ data class ChatUiState(
   val activeMistakeDraftId: String? = null,
   val activeMistakeReviewId: String? = null,
   val activeMistakeReviewSuggestion: MistakeReviewSuggestion? = null,
+  val mistakeAiAnalysis: MistakeBookAiAnalysis? = null,
   val isMistakeDueReviewMode: Boolean = false,
   val mistakeSearchQuery: String = "",
   val knowledgePoints: Map<String, Int> = emptyMap(),
@@ -532,6 +544,14 @@ data class ChatUiState(
   val isSettingsOpen: Boolean = false,
   val settings: RuntimeSettings = RuntimeSettings.defaults(),
   val settingsDraft: RuntimeSettings = RuntimeSettings.defaults()
+)
+
+data class MistakeBookAiAnalysis(
+  val summary: String,
+  val weaknesses: List<String> = emptyList(),
+  val plan: List<String> = emptyList(),
+  val nextActions: List<String> = emptyList(),
+  val rawText: String = ""
 )
 
 data class MistakeReviewSuggestion(

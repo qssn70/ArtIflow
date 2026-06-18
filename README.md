@@ -125,27 +125,7 @@ git clone https://github.com/vimalinx/ArtIflow.git
 cd ArtIflow
 ```
 
-### 2) 配置本地参数
-
-先复制配置模板：
-
-```bash
-cp local.properties.example local.properties
-```
-
-然后按需填写：
-
-- `ARK_API_KEY`
-- `ARK_MODEL`
-- `ARK_BASE_URL`
-- `ARK_ENDPOINT`
-- `OPENSPEECH_API_KEY`
-- `OPENSPEECH_RESOURCE_ID`
-- `FLOWSTUDY_SERVER_URL`（可选）
-
-> `local.properties` 不要提交到仓库。
-
-### 3) 运行项目
+### 2) 构建并安装应用
 
 如果你使用 Android Studio：
 
@@ -158,6 +138,24 @@ cp local.properties.example local.properties
 ```bash
 ./gradlew :app:installDebug
 ```
+
+### 3) 安装后配置运行参数
+
+应用首次安装后，打开应用内 `设置`，按需填写：
+
+- `ARK_API_KEY`
+- `ARK_MODEL`
+- `ARK_BASE_URL`
+- `ARK_ENDPOINT`
+- `OPENSPEECH_API_KEY`
+- `OPENSPEECH_RESOURCE_ID`
+- `FLOWSTUDY_SERVER_URL`（可选）
+
+保存后会写入应用本地存储，后续可直接在设置中修改，无需重新构建安装包。
+
+### 4) 运行项目
+
+安装到设备后直接打开应用即可。
 
 ---
 
@@ -205,7 +203,6 @@ ArtIflow/
 ├── docs/
 │   └── assets/          # README 展示图、封面、GIF、logo
 ├── gradle/
-├── local.properties.example
 └── README.md
 ```
 
@@ -213,13 +210,13 @@ ArtIflow/
 
 ## 🔐 配置说明
 
-项目默认读取 `local.properties` 中的运行参数，并在构建时注入到 `BuildConfig`。
+运行参数不再在构建时写入安装包。
 
-示例配置文件见：`local.properties.example`
+应用启动后使用内置默认模板，实际密钥、模型地址和服务地址都应在应用内 `设置` 中填写，并保存在设备本地。
 
 建议：
 
-- 公开仓库只保留模板，不提交真实密钥
+- 不要把真实密钥写进代码仓库或构建脚本
 - 自建模型地址优先使用测试 key，不要把生产 key 放进公开历史
 - 如果切换无线调试设备，优先重新获取新的 `adb connect` 端口
 

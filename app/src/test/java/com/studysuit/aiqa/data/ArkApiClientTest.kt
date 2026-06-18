@@ -13,6 +13,24 @@ import org.junit.Test
 class ArkApiClientTest {
 
   @Test
+  fun generateReplyWithoutApiKeyPointsUserToInAppSettings(): Unit = runBlocking {
+    val client = ArkApiClient(
+      httpClient = staticHttpClient(
+        code = 200,
+        body = """{"output_text":"unused"}"""
+      )
+    )
+
+    val result = client.generateReply(
+      messages = listOf(ArkRequestMessage(role = "user", text = "讲解这题")),
+      config = runtimeConfig(endpoint = "responses").copy(apiKey = "")
+    )
+
+    assertTrue(result.isFailure)
+    assertEquals("请先在设置中配置 ARK_API_KEY", result.exceptionOrNull()?.message)
+  }
+
+  @Test
   fun generateReplyResponsesEndpointParsesOutputText(): Unit = runBlocking {
     val client = ArkApiClient(
       httpClient = staticHttpClient(

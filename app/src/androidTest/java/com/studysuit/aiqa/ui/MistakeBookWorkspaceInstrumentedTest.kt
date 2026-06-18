@@ -4,8 +4,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -99,6 +101,7 @@ class MistakeBookWorkspaceInstrumentedTest {
           activeDraftId = null,
           activeReviewId = null,
           activeReviewSuggestion = null,
+          mistakeAiAnalysis = null,
           isDueReviewMode = false,
           searchQuery = searchQuery,
           onSearchQueryChange = { searchQuery = it },
@@ -106,6 +109,9 @@ class MistakeBookWorkspaceInstrumentedTest {
           onGalleryPick = {},
           onOpenDueQueue = {},
           onRefreshReminder = {},
+          onExport = {},
+          onImport = {},
+          onAnalyzeWithAi = {},
           onConfirmDraft = {},
           onRecordReview = { _, _, _ -> },
           onRequestJudgement = { _, _ -> },
@@ -122,7 +128,7 @@ class MistakeBookWorkspaceInstrumentedTest {
     composeRule.onNodeWithText("搜索题干 / 知识点 / 错因").performTextInput("函数")
 
     composeRule.onNodeWithText("二次函数顶点式怎么用？").assertIsDisplayed()
-    composeRule.onNodeWithText("牛顿第二定律受力分析").assertDoesNotExist()
+    composeRule.onAllNodesWithText("牛顿第二定律受力分析").assertCountEquals(0)
   }
 
   @Test
@@ -135,7 +141,7 @@ class MistakeBookWorkspaceInstrumentedTest {
 
     setMistakeWorkspace(items = listOf(item), activeReviewId = item.id, isDueReviewMode = true)
 
-    composeRule.onNodeWithText("正确答案：2").assertDoesNotExist()
+    composeRule.onAllNodesWithText("正确答案：2").assertCountEquals(0)
     composeRule.onNodeWithText("显示答案").performScrollTo().performClick()
     composeRule.onNodeWithText("正确答案：2").assertIsDisplayed()
   }
@@ -197,6 +203,7 @@ class MistakeBookWorkspaceInstrumentedTest {
           activeDraftId = activeDraftId,
           activeReviewId = activeReviewId,
           activeReviewSuggestion = activeReviewSuggestion,
+          mistakeAiAnalysis = null,
           isDueReviewMode = isDueReviewMode,
           searchQuery = searchQuery,
           onSearchQueryChange = onSearchQueryChange,
@@ -204,6 +211,9 @@ class MistakeBookWorkspaceInstrumentedTest {
           onGalleryPick = onGalleryPick,
           onOpenDueQueue = onOpenDueQueue,
           onRefreshReminder = onRefreshReminder,
+          onExport = {},
+          onImport = {},
+          onAnalyzeWithAi = {},
           onConfirmDraft = onConfirmDraft,
           onRecordReview = onRecordReview,
           onRequestJudgement = onRequestJudgement,

@@ -236,6 +236,19 @@ internal class StudyChatRequestCoordinator(
     return result.map { raw -> parseMistakeAnswerJudgement(raw) }
   }
 
+  suspend fun analyzeMistakeBook(
+    items: List<MistakeBookItem>,
+    settings: RuntimeSettings
+  ): Result<MistakeBookAiAnalysis?> {
+    val prompt = buildMistakeBookAnalysisPrompt(items)
+    return arkApiClient.generateReply(
+      messages = listOf(ArkRequestMessage(role = "user", text = prompt)),
+      config = settings.toArkRuntimeConfig()
+    ).map { raw ->
+      parseMistakeBookAiAnalysis(raw)
+    }
+  }
+
   private fun buildImageQuestionPrompt(
     imagePrompt: String,
     note: String?,

@@ -87,6 +87,29 @@ fun buildMistakeBookJson(items: List<MistakeBookItem>): JSONObject {
     )
 }
 
+fun exportMistakeBookText(items: List<MistakeBookItem>): String {
+  return buildMistakeBookJson(items).toString()
+}
+
+fun importMistakeBookText(raw: String): Result<List<MistakeBookItem>> {
+  return parseMistakeBookJson(raw)
+}
+
+fun mergeImportedMistakeBookItems(
+  current: List<MistakeBookItem>,
+  imported: List<MistakeBookItem>
+): List<MistakeBookItem> {
+  if (current.isEmpty()) {
+    return imported
+  }
+  if (imported.isEmpty()) {
+    return current
+  }
+
+  val importedIds = imported.map { item -> item.id }.toSet()
+  return imported + current.filterNot { item -> item.id in importedIds }
+}
+
 fun parseMistakeBookJson(raw: String): Result<List<MistakeBookItem>> {
   return runCatching {
     val root = JSONObject(raw)

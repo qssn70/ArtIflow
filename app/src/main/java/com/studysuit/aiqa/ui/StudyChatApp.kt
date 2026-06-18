@@ -84,6 +84,11 @@ private data class FollowupTreeExportDraft(
   val content: String
 )
 
+private data class MistakeBookExportDraft(
+  val fileName: String,
+  val content: String
+)
+
 private data class PendingMistakeAnswerJudgement(
   val itemId: String,
   val userAnswer: String
@@ -101,6 +106,14 @@ private fun writeFollowupTreeExportToUri(context: Context, uri: Uri, content: St
       stream.write(content.toByteArray(Charsets.UTF_8))
     } != null
   }.getOrDefault(false)
+}
+
+private fun readTextFromUri(context: Context, uri: Uri): String? {
+  return runCatching {
+    context.contentResolver.openInputStream(uri)?.use { stream ->
+      stream.readBytes().toString(Charsets.UTF_8)
+    }
+  }.getOrNull()
 }
 
 @Composable
@@ -125,6 +138,7 @@ fun StudyChatApp(
   var lastBackPressedAt by remember { mutableLongStateOf(0L) }
   var pendingImageDrafts by remember { mutableStateOf<List<ComposerImageDraft>>(emptyList()) }
   var pendingFollowupTreeExport by remember { mutableStateOf<FollowupTreeExportDraft?>(null) }
+  var pendingMistakeBookExport by remember { mutableStateOf<MistakeBookExportDraft?>(null) }
   var isWorkspaceJumpOpen by remember { mutableStateOf(false) }
   val knowledgeGapInsights = remember(uiState.messages, uiState.histories, uiState.knowledgePoints) {
     buildKnowledgeGapInsights(
@@ -288,6 +302,44 @@ fun StudyChatApp(
     }
   }
 
+  val mistakeBookExportLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.CreateDocument("application/json")
+  ) { uri ->
+    val exportDraft = pendingMistakeBookExport
+    pendingMistakeBookExport = null
+    if (exportDraft == null) {
+      return@rememberLauncherForActivityResult
+    }
+
+    if (uri == null) {
+      Toast.makeText(context, "已取消导出", Toast.LENGTH_SHORT).show()
+      return@rememberLauncherForActivityResult
+    }
+
+    val exported = writeFollowupTreeExportToUri(context, uri, exportDraft.content)
+    if (exported) {
+      Toast.makeText(context, "错题本已导出为文件", Toast.LENGTH_SHORT).show()
+    } else {
+      Toast.makeText(context, "错题本导出失败，请重试", Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  val mistakeBookImportLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.OpenDocument()
+  ) { uri ->
+    if (uri == null) {
+      Toast.makeText(context, "已取消导入", Toast.LENGTH_SHORT).show()
+      return@rememberLauncherForActivityResult
+    }
+
+    val raw = readTextFromUri(context, uri)
+    if (raw.isNullOrBlank()) {
+      Toast.makeText(context, "错题本读取失败", Toast.LENGTH_SHORT).show()
+    } else {
+      viewModel.importMistakeBookJson(raw)
+    }
+  }
+
   val cameraPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestPermission()
   ) { granted ->
@@ -391,6 +443,36 @@ fun StudyChatApp(
     } else {
       viewModel.refreshMistakeReviewReminder()
     }
+  }
+
+  val onExportMistakeBook: () -> Unit = {
+    if (uiState.mistakeItems.isEmpty()) {
+      Toast.makeText(context, "暂无可导出的错题", Toast.LENGTH_SHORT).show()
+    } else {
+      val exportDraft = MistakeBookExportDraft(
+        fileName = buildMistakeBookExportFileName(),
+        content = viewModel.buildMistakeBookExportJson()
+      )
+      pendingMistakeBookExport = exportDraft
+      runCatching {
+        mistakeBookExportLauncher.launch(exportDraft.fileName)
+      }.onFailure {
+        pendingMistakeBookExport = null
+        Toast.makeText(context, "导出入口不可用", Toast.LENGTH_SHORT).show()
+      }
+    }
+  }
+
+  val onImportMistakeBook: () -> Unit = {
+    runCatching {
+      mistakeBookImportLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+    }.onFailure {
+      Toast.makeText(context, "导入入口不可用", Toast.LENGTH_SHORT).show()
+    }
+  }
+
+  val onAnalyzeMistakeBookWithAi: () -> Unit = {
+    viewModel.analyzeMistakeBookWithAi()
   }
 
   LaunchedEffect(Unit) {
@@ -1038,6 +1120,7 @@ fun StudyChatApp(
                     activeDraftId = uiState.activeMistakeDraftId,
                     activeReviewId = uiState.activeMistakeReviewId,
                     activeReviewSuggestion = uiState.activeMistakeReviewSuggestion,
+                    mistakeAiAnalysis = uiState.mistakeAiAnalysis,
                     isDueReviewMode = uiState.isMistakeDueReviewMode,
                     searchQuery = uiState.mistakeSearchQuery,
                     onSearchQueryChange = viewModel::updateMistakeSearchQuery,
@@ -1045,6 +1128,9 @@ fun StudyChatApp(
                     onGalleryPick = onGalleryMistakePick,
                     onOpenDueQueue = viewModel::openDueMistakeReviewQueue,
                     onRefreshReminder = onRefreshMistakeReminder,
+                    onExport = onExportMistakeBook,
+                    onImport = onImportMistakeBook,
+                    onAnalyzeWithAi = onAnalyzeMistakeBookWithAi,
                     onConfirmDraft = viewModel::confirmMistakeDraft,
                     onRecordReview = { itemId, isCorrect, userAnswer ->
                       viewModel.recordMistakeReview(

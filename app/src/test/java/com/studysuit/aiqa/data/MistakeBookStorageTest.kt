@@ -102,4 +102,60 @@ class MistakeBookStorageTest {
     assertTrue(File(tempFolder.root, ref).exists())
     assertEquals(listOf("capture-one.jpg"), File(tempFolder.root, "mistake_images").list()?.toList())
   }
+
+  @Test
+  fun exportTextAndImportText_roundTripMistakeBookItems() {
+    val items = listOf(
+      MistakeBookItem.create(
+        id = "mistake-1",
+        question = "函数最值",
+        correctAnswer = "先配方再看顶点",
+        subject = "数学",
+        knowledgeTags = listOf("函数与图像"),
+        createdAt = 1_000L
+      )
+    )
+
+    val exported = exportMistakeBookText(items)
+    val imported = importMistakeBookText(exported).getOrThrow()
+
+    assertEquals(items, imported)
+  }
+
+  @Test
+  fun mergeImportedMistakeBookItems_prefersImportedVersionAndKeepsOthers() {
+    val current = listOf(
+      MistakeBookItem.create(
+        id = "mistake-1",
+        question = "旧题干",
+        correctAnswer = "旧答案",
+        createdAt = 1_000L
+      ),
+      MistakeBookItem.create(
+        id = "mistake-2",
+        question = "保留题",
+        correctAnswer = "保留答案",
+        createdAt = 2_000L
+      )
+    )
+    val imported = listOf(
+      MistakeBookItem.create(
+        id = "mistake-1",
+        question = "新题干",
+        correctAnswer = "新答案",
+        createdAt = 3_000L
+      ),
+      MistakeBookItem.create(
+        id = "mistake-3",
+        question = "新增题",
+        correctAnswer = "新增答案",
+        createdAt = 4_000L
+      )
+    )
+
+    val merged = mergeImportedMistakeBookItems(current = current, imported = imported)
+
+    assertEquals(listOf("mistake-1", "mistake-3", "mistake-2"), merged.map { it.id })
+    assertEquals("新题干", merged.first().question)
+  }
 }

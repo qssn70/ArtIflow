@@ -1,6 +1,7 @@
 package com.studysuit.aiqa.ui
 
 import com.studysuit.aiqa.data.ArkRequestMessage
+import com.studysuit.aiqa.data.MistakeBookItem
 import com.studysuit.aiqa.data.QuestionTagger
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
@@ -377,6 +378,117 @@ internal fun buildFollowupTreeExportFileName(exportedAtMillis: Long = System.cur
   val formatter = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.SIMPLIFIED_CHINESE)
   val timestamp = formatter.format(Date(exportedAtMillis))
   return "追问图谱-$timestamp.md"
+}
+
+internal fun buildMistakeBookExportFileName(exportedAtMillis: Long = System.currentTimeMillis()): String {
+  val formatter = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.SIMPLIFIED_CHINESE)
+  val timestamp = formatter.format(Date(exportedAtMillis))
+  return "错题本-$timestamp.json"
+}
+
+internal fun buildMistakeBookAnalysisPrompt(items: List<MistakeBookItem>): String {
+  val stats = buildMistakeBookStats(items)
+  val signals = buildMistakeCoachSignals(items)
+  val recentMistakes = items
+    .take(5)
+    .joinToString(separator = "\n") { item: MistakeBookItem ->
+      buildString {
+        append("- 题目：")
+        append(normalizeCardText(item.question, maxLen = 80))
+        if (item.subject.isNotBlank()) {
+          append("；科目：")
+          append(item.subject)
+        }
+        if (item.knowledgeTags.isNotEmpty()) {
+          append("；知识点：")
+          append(item.knowledgeTags.joinToString(separator = "、"))
+        }
+        if (item.mistakeReason.isNotBlank()) {
+          append("；错因：")
+          append(normalizeCardText(item.mistakeReason, maxLen = 40))
+        }
+        if (item.reviewAttempts.isNotEmpty()) {
+          append("；复习记录：")
+          append(item.reviewAttempts.takeLast(3).joinToString(separator = " / ") { attempt ->
+            if (attempt.isCorrect) "对" else "错"
+          })
+        }
+      }
+    }.ifBlank { "- 暂无代表性错题" }
+
+  return buildString {
+    append("请根据下面的错题本数据，分析学生当前薄弱点，并给出后续复习与学习计划。")
+    append("\n只输出JSON，不要代码块，不要解释。")
+    append("\nJSON格式：")
+    append("""{"summary":"...","weaknesses":["..."],"plan":["..."],"next_actions":["..."]}""")
+    append("\n要求：")
+    append("\n1. summary 用2到4句中文概括当前问题。")
+    append("\n2. weaknesses 提炼1到5个薄弱点或高频问题。")
+    append("\n3. plan 给出3到6条阶段性学习/复习安排。")
+    append("\n4. next_actions 给出2到5条今天就能执行的动作。")
+    append("\n5. 结论要结合错题复习状态，不要空泛。")
+    append("\n\n错题本统计：")
+    append("\n- 总数：${stats.totalCount}")
+    append("\n- 待复习：${stats.dueCount}")
+    append("\n- 已完成：${stats.completedCount}")
+    append("\n- 待完善：${stats.draftCount}")
+    append("\n- 复习记录：${stats.reviewAttemptCount}")
+    append("\n- 近期正确率：${stats.recentAccuracyPercent?.let { "$it%" } ?: "暂无"}")
+    append("\n- 薄弱聚焦：${signals.topWeakLabels.joinToString(separator = "、").ifBlank { "暂无"}}")
+    append("\n- 错题本总结：${signals.summary.ifBlank { "暂无" }}")
+    append("\n\n代表性错题：")
+    append("\n")
+    append(recentMistakes.toString())
+  }
+}
+
+internal fun parseMistakeBookAiAnalysis(raw: String): MistakeBookAiAnalysis? {
+  val payload = parseJsonObjectSafely(raw)
+  if (payload == null) {
+    val normalized = raw.trim()
+    if (normalized.isBlank()) {
+      return null
+    }
+    return MistakeBookAiAnalysis(
+      summary = normalized.lineSequence().firstOrNull { it.trim().isNotBlank() }?.trim().orEmpty().ifBlank { normalized.take(120) },
+      rawText = normalized
+    )
+  }
+
+  fun org.json.JSONObject.readStringList(name: String, maxSize: Int = 6): List<String> {
+    val array = optJSONArray(name) ?: return emptyList()
+    return buildList {
+      for (index in 0 until array.length()) {
+        val value = array.optString(index).trim()
+        if (value.isNotBlank()) {
+          add(value)
+        }
+      }
+    }.distinct().take(maxSize)
+  }
+
+  val summary = payload.optString("summary").trim()
+  val weaknesses = payload.readStringList("weaknesses", maxSize = 5)
+  val plan = payload.readStringList("plan", maxSize = 6)
+  val nextActions = payload.readStringList("next_actions", maxSize = 5)
+
+  if (summary.isBlank() && weaknesses.isEmpty() && plan.isEmpty() && nextActions.isEmpty()) {
+    return null
+  }
+
+  return MistakeBookAiAnalysis(
+    summary = summary.ifBlank {
+      buildList {
+        addAll(weaknesses)
+        addAll(plan)
+        addAll(nextActions)
+      }.firstOrNull().orEmpty()
+    },
+    weaknesses = weaknesses,
+    plan = plan,
+    nextActions = nextActions,
+    rawText = raw.trim()
+  )
 }
 
 internal fun inferKnowledgePoints(text: String): List<String> {
