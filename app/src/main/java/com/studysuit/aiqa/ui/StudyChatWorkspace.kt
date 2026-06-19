@@ -23,8 +23,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -46,6 +49,59 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+
+@Composable
+internal fun HomeMistakeBookEntry(
+  totalCount: Int,
+  dueCount: Int,
+  onOpenMistakeBook: () -> Unit
+) {
+  Surface(
+    color = Color(0xFFFBFEFC),
+    shape = RoundedCornerShape(14.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .border(1.dp, Color(0x173B5D52), RoundedCornerShape(14.dp))
+  ) {
+    Row(
+      modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Column(
+        modifier = Modifier.weight(1f),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+      ) {
+        Text(
+          text = "错题本",
+          style = MaterialTheme.typography.titleSmall,
+          color = Color(0xFF285C4E)
+        )
+        Text(
+          text = "今日待复习 $dueCount 题",
+          style = MaterialTheme.typography.labelMedium,
+          color = Color(0xFF2E6E5A)
+        )
+        Text(
+          text = "已收录 $totalCount 题",
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF667B74)
+        )
+      }
+      Button(onClick = onOpenMistakeBook) {
+        Icon(
+          imageVector = Icons.AutoMirrored.Rounded.MenuBook,
+          contentDescription = null,
+          modifier = Modifier.size(18.dp)
+        )
+        Text(
+          text = "进入错题本",
+          modifier = Modifier.padding(start = 6.dp)
+        )
+      }
+    }
+  }
+}
 
 @Composable
 internal fun AnkiWorkspace(

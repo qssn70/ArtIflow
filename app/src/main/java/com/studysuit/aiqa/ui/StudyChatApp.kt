@@ -661,6 +661,9 @@ fun StudyChatApp(
   val dueCardsToday = remember(uiState.ankiCards) {
     dueReviewCards(uiState.ankiCards)
   }
+  val mistakeBookStats = remember(uiState.mistakeItems) {
+    buildMistakeBookStats(uiState.mistakeItems)
+  }
   val chatListState = rememberLazyListState()
   val quickFollowupListState = rememberLazyListState()
   val coachListState = rememberLazyListState()
@@ -734,7 +737,7 @@ fun StudyChatApp(
       return@LaunchedEffect
     }
 
-    val totalItems = uiState.messages.size + if (uiState.isLoading) 1 else 0
+    val totalItems = 1 + uiState.messages.size + if (uiState.isLoading) 1 else 0
     if (totalItems > 0) {
       chatListState.scrollToItem(totalItems - 1)
     }
@@ -994,6 +997,14 @@ fun StudyChatApp(
             verticalArrangement = Arrangement.spacedBy(10.dp)
           ) {
             if (page == WorkspacePage.CHAT) {
+              item(key = "home-mistake-book-entry") {
+                HomeMistakeBookEntry(
+                  totalCount = mistakeBookStats.totalCount,
+                  dueCount = mistakeBookStats.dueCount,
+                  onOpenMistakeBook = { viewModel.switchWorkspacePage(WorkspacePage.MISTAKES) }
+                )
+              }
+
               items(uiState.messages, key = { it.id }) { message ->
                 when (message) {
                   is ChatMessage.User -> UserBubble(message)
