@@ -9,6 +9,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,8 +17,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -29,6 +31,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.studysuit.aiqa.data.MistakeBookItem
@@ -46,6 +50,8 @@ import com.studysuit.aiqa.data.MistakeRecognitionStatus
 import com.studysuit.aiqa.data.MistakeSrsEngine
 import com.studysuit.aiqa.data.MistakeStatus
 import com.studysuit.aiqa.data.MistakeType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @Composable
@@ -105,63 +111,85 @@ internal fun MistakeBookWorkspace(
     }
   }
 
-  Column(
+  LazyColumn(
     modifier = Modifier
       .fillMaxSize()
-      .verticalScroll(rememberScrollState())
-      .padding(top = 4.dp, bottom = 16.dp),
+      .testTag("mistake-book-list"),
+    contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
     verticalArrangement = Arrangement.spacedBy(10.dp)
   ) {
-    MistakeBookActionStrip(
-      stats = stats,
-      onCameraCapture = onCameraCapture,
-      onGalleryPick = onGalleryPick,
-      onOpenDueQueue = onOpenDueQueue,
-      onRefreshReminder = onRefreshReminder,
-      onExport = onExport,
-      onImport = onImport,
-      onAnalyzeWithAi = onAnalyzeWithAi
-    )
+    item(key = "actions", contentType = "actions") {
+      MistakeBookActionStrip(
+        stats = stats,
+        onCameraCapture = onCameraCapture,
+        onGalleryPick = onGalleryPick,
+        onOpenDueQueue = onOpenDueQueue,
+        onRefreshReminder = onRefreshReminder,
+        onExport = onExport,
+        onImport = onImport,
+        onAnalyzeWithAi = onAnalyzeWithAi
+      )
+    }
 
-    MistakeBookTabs(
-      selectedTab = selectedTab,
-      onSelectTab = { tab -> selectedTab = tab },
-      stats = stats
-    )
+    item(key = "tabs", contentType = "tabs") {
+      MistakeBookTabs(
+        selectedTab = selectedTab,
+        onSelectTab = { tab -> selectedTab = tab },
+        stats = stats
+      )
+    }
 
-    OutlinedTextField(
-      value = searchQuery,
-      onValueChange = onSearchQueryChange,
-      label = { Text(text = "搜索题干 / 知识点 / 错因") },
-      singleLine = true,
-      modifier = Modifier.fillMaxWidth()
-    )
+    item(key = "search", contentType = "search") {
+      OutlinedTextField(
+        value = searchQuery,
+        onValueChange = onSearchQueryChange,
+        label = { Text(text = "搜索题干 / 知识点 / 错因") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+      )
+    }
 
-    MistakeBookFilterBar(
-      options = filterOptions,
-      filters = selectedFilters,
-      onFiltersChange = { filters -> selectedFilters = filters }
-    )
+    item(key = "filters", contentType = "filters") {
+      MistakeBookFilterBar(
+        options = filterOptions,
+        filters = selectedFilters,
+        onFiltersChange = { filters -> selectedFilters = filters }
+      )
+    }
 
     when (selectedTab) {
-      MistakeBookTab.STATS -> MistakeStatsPanel(
-        stats = stats,
-        items = items,
-        analysis = mistakeAiAnalysis
-      )
+      MistakeBookTab.STATS -> item(key = "stats-panel", contentType = "stats") {
+        MistakeStatsPanel(
+          stats = stats,
+          items = items,
+          analysis = mistakeAiAnalysis
+        )
+      }
       MistakeBookTab.DRAFTS -> {
         if (activeDraft != null) {
-          MistakeDraftEditor(draft = activeDraft, onConfirmDraft = onConfirmDraft)
+          item(key = "active-draft-${activeDraft.id}", contentType = "draft-editor") {
+            MistakeDraftEditor(draft = activeDraft, onConfirmDraft = onConfirmDraft)
+          }
         }
         val remainingDrafts = drafts.filterNot { draft -> draft.id == activeDraft?.id }
-        remainingDrafts.forEach { draft ->
+        items(
+          items = remainingDrafts,
+          key = { draft -> "draft-${draft.id}" },
+          contentType = { "draft-summary" }
+        ) { draft ->
           MistakeDraftSummary(draft = draft, onEdit = { onConfirmDraft(draft) })
         }
         val draftItems = filteredItems.filter { item -> item.status == MistakeStatus.DRAFT }
         if (activeDraft == null && draftItems.isEmpty()) {
-          MistakeEmptyState(text = "暂无待完善草稿。")
+          item(key = "drafts-empty", contentType = "empty") {
+            MistakeEmptyState(text = "暂无待完善草稿。")
+          }
         }
-        draftItems.forEach { item ->
+        items(
+          items = draftItems,
+          key = { item -> item.id },
+          contentType = { "mistake-item" }
+        ) { item ->
           MistakeItemCard(
             item = item,
             onAddToAnki = onAddToAnki,
@@ -173,27 +201,35 @@ internal fun MistakeBookWorkspace(
 
       else -> {
         if (selectedTab == MistakeBookTab.DUE && activeReviewItem != null && activeReviewItem.isReadyForReview) {
-          MistakeReviewCard(
-            item = activeReviewItem,
-            suggestion = activeReviewSuggestion?.takeIf { suggestion -> suggestion.itemId == activeReviewItem.id },
-            onRecordReview = onRecordReview,
-            onRequestJudgement = onRequestJudgement,
-            onCameraAnswerCapture = onCameraAnswerCapture,
-            onGalleryAnswerPick = onGalleryAnswerPick,
-            onConfirmJudgement = onConfirmJudgement,
-            onAddToAnki = onAddToAnki
-          )
+          item(key = "review-${activeReviewItem.id}", contentType = "review") {
+            MistakeReviewCard(
+              item = activeReviewItem,
+              suggestion = activeReviewSuggestion?.takeIf { suggestion -> suggestion.itemId == activeReviewItem.id },
+              onRecordReview = onRecordReview,
+              onRequestJudgement = onRequestJudgement,
+              onCameraAnswerCapture = onCameraAnswerCapture,
+              onGalleryAnswerPick = onGalleryAnswerPick,
+              onConfirmJudgement = onConfirmJudgement,
+              onAddToAnki = onAddToAnki
+            )
+          }
         }
         if (filteredItems.isEmpty()) {
-          MistakeEmptyState(
-            text = when (selectedTab) {
-              MistakeBookTab.DUE -> "当前暂无到期错题。"
-              MistakeBookTab.COMPLETED -> "还没有已完成错题。"
-              else -> "暂无匹配错题。"
-            }
-          )
+          item(key = "items-empty-${selectedTab.name}", contentType = "empty") {
+            MistakeEmptyState(
+              text = when (selectedTab) {
+                MistakeBookTab.DUE -> "当前暂无到期错题。"
+                MistakeBookTab.COMPLETED -> "还没有已完成错题。"
+                else -> "暂无匹配错题。"
+              }
+            )
+          }
         } else {
-          filteredItems.forEach { item ->
+          items(
+            items = filteredItems,
+            key = { item -> item.id },
+            contentType = { "mistake-item" }
+          ) { item ->
             MistakeItemCard(
               item = item,
               onAddToAnki = onAddToAnki,
@@ -546,6 +582,7 @@ private fun MistakeDraftEditor(
           modifier = Modifier.weight(1f)
         )
         Button(
+          modifier = Modifier.testTag("confirm-draft-button"),
           onClick = {
             onConfirmDraft(
               draft.copy(
@@ -665,7 +702,8 @@ private fun MistakeReviewCard(
       Row(
         modifier = Modifier
           .fillMaxWidth()
-          .horizontalScroll(rememberScrollState()),
+          .horizontalScroll(rememberScrollState())
+          .testTag("mistake-review-actions"),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
       ) {
@@ -687,7 +725,10 @@ private fun MistakeReviewCard(
         OutlinedButton(onClick = { onRecordReview(item.id, false, userAnswer) }) {
           Text(text = "做错")
         }
-        Button(onClick = { onRecordReview(item.id, true, userAnswer) }) {
+        Button(
+          modifier = Modifier.testTag("mistake-review-correct-button"),
+          onClick = { onRecordReview(item.id, true, userAnswer) }
+        ) {
           Text(text = "做对")
         }
       }
@@ -1070,7 +1111,11 @@ private fun MistakeTypeChip(
 @Composable
 private fun MistakeImagePreview(imageRefs: List<String>) {
   val context = LocalContext.current
-  val bitmaps = remember(context, imageRefs) { loadMistakeBitmaps(context, imageRefs) }
+  val bitmaps by produceState(initialValue = emptyList(), context, imageRefs) {
+    value = withContext(Dispatchers.Default) {
+      loadMistakeBitmaps(context, imageRefs)
+    }
+  }
   if (bitmaps.isEmpty()) {
     return
   }

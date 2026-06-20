@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "StudySuitAIChat"
 include(":app")
+include(":benchmark")

@@ -24,6 +24,7 @@ import com.studysuit.aiqa.data.exportMistakeBookText
 import com.studysuit.aiqa.data.importMistakeBookText
 import com.studysuit.aiqa.data.mergeImportedMistakeBookItems
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -65,6 +67,11 @@ class StudyChatViewModel() : ViewModel() {
   private val sessionRegistry = SessionRegistry()
   private val persistMutex = Mutex()
   private val latestPersistRequestId = AtomicLong(0L)
+  private val persistScheduler = PersistSaveScheduler<PersistSaveRequest>(
+    scope = viewModelScope,
+    debounceMillis = SESSION_PERSIST_DEBOUNCE_MS,
+    save = ::savePersistRequest
+  )
 
   private val _uiState = MutableStateFlow(ChatUiState())
   val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -507,6 +514,7 @@ class StudyChatViewModel() : ViewModel() {
       text = "正在生成教练建议..."
     )
     val streamBuffer = StringBuilder()
+    val streamUpdateThrottler = StreamUpdateThrottler(STREAM_UPDATE_THROTTLE_MS)
 
     val pushPartialAssistant: () -> Unit = {
       val partial = streamBuffer.toString().trimStart()
@@ -552,7 +560,9 @@ class StudyChatViewModel() : ViewModel() {
             }
 
             streamBuffer.append(delta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           }
         )
       },
@@ -622,6 +632,7 @@ class StudyChatViewModel() : ViewModel() {
     val assistantMessageTime = currentTime()
     val streamBuffer = StringBuilder()
     val reasoningBuffer = StringBuilder()
+    val streamUpdateThrottler = StreamUpdateThrottler(STREAM_UPDATE_THROTTLE_MS)
     val previewList = previewImages.take(6).ifEmpty { normalizedImages.take(6) }
     val userMessage = ChatMessage.User(
       id = nextMessageId(),
@@ -687,7 +698,9 @@ class StudyChatViewModel() : ViewModel() {
             }
 
             streamBuffer.append(delta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           },
           onReasoningDelta = { reasoningDelta ->
             if (isTokenStale(requestConversationToken, conversationToken) || reasoningDelta.isBlank()) {
@@ -695,7 +708,9 @@ class StudyChatViewModel() : ViewModel() {
             }
 
             reasoningBuffer.append(reasoningDelta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           }
         )
       },
@@ -1292,6 +1307,48 @@ class StudyChatViewModel() : ViewModel() {
     }
   }
 
+  internal fun applyBenchmarkScenario(scenarioName: String?) {
+    val scenario = BenchmarkScenario.fromWireName(scenarioName) ?: return
+    resetRequestTracking()
+    val benchmarkState = buildBenchmarkScenarioState(scenario)
+    _uiState.value = benchmarkState
+    if (scenario == BenchmarkScenario.STREAM_2_MINUTES) {
+      startBenchmarkStreamSimulation()
+    }
+  }
+
+  private fun startBenchmarkStreamSimulation() {
+    viewModelScope.launch(Dispatchers.Default) {
+      val startedAt = System.currentTimeMillis()
+      var index = 1
+      while (System.currentTimeMillis() - startedAt < BENCHMARK_STREAM_DURATION_MS) {
+        val chunk = buildBenchmarkStreamChunk(index)
+        _uiState.update { current ->
+          current.copy(
+            messages = current.messages.map { message ->
+              if (message is ChatMessage.Assistant && message.id == BENCHMARK_STREAM_ASSISTANT_ID) {
+                val updatedSpans = message.spans.map { span ->
+                  if (span.id == BENCHMARK_STREAM_SPAN_ID) {
+                    span.copy(content = span.content + chunk)
+                  } else {
+                    span
+                  }
+                }
+                message.copy(spans = updatedSpans)
+              } else {
+                message
+              }
+            },
+            isLoading = true
+          )
+        }
+        index += 1
+        delay(BENCHMARK_STREAM_FRAME_MS)
+      }
+      _uiState.update { current -> current.copy(isLoading = false) }
+    }
+  }
+
   fun openQuickFollowup(spanId: String? = null, detailId: String? = null) {
     updateUiState(persistSession = true) { current ->
       val normalizedSpanId = findSpanById(current.messages, spanId)?.id
@@ -1652,6 +1709,7 @@ class StudyChatViewModel() : ViewModel() {
     val detailId = nextDetailId()
     val detailTime = currentDateTime()
     val streamBuffer = StringBuilder()
+    val streamUpdateThrottler = StreamUpdateThrottler(STREAM_UPDATE_THROTTLE_MS)
     val placeholderDetail = SpanDetail(
       id = detailId,
       mode = "自动讲解",
@@ -1681,25 +1739,27 @@ class StudyChatViewModel() : ViewModel() {
           }
 
           streamBuffer.append(delta)
-          val partialAnswer = streamBuffer.toString().trimStart()
-          val partialDetail = placeholderDetail.copy(
-            answer = partialAnswer.ifBlank { "正在生成讲解..." },
-            summary = buildDetailCardSummary(
-              question = null,
-              answer = partialAnswer.ifBlank { "正在生成讲解..." }
+          if (streamUpdateThrottler.shouldPublish()) {
+            val partialAnswer = streamBuffer.toString().trimStart()
+            val partialDetail = placeholderDetail.copy(
+              answer = partialAnswer.ifBlank { "正在生成讲解..." },
+              summary = buildDetailCardSummary(
+                question = null,
+                answer = partialAnswer.ifBlank { "正在生成讲解..." }
+              )
             )
-          )
-          updateUiState(persistSession = false) { current ->
-            upsertSpanDetailHistory(
-              current = current,
-              spanId = spanId,
-              detail = partialDetail
+            updateUiState(persistSession = false) { current ->
+              upsertSpanDetailHistory(
+                current = current,
+                spanId = spanId,
+                detail = partialDetail
+              )
+            }
+            publishBackgroundProgress(
+              preview = partialDetail.answer,
+              status = "正在生成该段讲解..."
             )
           }
-          publishBackgroundProgress(
-            preview = partialDetail.answer,
-            status = "正在生成该段讲解..."
-          )
         }
       },
       onStale = {
@@ -1830,6 +1890,7 @@ class StudyChatViewModel() : ViewModel() {
     val assistantMessageTime = currentTime()
     val streamBuffer = StringBuilder()
     val reasoningBuffer = StringBuilder()
+    val streamUpdateThrottler = StreamUpdateThrottler(STREAM_UPDATE_THROTTLE_MS)
     val assistantPlaceholder = createAssistantMessage(
       content = "正在刷新回答...",
       sourceQuestion = question,
@@ -1877,7 +1938,9 @@ class StudyChatViewModel() : ViewModel() {
             }
 
             streamBuffer.append(delta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           },
           onReasoningDelta = { reasoningDelta ->
             if (isTokenStale(requestConversationToken, conversationToken) || reasoningDelta.isBlank()) {
@@ -1885,7 +1948,9 @@ class StudyChatViewModel() : ViewModel() {
             }
 
             reasoningBuffer.append(reasoningDelta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           }
         )
       },
@@ -1940,6 +2005,7 @@ class StudyChatViewModel() : ViewModel() {
     val assistantMessageTime = currentTime()
     val streamBuffer = StringBuilder()
     val reasoningBuffer = StringBuilder()
+    val streamUpdateThrottler = StreamUpdateThrottler(STREAM_UPDATE_THROTTLE_MS)
     val sourceLabel = sourceUser?.text?.substringBefore('：')?.trim().orEmpty().ifBlank { "图片搜题" }
     val imageCount = imageBytesList.size.coerceAtLeast(1)
     val noteCandidate = sourceUser?.text?.substringAfter('：', "")?.trim().orEmpty()
@@ -1995,7 +2061,9 @@ class StudyChatViewModel() : ViewModel() {
             }
 
             streamBuffer.append(delta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           },
           onReasoningDelta = { reasoningDelta ->
             if (isTokenStale(requestConversationToken, conversationToken) || reasoningDelta.isBlank()) {
@@ -2003,7 +2071,9 @@ class StudyChatViewModel() : ViewModel() {
             }
 
             reasoningBuffer.append(reasoningDelta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           }
         )
       },
@@ -2152,6 +2222,7 @@ class StudyChatViewModel() : ViewModel() {
     val detailId = nextDetailId()
     val detailTime = currentDateTime()
     val streamBuffer = StringBuilder()
+    val streamUpdateThrottler = StreamUpdateThrottler(STREAM_UPDATE_THROTTLE_MS)
     val derivedParentDetailId = parentDetailId ?: run {
       val state = _uiState.value
       if (keepQuickFollowupSpan || state.activePage == WorkspacePage.QUICK_FOLLOWUP) {
@@ -2217,25 +2288,27 @@ class StudyChatViewModel() : ViewModel() {
           }
 
           streamBuffer.append(delta)
-          val partialAnswer = streamBuffer.toString().trimStart()
-          val partialDetail = placeholderDetail.copy(
-            answer = partialAnswer.ifBlank { "正在生成追问回答..." },
-            summary = buildDetailCardSummary(
-              question = normalizedQuestion,
-              answer = partialAnswer.ifBlank { "正在生成追问回答..." }
+          if (streamUpdateThrottler.shouldPublish()) {
+            val partialAnswer = streamBuffer.toString().trimStart()
+            val partialDetail = placeholderDetail.copy(
+              answer = partialAnswer.ifBlank { "正在生成追问回答..." },
+              summary = buildDetailCardSummary(
+                question = normalizedQuestion,
+                answer = partialAnswer.ifBlank { "正在生成追问回答..." }
+              )
             )
-          )
-          updateUiState(persistSession = false) { current ->
-            upsertSpanDetailHistory(
-              current = current,
-              spanId = span.id,
-              detail = partialDetail
+            updateUiState(persistSession = false) { current ->
+              upsertSpanDetailHistory(
+                current = current,
+                spanId = span.id,
+                detail = partialDetail
+              )
+            }
+            publishBackgroundProgress(
+              preview = partialDetail.answer,
+              status = "正在生成追问回答..."
             )
           }
-          publishBackgroundProgress(
-            preview = partialDetail.answer,
-            status = "正在生成追问回答..."
-          )
         }
       },
       onStale = {
@@ -2386,6 +2459,7 @@ class StudyChatViewModel() : ViewModel() {
     )
     val streamBuffer = StringBuilder()
     val reasoningBuffer = StringBuilder()
+    val streamUpdateThrottler = StreamUpdateThrottler(STREAM_UPDATE_THROTTLE_MS)
     val placeholderText = "正在生成第${roundIndex + 1}题..."
     val assistantPlaceholder = createAssistantMessage(
       content = placeholderText,
@@ -2455,14 +2529,18 @@ class StudyChatViewModel() : ViewModel() {
               return@replyForConversationStream
             }
             streamBuffer.append(delta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           },
           onReasoningDelta = { reasoningDelta ->
             if (isTokenStale(requestConversationToken, conversationToken) || reasoningDelta.isBlank()) {
               return@replyForConversationStream
             }
             reasoningBuffer.append(reasoningDelta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           }
         )
       },
@@ -2585,6 +2663,7 @@ class StudyChatViewModel() : ViewModel() {
     )
     val streamBuffer = StringBuilder()
     val reasoningBuffer = StringBuilder()
+    val streamUpdateThrottler = StreamUpdateThrottler(STREAM_UPDATE_THROTTLE_MS)
     val placeholderText = "正在批改第${roundIndex + 1}题..."
     val assistantPlaceholder = createAssistantMessage(
       content = placeholderText,
@@ -2654,14 +2733,18 @@ class StudyChatViewModel() : ViewModel() {
               return@replyForConversationStream
             }
             streamBuffer.append(delta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           },
           onReasoningDelta = { reasoningDelta ->
             if (isTokenStale(requestConversationToken, conversationToken) || reasoningDelta.isBlank()) {
               return@replyForConversationStream
             }
             reasoningBuffer.append(reasoningDelta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           }
         )
       },
@@ -2794,6 +2877,7 @@ class StudyChatViewModel() : ViewModel() {
     val requestMessages = listOf(userMessage)
     val streamBuffer = StringBuilder()
     val reasoningBuffer = StringBuilder()
+    val streamUpdateThrottler = StreamUpdateThrottler(STREAM_UPDATE_THROTTLE_MS)
     val assistantPlaceholder = createAssistantMessage(
       content = "正在生成回答...",
       sourceQuestion = question,
@@ -2855,7 +2939,9 @@ class StudyChatViewModel() : ViewModel() {
             }
 
             streamBuffer.append(delta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           },
           onReasoningDelta = { reasoningDelta ->
             if (isTokenStale(requestConversationToken, conversationToken)) {
@@ -2867,7 +2953,9 @@ class StudyChatViewModel() : ViewModel() {
             }
 
             reasoningBuffer.append(reasoningDelta)
-            pushPartialAssistant()
+            if (streamUpdateThrottler.shouldPublish()) {
+              pushPartialAssistant()
+            }
           }
         )
       },
@@ -3238,16 +3326,20 @@ class StudyChatViewModel() : ViewModel() {
     ) ?: return
     val requestId = latestPersistRequestId.incrementAndGet()
 
-    viewModelScope.launch(Dispatchers.IO) {
+    persistScheduler.request(PersistSaveRequest(store = store, payload = payload, requestId = requestId))
+  }
+
+  private suspend fun savePersistRequest(request: PersistSaveRequest) {
+    withContext(Dispatchers.IO) {
       persistMutex.withLock {
-        if (requestId < latestPersistRequestId.get()) {
+        if (request.requestId < latestPersistRequestId.get()) {
           return@withLock
         }
 
-        val result = store.save(payload)
-        if (result.isFailure && requestId == latestPersistRequestId.get()) {
+        val result = request.store.save(request.payload)
+        if (result.isFailure && request.requestId == latestPersistRequestId.get()) {
           val message = result.exceptionOrNull()?.message.orEmpty().ifBlank { "未知错误" }
-          launch {
+          viewModelScope.launch {
             postToast("本地保存失败：$message")
           }
         }
@@ -3637,6 +3729,7 @@ class StudyChatViewModel() : ViewModel() {
   }
 
   override fun onCleared() {
+    persistScheduler.cancel()
     resetRequestTracking()
     super.onCleared()
   }
@@ -3715,5 +3808,13 @@ class StudyChatViewModel() : ViewModel() {
     private const val BACKGROUND_PROGRESS_PUSH_INTERVAL_MS = 1200L
     private const val BACKGROUND_PROGRESS_MIN_CHARS = 48
     private const val IN_FLIGHT_PERSIST_INTERVAL_MS = 3000L
+    private const val SESSION_PERSIST_DEBOUNCE_MS = 350L
+    private const val STREAM_UPDATE_THROTTLE_MS = 80L
   }
 }
+
+private data class PersistSaveRequest(
+  val store: SessionStorage,
+  val payload: PersistedSessions,
+  val requestId: Long
+)

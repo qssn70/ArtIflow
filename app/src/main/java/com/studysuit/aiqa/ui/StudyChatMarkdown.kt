@@ -14,6 +14,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -141,7 +143,9 @@ private fun LatexMarkdownText(
   }
 
   AndroidView(
-    modifier = modifier,
+    modifier = modifier.semantics {
+      contentDescription = markdown
+    },
     factory = { viewContext ->
       TextView(viewContext).apply {
         setTextIsSelectable(false)
@@ -150,13 +154,46 @@ private fun LatexMarkdownText(
       }
     },
     update = { textView ->
-      textView.setTextColor(textColor.toArgb())
-      textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, fontSizePx)
+      val colorArgb = textColor.toArgb()
+      val gravity = gravityForTextAlign(textAlign)
+      val previousState = textView.tag as? LatexMarkdownViewState
+      if (previousState?.colorArgb != colorArgb) {
+        textView.setTextColor(colorArgb)
+      }
+      if (previousState?.fontSizePx != fontSizePx) {
+        textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, fontSizePx)
+      }
       textView.textAlignment = View.TEXT_ALIGNMENT_GRAVITY
-      textView.gravity = gravityForTextAlign(textAlign)
-      markwon.setMarkdown(textView, markdown)
+      if (previousState?.gravity != gravity) {
+        textView.gravity = gravity
+      }
+      if (shouldRenderLatexMarkdownAgain(previousState, markdown, fontSizePx)) {
+        markwon.setMarkdown(textView, markdown)
+      }
+      textView.contentDescription = markdown
+      textView.tag = LatexMarkdownViewState(
+        markdown = markdown,
+        colorArgb = colorArgb,
+        fontSizePx = fontSizePx,
+        gravity = gravity
+      )
     }
   )
+}
+
+internal data class LatexMarkdownViewState(
+  val markdown: String,
+  val colorArgb: Int,
+  val fontSizePx: Float,
+  val gravity: Int
+)
+
+internal fun shouldRenderLatexMarkdownAgain(
+  previous: LatexMarkdownViewState?,
+  markdown: String,
+  fontSizePx: Float
+): Boolean {
+  return previous?.markdown != markdown || previous.fontSizePx != fontSizePx
 }
 
 internal fun containsLatexMarkdown(markdown: String): Boolean {

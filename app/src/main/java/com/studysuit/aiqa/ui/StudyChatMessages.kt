@@ -1,7 +1,6 @@
 package com.studysuit.aiqa.ui
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -87,9 +86,7 @@ internal fun UserBubble(
       message.imagePreviewBytes?.let { bytes -> listOf(bytes) }.orEmpty()
     }
   }
-  val previewBitmaps = remember(previewByteList) {
-    previewByteList.mapNotNull { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-  }
+  val previewBitmaps by rememberDecodedImageBitmaps(previewByteList)
   var previewDialogIndex by remember(message.id) { mutableStateOf<Int?>(null) }
   val singlePreviewBitmap = previewBitmaps.firstOrNull()
   val previewUsesFit = remember(singlePreviewBitmap) {
@@ -777,9 +774,7 @@ internal fun ComposerBar(
   onClearPendingImages: () -> Unit
 ) {
   var pendingPreviewDialogIndex by remember(pendingImagePreviews) { mutableStateOf<Int?>(null) }
-  val pendingPreviewBitmaps = remember(pendingImagePreviews) {
-    pendingImagePreviews.mapNotNull { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-  }
+  val pendingPreviewBitmaps by rememberDecodedImageBitmaps(pendingImagePreviews)
 
   Column(
     modifier = Modifier.fillMaxWidth(),

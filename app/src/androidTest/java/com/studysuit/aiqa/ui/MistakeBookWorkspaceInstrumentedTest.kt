@@ -6,12 +6,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeUp
+import com.studysuit.aiqa.TestComposeActivity
 import com.studysuit.aiqa.data.MistakeBookItem
 import com.studysuit.aiqa.data.MistakeRecognitionDraft
 import com.studysuit.aiqa.data.MistakeRecognitionStatus
@@ -25,7 +31,7 @@ import org.junit.Test
 class MistakeBookWorkspaceInstrumentedTest {
 
   @get:Rule
-  val composeRule = createComposeRule()
+  val composeRule = createAndroidComposeRule<TestComposeActivity>()
 
   @Test
   fun captureActionsOpenCameraAndGalleryEntrypoints() {
@@ -68,7 +74,11 @@ class MistakeBookWorkspaceInstrumentedTest {
       onConfirmDraft = { savedDraft = it }
     )
 
-    composeRule.onNodeWithText("保存错题").performScrollTo().performClick()
+    composeRule
+      .onNodeWithTag("mistake-book-list")
+      .performScrollToNode(hasTestTag("confirm-draft-button"))
+    scrollListUntilDisplayed("confirm-draft-button")
+    composeRule.onNodeWithTag("confirm-draft-button").performClick()
 
     composeRule.runOnIdle {
       assertEquals("draft-1", savedDraft?.id)
@@ -132,6 +142,64 @@ class MistakeBookWorkspaceInstrumentedTest {
   }
 
   @Test
+  fun twoHundredMistakesCanScrollAndSearch() {
+    var searchQuery by mutableStateOf("")
+    val items = (1..200).map { index ->
+      mistakeItem(
+        id = "mistake-$index",
+        question = "第 $index 道错题：函数图像与参数范围",
+        knowledgeTags = listOf("函数", "错题筛选-$index")
+      )
+    }
+
+    composeRule.setContent {
+      StudySuitTheme {
+        MistakeBookWorkspace(
+          items = items,
+          drafts = emptyList(),
+          activeDraftId = null,
+          activeReviewId = null,
+          activeReviewSuggestion = null,
+          mistakeAiAnalysis = null,
+          isDueReviewMode = false,
+          searchQuery = searchQuery,
+          onSearchQueryChange = { searchQuery = it },
+          onCameraCapture = {},
+          onGalleryPick = {},
+          onOpenDueQueue = {},
+          onRefreshReminder = {},
+          onExport = {},
+          onImport = {},
+          onAnalyzeWithAi = {},
+          onConfirmDraft = {},
+          onRecordReview = { _, _, _ -> },
+          onRequestJudgement = { _, _ -> },
+          onCameraAnswerCapture = { _, _ -> },
+          onGalleryAnswerPick = { _, _ -> },
+          onConfirmJudgement = { _, _ -> },
+          onAddToAnki = {},
+          onDeleteItem = {},
+          onReopenItem = {}
+        )
+      }
+    }
+
+    composeRule
+      .onNodeWithTag("mistake-book-list")
+      .performScrollToNode(hasText("第 200 道错题：函数图像与参数范围"))
+    composeRule.onNodeWithText("第 200 道错题：函数图像与参数范围").assertIsDisplayed()
+    composeRule
+      .onNodeWithTag("mistake-book-list")
+      .performScrollToNode(hasText("搜索题干 / 知识点 / 错因"))
+    composeRule.onNodeWithText("搜索题干 / 知识点 / 错因").performTextInput("错题筛选-199")
+    composeRule
+      .onNodeWithTag("mistake-book-list")
+      .performScrollToNode(hasText("第 199 道错题：函数图像与参数范围"))
+    composeRule.onNodeWithText("第 199 道错题：函数图像与参数范围").assertIsDisplayed()
+    composeRule.onAllNodesWithText("第 200 道错题：函数图像与参数范围").assertCountEquals(0)
+  }
+
+  @Test
   fun reviewCardHidesAnswerUntilUserExpandsIt() {
     val item = mistakeItem(
       id = "mistake-1",
@@ -142,7 +210,10 @@ class MistakeBookWorkspaceInstrumentedTest {
     setMistakeWorkspace(items = listOf(item), activeReviewId = item.id, isDueReviewMode = true)
 
     composeRule.onAllNodesWithText("正确答案：2").assertCountEquals(0)
-    composeRule.onNodeWithText("显示答案").performScrollTo().performClick()
+    composeRule
+      .onNodeWithTag("mistake-book-list")
+      .performScrollToNode(hasText("显示答案"))
+    composeRule.onNodeWithText("显示答案").performClick()
     composeRule.onNodeWithText("正确答案：2").assertIsDisplayed()
   }
 
@@ -164,8 +235,14 @@ class MistakeBookWorkspaceInstrumentedTest {
       }
     )
 
+    composeRule
+      .onNodeWithTag("mistake-book-list")
+      .performScrollToNode(hasText("本次作答"))
     composeRule.onNodeWithText("本次作答").performTextInput("2")
-    composeRule.onNodeWithText("做对").performScrollTo().performClick()
+    composeRule
+      .onNodeWithTag("mistake-review-actions")
+      .performScrollToNode(hasText("做对"))
+    composeRule.onNodeWithTag("mistake-review-correct-button").performClick()
 
     composeRule.runOnIdle {
       assertEquals(Triple("mistake-1", true, "2"), recorded)
@@ -226,6 +303,20 @@ class MistakeBookWorkspaceInstrumentedTest {
         )
       }
     }
+  }
+
+  private fun scrollListUntilDisplayed(tag: String, maxSwipes: Int = 6) {
+    repeat(maxSwipes) {
+      try {
+        composeRule.onNodeWithTag(tag).assertIsDisplayed()
+        return
+      } catch (_: AssertionError) {
+        composeRule.onNodeWithTag("mistake-book-list").performTouchInput {
+          swipeUp()
+        }
+      }
+    }
+    composeRule.onNodeWithTag(tag).assertIsDisplayed()
   }
 
   private fun mistakeItem(

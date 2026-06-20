@@ -71,12 +71,15 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.studysuit.aiqa.data.PcmWavRecorder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private data class ComposerImageDraft(
   val id: String,
   val source: String,
-  val bytes: ByteArray
+  val bytes: ByteArray,
+  val previewBytes: ByteArray
 )
 
 private data class FollowupTreeExportDraft(
@@ -120,7 +123,8 @@ private fun readTextFromUri(context: Context, uri: Uri): String? {
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 fun StudyChatApp(
   viewModel: StudyChatViewModel = viewModel(),
-  mistakeReviewOpenRequest: Int = 0
+  mistakeReviewOpenRequest: Int = 0,
+  benchmarkScenarioName: String? = null
 ) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val snackbarHostState = remember { SnackbarHostState() }
@@ -151,7 +155,7 @@ fun StudyChatApp(
     uiState.savedQuestions.map { saved -> saved.sourceMessageId }.toSet()
   }
 
-  val appendPendingImage: (String, ByteArray) -> Unit = { source, imageBytes ->
+  val appendPendingImage: (String, ByteArray, ByteArray) -> Unit = { source, imageBytes, previewBytes ->
     if (imageBytes.isEmpty()) {
       viewModel.showImageReadFailed("图片读取失败")
     } else if (pendingImageDrafts.size >= 6) {
@@ -160,7 +164,8 @@ fun StudyChatApp(
       val draft = ComposerImageDraft(
         id = "draft-${System.currentTimeMillis()}-${pendingImageDrafts.size}",
         source = source,
-        bytes = imageBytes
+        bytes = imageBytes,
+        previewBytes = previewBytes.takeIf { bytes -> bytes.isNotEmpty() } ?: imageBytes
       )
       pendingImageDrafts = pendingImageDrafts + draft
       Toast.makeText(context, "已加入待上传（${pendingImageDrafts.size}）", Toast.LENGTH_SHORT).show()
@@ -207,20 +212,29 @@ fun StudyChatApp(
       }
       viewModel.showImageSearchCanceled()
     } else {
-      val imageBytes = runCatching { readImageBytes(context, captureUri) }
-        .onFailure { deleteCapturedImage(context, captureUri) }
-        .getOrNull()
-      deleteCapturedImage(context, captureUri)
-      if (imageBytes == null || imageBytes.isEmpty()) {
-        if (target == ImageInputTarget.MISTAKE_ANSWER) {
-          pendingMistakeAnswerJudgement = null
+      appScope.launch {
+        val imageBytes = withContext(Dispatchers.IO) {
+          runCatching { readImageBytes(context, captureUri) }
+            .onFailure { deleteCapturedImage(context, captureUri) }
+            .getOrNull()
+            .also { deleteCapturedImage(context, captureUri) }
         }
-        viewModel.showImageReadFailed("拍照结果为空")
-      } else {
-        when (target) {
-          ImageInputTarget.CHAT -> appendPendingImage("拍照搜题", imageBytes)
-          ImageInputTarget.MISTAKE -> recognizeMistakeImages("拍照录入错题", listOf(imageBytes))
-          ImageInputTarget.MISTAKE_ANSWER -> judgeMistakeAnswerImages(listOf(imageBytes))
+        if (imageBytes == null || imageBytes.isEmpty()) {
+          if (target == ImageInputTarget.MISTAKE_ANSWER) {
+            pendingMistakeAnswerJudgement = null
+          }
+          viewModel.showImageReadFailed("拍照结果为空")
+        } else {
+          when (target) {
+            ImageInputTarget.CHAT -> {
+              val previewBytes = withContext(Dispatchers.Default) {
+                createUiImagePreviewBytes(imageBytes)
+              }
+              appendPendingImage("拍照搜题", imageBytes, previewBytes)
+            }
+            ImageInputTarget.MISTAKE -> recognizeMistakeImages("拍照录入错题", listOf(imageBytes))
+            ImageInputTarget.MISTAKE_ANSWER -> judgeMistakeAnswerImages(listOf(imageBytes))
+          }
         }
       }
     }
@@ -244,11 +258,18 @@ fun StudyChatApp(
     if (uri == null) {
       viewModel.showImageSearchCanceled()
     } else {
-      val imageBytes = runCatching { readImageBytes(context, uri) }.getOrNull()
-      if (imageBytes == null || imageBytes.isEmpty()) {
-        viewModel.showImageReadFailed("相册图片读取失败")
-      } else {
-        appendPendingImage("相册搜题", imageBytes)
+      appScope.launch {
+        val imageBytes = withContext(Dispatchers.IO) {
+          runCatching { readImageBytes(context, uri) }.getOrNull()
+        }
+        if (imageBytes == null || imageBytes.isEmpty()) {
+          viewModel.showImageReadFailed("相册图片读取失败")
+        } else {
+          val previewBytes = withContext(Dispatchers.Default) {
+            createUiImagePreviewBytes(imageBytes)
+          }
+          appendPendingImage("相册搜题", imageBytes, previewBytes)
+        }
       }
     }
   }
@@ -259,10 +280,14 @@ fun StudyChatApp(
     if (uris.isEmpty()) {
       viewModel.showImageSearchCanceled()
     } else {
-      val imageBytesList = uris.mapNotNull { uri ->
-        runCatching { readImageBytes(context, uri) }.getOrNull()?.takeIf { bytes -> bytes.isNotEmpty() }
+      appScope.launch {
+        val imageBytesList = withContext(Dispatchers.IO) {
+          uris.mapNotNull { uri ->
+            runCatching { readImageBytes(context, uri) }.getOrNull()?.takeIf { bytes -> bytes.isNotEmpty() }
+          }
+        }
+        recognizeMistakeImages("相册录入错题", imageBytesList)
       }
-      recognizeMistakeImages("相册录入错题", imageBytesList)
     }
   }
 
@@ -273,10 +298,14 @@ fun StudyChatApp(
       pendingMistakeAnswerJudgement = null
       viewModel.showImageSearchCanceled()
     } else {
-      val imageBytesList = uris.mapNotNull { uri ->
-        runCatching { readImageBytes(context, uri) }.getOrNull()?.takeIf { bytes -> bytes.isNotEmpty() }
+      appScope.launch {
+        val imageBytesList = withContext(Dispatchers.IO) {
+          uris.mapNotNull { uri ->
+            runCatching { readImageBytes(context, uri) }.getOrNull()?.takeIf { bytes -> bytes.isNotEmpty() }
+          }
+        }
+        judgeMistakeAnswerImages(imageBytesList)
       }
-      judgeMistakeAnswerImages(imageBytesList)
     }
   }
 
@@ -475,8 +504,9 @@ fun StudyChatApp(
     viewModel.analyzeMistakeBookWithAi()
   }
 
-  LaunchedEffect(Unit) {
+  LaunchedEffect(benchmarkScenarioName) {
     viewModel.ensureStorage(context)
+    viewModel.applyBenchmarkScenario(benchmarkScenarioName)
   }
 
   LaunchedEffect(mistakeReviewOpenRequest) {
@@ -997,7 +1027,7 @@ fun StudyChatApp(
             verticalArrangement = Arrangement.spacedBy(10.dp)
           ) {
             if (page == WorkspacePage.CHAT) {
-              item(key = "home-mistake-book-entry") {
+              item(key = "home-mistake-book-entry", contentType = "home-mistake-book-entry") {
                 HomeMistakeBookEntry(
                   totalCount = mistakeBookStats.totalCount,
                   dueCount = mistakeBookStats.dueCount,
@@ -1005,7 +1035,16 @@ fun StudyChatApp(
                 )
               }
 
-              items(uiState.messages, key = { it.id }) { message ->
+              items(
+                items = uiState.messages,
+                key = { it.id },
+                contentType = { message ->
+                  when (message) {
+                    is ChatMessage.User -> "chat-user"
+                    is ChatMessage.Assistant -> "chat-assistant"
+                  }
+                }
+              ) { message ->
                 when (message) {
                   is ChatMessage.User -> UserBubble(message)
                   is ChatMessage.Assistant -> AssistantBubble(
@@ -1030,17 +1069,26 @@ fun StudyChatApp(
               }
 
               if (uiState.isLoading) {
-                item(key = "assistant-loading") {
+                item(key = "assistant-loading", contentType = "assistant-loading") {
                   AssistantLoadingBubble()
                 }
               }
             } else if (page == WorkspacePage.QUICK_FOLLOWUP) {
               if (quickFollowupMessages.isEmpty()) {
-                item(key = "quick-followup-empty") {
+                item(key = "quick-followup-empty", contentType = "quick-followup-empty") {
                   AssistantLoadingBubble()
                 }
               } else {
-                items(quickFollowupMessages, key = { it.id }) { message ->
+                items(
+                  items = quickFollowupMessages,
+                  key = { it.id },
+                  contentType = { message ->
+                    when (message) {
+                      is ChatMessage.User -> "quick-followup-user"
+                      is ChatMessage.Assistant -> "quick-followup-assistant"
+                    }
+                  }
+                ) { message ->
                   when (message) {
                     is ChatMessage.User -> UserBubble(message)
                     is ChatMessage.Assistant -> AssistantBubble(
@@ -1066,12 +1114,12 @@ fun StudyChatApp(
               }
 
               if (uiState.isLoading) {
-                item(key = "quick-followup-loading") {
+                item(key = "quick-followup-loading", contentType = "quick-followup-loading") {
                   AssistantLoadingBubble()
                 }
               }
             } else if (page == WorkspacePage.COACH) {
-              item(key = "coach-digest") {
+              item(key = "coach-digest", contentType = "coach-digest") {
                 CoachDigestCard(
                   digest = uiState.coachDigest,
                   hasActiveTraining = uiState.dailyTraining.isActive && uiState.dailyTraining.dateKey == currentCoachDateKey(),
@@ -1083,11 +1131,15 @@ fun StudyChatApp(
                 )
               }
               if (uiState.coachMessages.isEmpty()) {
-                item(key = "coach-empty") {
+                item(key = "coach-empty", contentType = "coach-empty") {
                   CoachEmptyState()
                 }
               } else {
-                items(coachTurns.asReversed(), key = { it.id }) { turn ->
+                items(
+                  items = coachTurns.asReversed(),
+                  key = { it.id },
+                  contentType = { "coach-turn" }
+                ) { turn ->
                   Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     turn.messages.forEach { message ->
                       val quickActions = if (message.id == latestCoachAssistantId) {
@@ -1110,7 +1162,7 @@ fun StudyChatApp(
                 }
               }
             } else if (page == WorkspacePage.ARCHIVE) {
-              item(key = "archive-workspace") {
+              item(key = "archive-workspace", contentType = "archive-workspace") {
                 Box(modifier = Modifier.fillParentMaxSize()) {
                   QuestionArchiveWorkspace(
                     savedQuestions = uiState.savedQuestions,
@@ -1123,7 +1175,7 @@ fun StudyChatApp(
                 }
               }
             } else if (page == WorkspacePage.MISTAKES) {
-              item(key = "mistake-workspace") {
+              item(key = "mistake-workspace", contentType = "mistake-workspace") {
                 Box(modifier = Modifier.fillParentMaxSize()) {
                   MistakeBookWorkspace(
                     items = uiState.mistakeItems,
@@ -1213,7 +1265,7 @@ fun StudyChatApp(
           ) {
             ComposerBar(
               input = uiState.input,
-              pendingImagePreviews = pendingImageDrafts.map { draft -> draft.bytes },
+              pendingImagePreviews = pendingImageDrafts.map { draft -> draft.previewBytes },
               isLoading = uiState.isLoading,
               onInputChanged = viewModel::onInputChanged,
               onSend = {
@@ -1235,7 +1287,7 @@ fun StudyChatApp(
                       source = source,
                       note = note,
                       imageCount = pendingImageDrafts.size,
-                      previewImages = pendingImageDrafts.map { draft -> draft.bytes }
+                      previewImages = pendingImageDrafts.map { draft -> draft.previewBytes }
                     )
                     pendingImageDrafts = emptyList()
                     if (uiState.input.isNotBlank()) {

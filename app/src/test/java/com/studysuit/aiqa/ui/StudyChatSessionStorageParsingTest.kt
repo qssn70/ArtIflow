@@ -1,12 +1,19 @@
 package com.studysuit.aiqa.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.junit.Rule
+import org.json.JSONObject
 
 class StudyChatSessionStorageParsingTest {
+  @get:Rule
+  val tempFolder = TemporaryFolder()
 
   @Test
   fun parsePersistedSessionsJsonWithEmptySessionsKeepsSettingsPayload() {
@@ -122,6 +129,114 @@ class StudyChatSessionStorageParsingTest {
     val result = parsePersistedSessionsJson("{not-valid-json")
 
     assertTrue(result.isFailure)
+  }
+
+  @Test
+  fun exportPersistedSessionsJsonV2StoresImageRefsOutsideJson() {
+    val chatImage = byteArrayOf(1, 2, 3, 4, 5)
+    val savedImage = byteArrayOf(9, 8, 7, 6, 5)
+    val imageStore = SessionImageStore(tempFolder.newFolder("files"))
+    val payload = persistedSessionsWithImages(chatImage = chatImage, savedImage = savedImage)
+
+    val raw = exportPersistedSessionsJson(payload = payload, imageStore = imageStore)
+    val root = JSONObject(raw)
+    val session = root.getJSONArray("sessions").getJSONObject(0)
+    val user = session.getJSONArray("messages").getJSONObject(0)
+    val saved = session.getJSONArray("savedQuestions").getJSONObject(0)
+
+    assertEquals(2, root.getInt("version"))
+    assertFalse(raw.contains("AQIDBAU="))
+    assertFalse(raw.contains("CQgHBgU="))
+    assertFalse(user.has("image"))
+    assertFalse(user.has("images"))
+    assertFalse(saved.has("image"))
+    assertFalse(saved.has("images"))
+    assertEquals(1, user.getJSONArray("imageRefs").length())
+    assertEquals(1, saved.getJSONArray("imageRefs").length())
+
+    val userRef = user.getJSONArray("imageRefs").getJSONObject(0)
+    val savedRef = saved.getJSONArray("imageRefs").getJSONObject(0)
+    assertArrayEquals(chatImage, imageStore.readImageBytes(userRef.toStoredImageRefForTest()))
+    assertArrayEquals(savedImage, imageStore.readImageBytes(savedRef.toStoredImageRefForTest()))
+  }
+
+  @Test
+  fun exportPortablePersistedSessionsJsonKeepsImagesInlineForMigration() {
+    val chatImage = byteArrayOf(1, 2, 3, 4, 5)
+    val savedImage = byteArrayOf(9, 8, 7, 6, 5)
+    val payload = persistedSessionsWithImages(chatImage = chatImage, savedImage = savedImage)
+
+    val raw = exportPortablePersistedSessionsJson(payload)
+    val root = JSONObject(raw)
+    val session = root.getJSONArray("sessions").getJSONObject(0)
+    val user = session.getJSONArray("messages").getJSONObject(0)
+    val saved = session.getJSONArray("savedQuestions").getJSONObject(0)
+
+    assertEquals(1, root.getInt("version"))
+    assertFalse(user.has("imageRefs"))
+    assertFalse(saved.has("imageRefs"))
+    assertEquals("AQIDBAU=", user.getJSONArray("images").getString(0))
+    assertEquals("CQgHBgU=", saved.getJSONArray("images").getString(0))
+  }
+
+  @Test
+  fun parsePersistedSessionsJsonV2ResolvesImageRefsFromStore() {
+    val chatImage = byteArrayOf(4, 5, 6, 7)
+    val savedImage = byteArrayOf(7, 6, 5, 4)
+    val imageStore = SessionImageStore(tempFolder.newFolder("files"))
+    val chatRef = imageStore.saveImages(ownerId = "msg-1", images = listOf(chatImage)).single()
+    val savedRef = imageStore.saveImages(ownerId = "saved-1", images = listOf(savedImage)).single()
+    val raw = """
+      {
+        "version": 2,
+        "activeSessionId": "session-1",
+        "settings": {},
+        "sessions": [
+          {
+            "id": "session-1",
+            "title": "主界面",
+            "createdAt": 1,
+            "updatedAt": 2,
+            "input": "",
+            "activePage": "CHAT",
+            "profile": { "level": "高二" },
+            "messages": [
+              {
+                "type": "user",
+                "id": "msg-1",
+                "time": "10:00",
+                "text": "拍照题",
+                "imageRefs": [${chatRef.toJsonForTest()}]
+              }
+            ],
+            "savedQuestions": [
+              {
+                "id": "saved-1",
+                "sourceMessageId": "msg-2",
+                "question": "这题怎么做",
+                "answer": "先列式。",
+                "sourceTime": "10:01",
+                "savedAt": 99,
+                "imageRefs": [${savedRef.toJsonForTest()}]
+              }
+            ],
+            "knowledgePoints": {},
+            "ankiCards": [],
+            "histories": {}
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val parsed = parsePersistedSessionsJson(raw = raw, imageStore = imageStore).getOrThrow()
+    val session = parsed.sessions.single()
+    val user = session.messages.single() as ChatMessage.User
+    val saved = session.savedQuestions.single()
+
+    assertArrayEquals(chatImage, user.imagePreviewBytes)
+    assertArrayEquals(chatImage, user.imagePreviewList.single())
+    assertArrayEquals(savedImage, saved.imagePreviewBytes)
+    assertArrayEquals(savedImage, saved.imagePreviewList.single())
   }
 
   @Test
@@ -286,5 +401,89 @@ class StudyChatSessionStorageParsingTest {
     assertEquals("assistant-main-msg-2", assistant.mainSpan?.id)
     assertTrue(assistant.mainSpan?.content.orEmpty().contains("第一段"))
     assertTrue(assistant.mainSpan?.content.orEmpty().contains("第二段"))
+  }
+
+  @Test
+  fun shouldRewritePersistedSessionsJsonDetectsLegacyVersionForMigration() {
+    val legacyRaw = """
+      {
+        "version": 1,
+        "activeSessionId": "session-1",
+        "settings": {},
+        "sessions": []
+      }
+    """.trimIndent()
+    val currentRaw = """
+      {
+        "version": 2,
+        "activeSessionId": "session-1",
+        "settings": {},
+        "sessions": []
+      }
+    """.trimIndent()
+
+    assertTrue(shouldRewritePersistedSessionsJson(legacyRaw))
+    assertFalse(shouldRewritePersistedSessionsJson(currentRaw))
+  }
+
+  private fun persistedSessionsWithImages(
+    chatImage: ByteArray,
+    savedImage: ByteArray
+  ): PersistedSessions {
+    return PersistedSessions(
+      activeSessionId = "session-1",
+      settings = RuntimeSettings.defaults(),
+      sessions = listOf(
+        StoredSession(
+          id = "session-1",
+          title = "主界面",
+          createdAt = 1L,
+          updatedAt = 2L,
+          messages = listOf(
+            ChatMessage.User(
+              id = "msg-1",
+              time = "10:00",
+              text = "拍照题",
+              imagePreviewBytes = chatImage,
+              imagePreviewList = listOf(chatImage)
+            )
+          ),
+          histories = emptyMap(),
+          profile = ProfileState(level = "高二"),
+          input = "",
+          activePage = WorkspacePage.CHAT,
+          savedQuestions = listOf(
+            SavedQuestion(
+              id = "saved-1",
+              sourceMessageId = "msg-2",
+              question = "这题怎么做",
+              answer = "先列式。",
+              sourceTime = "10:01",
+              savedAt = 99L,
+              imagePreviewBytes = savedImage,
+              imagePreviewList = listOf(savedImage)
+            )
+          ),
+          knowledgePoints = emptyMap(),
+          ankiCards = emptyList()
+        )
+      )
+    )
+  }
+
+  private fun StoredImageRef.toJsonForTest(): String {
+    return JSONObject()
+      .put("id", id)
+      .put("path", path)
+      .put("mimeType", mimeType)
+      .toString()
+  }
+
+  private fun JSONObject.toStoredImageRefForTest(): StoredImageRef {
+    return StoredImageRef(
+      id = getString("id"),
+      path = getString("path"),
+      mimeType = getString("mimeType")
+    )
   }
 }

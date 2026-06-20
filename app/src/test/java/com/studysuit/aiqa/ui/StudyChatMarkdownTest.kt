@@ -105,6 +105,38 @@ class StudyChatMarkdownTest {
   }
 
   @Test
+  fun shouldRenderLatexMarkdownAgain_onlyWhenMarkdownOrFontSizeChanges() {
+    val previous = LatexMarkdownViewState(
+      markdown = "公式 ${'$'}${'$'}x^2${'$'}${'$'}",
+      colorArgb = 0xFF000000.toInt(),
+      fontSizePx = 18f,
+      gravity = 1
+    )
+
+    assertFalse(
+      shouldRenderLatexMarkdownAgain(
+        previous = previous,
+        markdown = previous.markdown,
+        fontSizePx = previous.fontSizePx
+      )
+    )
+    assertTrue(
+      shouldRenderLatexMarkdownAgain(
+        previous = previous,
+        markdown = "公式 ${'$'}${'$'}x^3${'$'}${'$'}",
+        fontSizePx = previous.fontSizePx
+      )
+    )
+    assertTrue(
+      shouldRenderLatexMarkdownAgain(
+        previous = previous,
+        markdown = previous.markdown,
+        fontSizePx = 20f
+      )
+    )
+  }
+
+  @Test
   fun splitParagraphs_keepsWholeReplyWhenInlineLatexExists() {
     val markdown = "先看结论：当 x=1 时，${'$'}f(x)=x^2+1${'$'}。\n\n再代入中文说明。"
 

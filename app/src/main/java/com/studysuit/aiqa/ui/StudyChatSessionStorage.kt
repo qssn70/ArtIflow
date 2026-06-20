@@ -1,11 +1,13 @@
 package com.studysuit.aiqa.ui
 
 import android.content.Context
-import android.util.Base64
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.Base64
 
 internal data class StoredSession(
   val id: String,
@@ -37,32 +39,21 @@ internal data class PersistedSessions(
 
 internal class SessionStorage(private val context: Context) {
   private val storageFile = File(context.filesDir, "study_suit_sessions_v1.json")
+  private val imageStore = SessionImageStore(context.filesDir)
 
   fun exportPayloadJson(payload: PersistedSessions): String {
-    return buildRootJson(payload).toString()
+    return exportPortablePersistedSessionsJson(payload)
   }
 
   fun save(payload: PersistedSessions): Result<Unit> {
     return runCatching {
-      val root = buildRootJson(payload)
+      val raw = exportPersistedSessionsJson(payload = payload, imageStore = imageStore)
 
       storageFile.parentFile?.mkdirs()
-      storageFile.writeText(root.toString(), Charsets.UTF_8)
+      writeTextAtomically(storageFile, raw)
     }.onFailure { error ->
       Log.w(TAG, "Failed to persist sessions", error)
     }
-  }
-
-  private fun buildRootJson(payload: PersistedSessions): JSONObject {
-    return JSONObject()
-      .put("version", 1)
-      .put("activeSessionId", payload.activeSessionId)
-      .put("settings", payload.settings.toJson())
-      .put("sessions", JSONArray().apply {
-        payload.sessions.forEach { session ->
-          put(session.toJson())
-        }
-      })
   }
 
   fun load(): PersistedSessions? {
@@ -76,9 +67,15 @@ internal class SessionStorage(private val context: Context) {
       Log.w(TAG, "Failed to read persisted sessions", error)
     }.getOrNull() ?: return null
 
-    return parsePersistedSessionsJson(raw).onFailure { error ->
+    val parsed = parsePersistedSessionsJson(raw = raw, imageStore = imageStore).onFailure { error ->
       Log.w(TAG, "Failed to restore sessions", error)
-    }.getOrNull()
+    }.getOrNull() ?: return null
+
+    if (shouldRewritePersistedSessionsJson(raw)) {
+      save(parsed)
+    }
+
+    return parsed
   }
 
   private companion object {
@@ -86,7 +83,53 @@ internal class SessionStorage(private val context: Context) {
   }
 }
 
-internal fun parsePersistedSessionsJson(raw: String): Result<PersistedSessions> {
+internal fun exportPersistedSessionsJson(
+  payload: PersistedSessions,
+  imageStore: SessionImageStore? = null
+): String {
+  return buildRootJson(payload = payload, imageStore = imageStore).toString()
+}
+
+internal fun exportPortablePersistedSessionsJson(payload: PersistedSessions): String {
+  return exportPersistedSessionsJson(payload = payload, imageStore = null)
+}
+
+private fun buildRootJson(
+  payload: PersistedSessions,
+  imageStore: SessionImageStore?
+): JSONObject {
+  return JSONObject()
+    .put("version", if (imageStore == null) 1 else 2)
+    .put("activeSessionId", payload.activeSessionId)
+    .put("settings", payload.settings.toJson())
+    .put("sessions", JSONArray().apply {
+      payload.sessions.forEach { session ->
+        put(session.toJson(imageStore = imageStore))
+      }
+    })
+}
+
+private fun writeTextAtomically(file: File, text: String) {
+  val parent = file.parentFile ?: file.absoluteFile.parentFile
+  parent?.mkdirs()
+  val tempFile = File(parent, "${file.name}.tmp")
+  tempFile.writeText(text, Charsets.UTF_8)
+  runCatching {
+    Files.move(
+      tempFile.toPath(),
+      file.toPath(),
+      StandardCopyOption.REPLACE_EXISTING,
+      StandardCopyOption.ATOMIC_MOVE
+    )
+  }.getOrElse {
+    Files.move(tempFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+  }
+}
+
+internal fun parsePersistedSessionsJson(
+  raw: String,
+  imageStore: SessionImageStore? = null
+): Result<PersistedSessions> {
   return runCatching {
     val root = JSONObject(raw)
     val activeSessionId = root.optString("activeSessionId").trim()
@@ -96,7 +139,7 @@ internal fun parsePersistedSessionsJson(raw: String): Result<PersistedSessions> 
         buildList {
           for (index in 0 until array.length()) {
             val item = array.optJSONObject(index) ?: continue
-            item.toStoredSession()?.let { session -> add(session) }
+            item.toStoredSession(imageStore = imageStore)?.let { session -> add(session) }
           }
         }
       }
@@ -218,7 +261,7 @@ private fun JSONArray.toModelPresets(): List<ModelPreset> {
 
 private const val LEGACY_ARK_MODEL = "doubao-seed-1-8-251228"
 
-private fun StoredSession.toJson(): JSONObject {
+private fun StoredSession.toJson(imageStore: SessionImageStore?): JSONObject {
   return JSONObject()
     .put("id", id)
     .put("title", title)
@@ -233,17 +276,17 @@ private fun StoredSession.toJson(): JSONObject {
     .put("coachMessages", JSONArray().apply { coachMessages.forEach { message -> put(message.toJson()) } })
     .put("coachDigest", coachDigest?.toJson() ?: JSONObject.NULL)
     .put("dailyTraining", dailyTraining.toJson())
-    .put("savedQuestions", JSONArray().apply { savedQuestions.forEach { question -> put(question.toJson()) } })
+    .put("savedQuestions", JSONArray().apply { savedQuestions.forEach { question -> put(question.toJson(imageStore)) } })
     .put("profile", profile.toJson())
     .put("messages", JSONArray().apply {
-      messages.forEach { message -> put(message.toJson()) }
+      messages.forEach { message -> put(message.toJson(imageStore)) }
     })
     .put("knowledgePoints", knowledgePoints.toKnowledgePointsJson())
     .put("ankiCards", ankiCards.toJson())
     .put("histories", histories.toJson())
 }
 
-private fun JSONObject.toStoredSession(): StoredSession? {
+private fun JSONObject.toStoredSession(imageStore: SessionImageStore?): StoredSession? {
   val id = optString("id").trim()
   if (id.isBlank()) {
     return null
@@ -256,7 +299,7 @@ private fun JSONObject.toStoredSession(): StoredSession? {
   val coachInput = optString("coachInput")
 
   val profile = optJSONObject("profile")?.toProfileState() ?: ProfileState(level = "高二 · 进阶冲刺")
-  val messages = optJSONArray("messages")?.toChatMessages().orEmpty()
+  val messages = optJSONArray("messages")?.toChatMessages(imageStore = imageStore).orEmpty()
   val histories = optJSONObject("histories")?.toHistories().orEmpty()
   val activePage = optString("activePage").toWorkspacePageOrDefault()
   val quickFollowupSpanId = optString("quickFollowupSpanId").trim().ifBlank { null }
@@ -265,7 +308,7 @@ private fun JSONObject.toStoredSession(): StoredSession? {
   val coachMessages = optJSONArray("coachMessages")?.toCoachMessages().orEmpty()
   val coachDigest = optJSONObject("coachDigest")?.toCoachDailyDigest()
   val dailyTraining = optJSONObject("dailyTraining")?.toDailyTrainingState() ?: DailyTrainingState()
-  val savedQuestions = optJSONArray("savedQuestions")?.toSavedQuestions().orEmpty()
+  val savedQuestions = optJSONArray("savedQuestions")?.toSavedQuestions(imageStore = imageStore).orEmpty()
   val knowledgePoints = optJSONObject("knowledgePoints")?.toKnowledgePoints().orEmpty()
   val ankiCards = optJSONArray("ankiCards")?.toAnkiCards().orEmpty()
 
@@ -325,7 +368,7 @@ private fun JSONObject.toProfileState(): ProfileState {
   )
 }
 
-private fun ChatMessage.toJson(): JSONObject {
+private fun ChatMessage.toJson(imageStore: SessionImageStore?): JSONObject {
   return when (this) {
     is ChatMessage.User -> {
       val previewList = if (imagePreviewList.isNotEmpty()) {
@@ -334,20 +377,29 @@ private fun ChatMessage.toJson(): JSONObject {
         imagePreviewBytes?.let { bytes -> listOf(bytes) }.orEmpty()
       }
 
-      JSONObject()
+      val json = JSONObject()
         .put("type", "user")
         .put("id", id)
         .put("time", time)
         .put("text", text)
-        .put("image", previewList.firstOrNull()?.let { bytes -> Base64.encodeToString(bytes, Base64.NO_WRAP) } ?: JSONObject.NULL)
+
+      if (imageStore != null) {
+        val refs = imageStore.saveImages(ownerId = id, images = previewList)
+        json.put("imageRefs", refs.toImageRefsJson())
+      } else {
+        json
+        .put("image", previewList.firstOrNull()?.let(::encodeImageBase64) ?: JSONObject.NULL)
         .put(
           "images",
           JSONArray().apply {
             previewList.forEach { bytes ->
-              put(Base64.encodeToString(bytes, Base64.NO_WRAP))
+              put(encodeImageBase64(bytes))
             }
           }
         )
+      }
+
+      json
     }
 
     is ChatMessage.Assistant -> JSONObject()
@@ -377,12 +429,17 @@ private fun ChatMessage.toJson(): JSONObject {
   }
 }
 
-private fun JSONArray.toChatMessages(): List<ChatMessage> {
+private fun JSONArray.toChatMessages(imageStore: SessionImageStore?): List<ChatMessage> {
   return buildList {
     for (index in 0 until length()) {
       val item = optJSONObject(index) ?: continue
       when (item.optString("type")) {
         "user" -> {
+          val imageRefList = item.optJSONArray("imageRefs")
+            ?.toStoredImageRefs()
+            ?.let { refs -> imageStore?.readImageBytesList(refs) }
+            .orEmpty()
+
           val imageList = item.optJSONArray("images")?.let { array ->
             buildList {
               for (imageIndex in 0 until array.length()) {
@@ -390,7 +447,7 @@ private fun JSONArray.toChatMessages(): List<ChatMessage> {
                 if (encoded.isBlank() || encoded == "null") {
                   continue
                 }
-                runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()?.let { decoded ->
+                decodeImageBase64(encoded)?.let { decoded ->
                   if (decoded.isNotEmpty()) {
                     add(decoded)
                   }
@@ -401,15 +458,15 @@ private fun JSONArray.toChatMessages(): List<ChatMessage> {
 
           val encodedImage = item.optString("image")
           val legacyImage = if (encodedImage.isBlank() || encodedImage == "null") {
-            null
-          } else {
-            runCatching { Base64.decode(encodedImage, Base64.DEFAULT) }.getOrNull()
-          }
+          null
+        } else {
+          decodeImageBase64(encodedImage)
+        }
 
-          val previewList = if (imageList.isNotEmpty()) {
-            imageList
-          } else {
-            legacyImage?.let { bytes -> listOf(bytes) }.orEmpty()
+          val previewList = when {
+            imageRefList.isNotEmpty() -> imageRefList
+            imageList.isNotEmpty() -> imageList
+            else -> legacyImage?.let { bytes -> listOf(bytes) }.orEmpty()
           }
 
           add(
@@ -465,6 +522,58 @@ private fun JSONArray.toChatMessages(): List<ChatMessage> {
   }
 }
 
+internal fun shouldRewritePersistedSessionsJson(raw: String): Boolean {
+  return runCatching {
+    JSONObject(raw).optInt("version", 1) < 2
+  }.getOrDefault(false)
+}
+
+private fun encodeImageBase64(bytes: ByteArray): String {
+  return Base64.getEncoder().encodeToString(bytes)
+}
+
+private fun decodeImageBase64(encoded: String): ByteArray? {
+  return runCatching { Base64.getMimeDecoder().decode(encoded.trim()) }.getOrNull()
+}
+
+private fun List<StoredImageRef>.toImageRefsJson(): JSONArray {
+  return JSONArray().apply {
+    forEach { ref ->
+      put(
+        JSONObject()
+          .put("id", ref.id)
+          .put("path", ref.path)
+          .put("mimeType", ref.mimeType)
+          .put("width", ref.width ?: JSONObject.NULL)
+          .put("height", ref.height ?: JSONObject.NULL)
+          .put("thumbnailPath", ref.thumbnailPath ?: JSONObject.NULL)
+      )
+    }
+  }
+}
+
+private fun JSONArray.toStoredImageRefs(): List<StoredImageRef> {
+  return buildList {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      val path = item.optString("path").trim()
+      if (path.isBlank()) {
+        continue
+      }
+      add(
+        StoredImageRef(
+          id = item.optString("id").trim().ifBlank { "image-$index" },
+          path = path,
+          mimeType = item.optString("mimeType").trim().ifBlank { "image/jpeg" },
+          width = item.optInt("width", -1).takeIf { value -> value > 0 },
+          height = item.optInt("height", -1).takeIf { value -> value > 0 },
+          thumbnailPath = item.optString("thumbnailPath").trim().takeIf { value -> value.isNotBlank() && value != "null" }
+        )
+      )
+    }
+  }
+}
+
 private fun Map<String, List<SpanDetail>>.toJson(): JSONObject {
   return JSONObject().apply {
     forEach { (spanId, details) ->
@@ -516,14 +625,14 @@ private fun JSONObject.toHistories(): Map<String, List<SpanDetail>> {
   return histories
 }
 
-private fun SavedQuestion.toJson(): JSONObject {
+private fun SavedQuestion.toJson(imageStore: SessionImageStore?): JSONObject {
   val previewList = if (imagePreviewList.isNotEmpty()) {
     imagePreviewList
   } else {
     imagePreviewBytes?.let { bytes -> listOf(bytes) }.orEmpty()
   }
 
-  return JSONObject()
+  val json = JSONObject()
     .put("id", id)
     .put("sourceMessageId", sourceMessageId)
     .put("question", question)
@@ -535,18 +644,25 @@ private fun SavedQuestion.toJson(): JSONObject {
     .put("subject", subject)
     .put("questionType", questionType)
     .put("analysisSummary", analysisSummary)
-    .put("image", previewList.firstOrNull()?.let { bytes -> Base64.encodeToString(bytes, Base64.NO_WRAP) } ?: JSONObject.NULL)
+
+  return if (imageStore != null) {
+    val refs = imageStore.saveImages(ownerId = id, images = previewList)
+    json.put("imageRefs", refs.toImageRefsJson())
+  } else {
+    json
+    .put("image", previewList.firstOrNull()?.let(::encodeImageBase64) ?: JSONObject.NULL)
     .put(
       "images",
       JSONArray().apply {
         previewList.forEach { bytes ->
-          put(Base64.encodeToString(bytes, Base64.NO_WRAP))
+          put(encodeImageBase64(bytes))
         }
       }
     )
+  }
 }
 
-private fun JSONArray.toSavedQuestions(): List<SavedQuestion> {
+private fun JSONArray.toSavedQuestions(imageStore: SessionImageStore?): List<SavedQuestion> {
   return buildList {
     for (index in 0 until length()) {
       val item = optJSONObject(index) ?: continue
@@ -555,6 +671,10 @@ private fun JSONArray.toSavedQuestions(): List<SavedQuestion> {
       if (id.isBlank() || question.isBlank()) {
         continue
       }
+      val imageRefList = item.optJSONArray("imageRefs")
+        ?.toStoredImageRefs()
+        ?.let { refs -> imageStore?.readImageBytesList(refs) }
+        .orEmpty()
       val imageList = item.optJSONArray("images")?.let { array ->
         buildList {
           for (imageIndex in 0 until array.length()) {
@@ -562,7 +682,7 @@ private fun JSONArray.toSavedQuestions(): List<SavedQuestion> {
             if (encoded.isBlank() || encoded == "null") {
               continue
             }
-            runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()?.let { decoded ->
+            decodeImageBase64(encoded)?.let { decoded ->
               if (decoded.isNotEmpty()) {
                 add(decoded)
               }
@@ -572,14 +692,14 @@ private fun JSONArray.toSavedQuestions(): List<SavedQuestion> {
       }.orEmpty()
       val encodedImage = item.optString("image")
       val legacyImage = if (encodedImage.isBlank() || encodedImage == "null") {
-        null
-      } else {
-        runCatching { Base64.decode(encodedImage, Base64.DEFAULT) }.getOrNull()
-      }
-      val previewList = if (imageList.isNotEmpty()) {
-        imageList
-      } else {
-        legacyImage?.let { bytes -> listOf(bytes) }.orEmpty()
+      null
+    } else {
+      decodeImageBase64(encodedImage)
+    }
+      val previewList = when {
+        imageRefList.isNotEmpty() -> imageRefList
+        imageList.isNotEmpty() -> imageList
+        else -> legacyImage?.let { bytes -> listOf(bytes) }.orEmpty()
       }
       add(
         SavedQuestion(

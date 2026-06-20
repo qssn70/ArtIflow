@@ -1,6 +1,7 @@
 plugins {
   id("com.android.application")
   id("org.jetbrains.kotlin.android")
+  id("androidx.baselineprofile")
 }
 
 android {
@@ -18,8 +19,13 @@ android {
   }
 
   buildTypes {
+    debug {
+      applicationIdSuffix = ".debug"
+    }
+
     release {
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(
         getDefaultProguardFile("proguard-android-optimize.txt"),
         "proguard-rules.pro"
@@ -61,6 +67,7 @@ dependencies {
   implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
   implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
   implementation("androidx.activity:activity-compose:1.9.2")
+  implementation("androidx.tracing:tracing:1.2.0")
 
   implementation("androidx.compose.ui:ui")
   implementation("androidx.compose.ui:ui-tooling-preview")
@@ -78,6 +85,7 @@ dependencies {
 
   debugImplementation("androidx.compose.ui:ui-tooling")
   debugImplementation("androidx.compose.ui:ui-test-manifest")
+  debugImplementation("androidx.metrics:metrics-performance:1.0.0-alpha04")
 
   testImplementation("junit:junit:4.13.2")
   testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
@@ -86,4 +94,5 @@ dependencies {
   androidTestImplementation("androidx.test:rules:1.6.1")
   androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
   androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+  baselineProfile(project(":benchmark"))
 }

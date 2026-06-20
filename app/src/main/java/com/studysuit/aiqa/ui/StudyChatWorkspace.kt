@@ -1,6 +1,5 @@
 package com.studysuit.aiqa.ui
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
@@ -19,6 +18,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -475,34 +476,42 @@ internal fun QuestionArchiveWorkspace(
     }
   }
 
-  Column(
+  LazyColumn(
     modifier = Modifier
       .fillMaxSize()
       .padding(top = 4.dp),
     verticalArrangement = Arrangement.spacedBy(10.dp)
   ) {
     if (savedQuestions.isEmpty()) {
-      Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-      ) {
-        Text(
-          text = "还没有收藏题目。可以在主聊天里点回复底栏的小星标，把整题收藏到这里。",
-          style = MaterialTheme.typography.bodySmall,
-          color = Color(0xFF5D7069)
-        )
-        OutlinedButton(onClick = onSwitchToChat) {
-          Text(text = "回到聊天去收藏")
+      item(key = "archive-empty", contentType = "archive-empty") {
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          Text(
+            text = "还没有收藏题目。可以在主聊天里点回复底栏的小星标，把整题收藏到这里。",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF5D7069)
+          )
+          OutlinedButton(onClick = onSwitchToChat) {
+            Text(text = "回到聊天去收藏")
+          }
         }
       }
     } else {
-      Text(
-        text = "已归档 ${savedQuestions.size} 题 · 点卡片可展开完整答案",
-        style = MaterialTheme.typography.labelSmall,
-        color = Color(0xFF5E746D)
-      )
-      orderedSavedQuestions.forEach { saved ->
+      item(key = "archive-summary", contentType = "archive-summary") {
+        Text(
+          text = "已归档 ${savedQuestions.size} 题 · 点卡片可展开完整答案",
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF5E746D)
+        )
+      }
+      items(
+        items = orderedSavedQuestions,
+        key = { saved -> saved.id },
+        contentType = { "archive-question" }
+      ) { saved ->
         SavedQuestionCard(
           saved = saved,
           isFocused = saved.id == focusedSavedQuestionId,
@@ -531,9 +540,7 @@ private fun SavedQuestionCard(
       saved.imagePreviewBytes?.let { bytes -> listOf(bytes) }.orEmpty()
     }
   }
-  val previewBitmaps = remember(previewByteList) {
-    previewByteList.mapNotNull { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-  }
+  val previewBitmaps by rememberDecodedImageBitmaps(previewByteList)
   val metaLine = remember(saved.subject, saved.questionType) {
     listOf(saved.subject.trim(), saved.questionType.trim())
       .filter { it.isNotBlank() }
