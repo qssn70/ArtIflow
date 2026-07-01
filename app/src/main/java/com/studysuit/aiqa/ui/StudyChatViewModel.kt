@@ -69,8 +69,11 @@ class StudyChatViewModel() : ViewModel() {
   private val flowStudySyncClient = FlowStudySyncClient()
   private var sessionStorage: SessionStorage? = null
   private var localMistakeBookStorage: MistakeBookStorage? = null
+  @Volatile
   private var mistakeBookRepository: MistakeBookRepository? = null
+  @Volatile
   private var mistakeBookStorageKey: String = ""
+  @Volatile
   private var mistakeBookStorageIsPendingObsidianAuthorization: Boolean = false
   private var mistakeBookRepositorySelectorOverride: ((RuntimeSettings) -> MistakeBookRepositorySelection?)? = null
   private val sessionRegistry = SessionRegistry()
@@ -3261,22 +3264,32 @@ class StudyChatViewModel() : ViewModel() {
 
   private fun persistMistakeBookAsync(items: List<MistakeBookItem>) {
     val store = mistakeBookRepository ?: return
+    val storageKey = mistakeBookStorageKey
     val isPendingObsidian = mistakeBookStorageIsPendingObsidianAuthorization
     viewModelScope.launch(Dispatchers.IO) {
       val result = store.save(items)
       if (result.isSuccess && isPendingObsidian) {
         launch {
-          postToast(PENDING_OBSIDIAN_VAULT_MESSAGE)
+          if (isCurrentMistakeBookStorage(store = store, storageKey = storageKey) &&
+            mistakeBookStorageIsPendingObsidianAuthorization
+          ) {
+            postToast(PENDING_OBSIDIAN_VAULT_MESSAGE)
+          }
         }
       } else if (result.isFailure) {
         val message = result.exceptionOrNull()?.message.orEmpty().ifBlank { "未知错误" }
         launch {
-          postToast("错题本保存失败：$message")
+          if (isCurrentMistakeBookStorage(store = store, storageKey = storageKey)) {
+            postToast("错题本保存失败：$message")
+          }
         }
       }
     }
   }
 
+  private fun isCurrentMistakeBookStorage(store: MistakeBookRepository, storageKey: String): Boolean {
+    return mistakeBookRepository === store && mistakeBookStorageKey == storageKey
+  }
   private fun saveSavedQuestionImages(saved: SavedQuestion, itemId: String): Result<List<String>> {
     val store = mistakeBookRepository ?: return Result.success(emptyList())
     val images = if (saved.imagePreviewList.isNotEmpty()) {

@@ -121,6 +121,53 @@ class StudyChatViewModelMistakeBookTest {
   }
 
   @Test
+  fun latePendingObsidianSaveDoesNotOverrideAuthorizationToast() {
+    val pendingRepository = BlockingSaveMistakeBookRepository()
+    val obsidianRepository = RecordingMistakeBookRepository()
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = { settings ->
+        if (settings.obsidianVaultTreeUri.isBlank()) {
+          MistakeBookRepositorySelection(
+            repository = pendingRepository,
+            key = "pending",
+            isPendingObsidianAuthorization = true
+          )
+        } else {
+          MistakeBookRepositorySelection(
+            repository = obsidianRepository,
+            key = "obsidian:${settings.obsidianVaultTreeUri}",
+            isPendingObsidianAuthorization = false
+          )
+        }
+      }
+    )
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-1",
+        question = "延迟保存的错题",
+        correctAnswer = "授权后不应被旧提示覆盖",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+    assertTrue(pendingRepository.awaitSaveStarted())
+
+    viewModel.openSettings()
+    viewModel.setObsidianVaultTreeUri("content://vault")
+    viewModel.saveSettings(migrateMistakeBook = true)
+
+    assertTrue(obsidianRepository.awaitSave())
+    assertEquals("Obsidian 仓库已授权并同步错题", viewModel.uiState.value.toastMessage)
+
+    pendingRepository.releaseSave()
+    assertTrue(pendingRepository.awaitSave())
+    Thread.sleep(100)
+
+    assertEquals("Obsidian 仓库已授权并同步错题", viewModel.uiState.value.toastMessage)
+  }
+
+  @Test
   fun saveSettingsDoesNotSyncPendingMistakesWhenObsidianVaultAuthorizedWithoutMigration() {
     val pendingRepository = RecordingMistakeBookRepository()
     val obsidianRepository = RecordingMistakeBookRepository()
@@ -697,7 +744,7 @@ class StudyChatViewModelMistakeBookTest {
     assertTrue(viewModel.uiState.value.toastMessage?.contains("AI") == true)
   }
 
-  private class RecordingMistakeBookRepository(
+  private open class RecordingMistakeBookRepository(
     private val imageRefPrefix: String = "assets"
   ) : MistakeBookRepository {
     private val saveLatch = CountDownLatch(1)
@@ -709,7 +756,7 @@ class StudyChatViewModelMistakeBookTest {
 
     override fun load(): List<MistakeBookItem> = loadedItems
 
-    override fun save(items: List<MistakeBookItem>): Result<Unit> {
+    open override fun save(items: List<MistakeBookItem>): Result<Unit> {
       saveFailure?.let { error -> return Result.failure(error) }
       savedItems += items
       loadedItems = items
@@ -742,5 +789,24 @@ class StudyChatViewModelMistakeBookTest {
     }
 
     fun awaitSave(): Boolean = saveLatch.await(2, TimeUnit.SECONDS)
+  }
+
+  private class BlockingSaveMistakeBookRepository : RecordingMistakeBookRepository() {
+    private val saveStartedLatch = CountDownLatch(1)
+    private val releaseSaveLatch = CountDownLatch(1)
+
+    override fun save(items: List<MistakeBookItem>): Result<Unit> {
+      saveStartedLatch.countDown()
+      if (!releaseSaveLatch.await(2, TimeUnit.SECONDS)) {
+        return Result.failure(IllegalStateException("save not released"))
+      }
+      return super.save(items)
+    }
+
+    fun awaitSaveStarted(): Boolean = saveStartedLatch.await(2, TimeUnit.SECONDS)
+
+    fun releaseSave() {
+      releaseSaveLatch.countDown()
+    }
   }
 }
