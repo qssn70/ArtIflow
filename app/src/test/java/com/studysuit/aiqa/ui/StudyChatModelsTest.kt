@@ -1,11 +1,100 @@
 package com.studysuit.aiqa.ui
 
+import com.studysuit.aiqa.data.MistakeBookStorageLocation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StudyChatModelsTest {
+
+  @Test
+  fun runtimeSettingsDefaultMistakeBookStorageIsObsidian() {
+    val settings = RuntimeSettings.defaults()
+
+    assertEquals(MistakeBookStorageLocation.OBSIDIAN, settings.mistakeBookStorageLocation)
+    assertEquals("", settings.obsidianVaultTreeUri)
+    assertEquals("ArtIflow/错题本", settings.obsidianMistakeFolder)
+  }
+
+  @Test
+  fun mistakeBookStorageConfigChangeIncludesVaultAndFolderChanges() {
+    val current = RuntimeSettings.defaults().copy(
+      mistakeBookStorageLocation = MistakeBookStorageLocation.OBSIDIAN,
+      obsidianVaultTreeUri = "content://vault-a",
+      obsidianMistakeFolder = "ArtIflow/错题本"
+    )
+
+    assertTrue(
+      current.copy(mistakeBookStorageLocation = MistakeBookStorageLocation.LOCAL)
+        .hasMistakeBookStorageConfigChangeFrom(current)
+    )
+    assertTrue(current.copy(obsidianVaultTreeUri = "content://vault-b").hasMistakeBookStorageConfigChangeFrom(current))
+    assertTrue(current.copy(obsidianMistakeFolder = "School/错题").hasMistakeBookStorageConfigChangeFrom(current))
+    assertEquals(false, current.copy(arkApiKey = "changed").hasMistakeBookStorageConfigChangeFrom(current))
+  }
+
+  @Test
+  fun mistakeBookStorageConfigChangeNormalizesObsidianFolder() {
+    val current = RuntimeSettings.defaults().copy(
+      obsidianMistakeFolder = "ArtIflow/错题本"
+    )
+
+    assertEquals(false, current.copy(obsidianMistakeFolder = "  ").hasMistakeBookStorageConfigChangeFrom(current))
+    assertEquals(false, current.copy(obsidianMistakeFolder = "ArtIflow/./错题本").hasMistakeBookStorageConfigChangeFrom(current))
+    assertEquals("ArtIflow/错题本", normalizeObsidianMistakeFolder("../ArtIflow/错题本"))
+  }
+
+  @Test
+  fun migrationChoiceIsNeededOnlyForActiveMistakeBookStorageChanges() {
+    val local = RuntimeSettings.defaults().copy(
+      mistakeBookStorageLocation = MistakeBookStorageLocation.LOCAL,
+      obsidianVaultTreeUri = ""
+    )
+    val pendingObsidian = RuntimeSettings.defaults().copy(
+      mistakeBookStorageLocation = MistakeBookStorageLocation.OBSIDIAN,
+      obsidianVaultTreeUri = ""
+    )
+
+    assertEquals(false, local.copy(obsidianVaultTreeUri = "content://vault").requiresMistakeBookMigrationChoiceFrom(local))
+    assertTrue(local.copy(mistakeBookStorageLocation = MistakeBookStorageLocation.OBSIDIAN).requiresMistakeBookMigrationChoiceFrom(local))
+    assertTrue(pendingObsidian.copy(obsidianVaultTreeUri = "content://vault").requiresMistakeBookMigrationChoiceFrom(pendingObsidian))
+    assertEquals(
+      false,
+      pendingObsidian.copy(obsidianMistakeFolder = "School/错题")
+        .requiresMistakeBookMigrationChoiceFrom(pendingObsidian)
+    )
+  }
+
+  @Test
+  fun persistedObsidianVaultPermissionRequiresMatchingReadWriteGrant() {
+    assertEquals(
+      true,
+      hasPersistedObsidianVaultPermission(
+        vaultTreeUri = "content://vault",
+        permissions = listOf(
+          ObsidianVaultPermissionSnapshot(
+            uri = "content://vault",
+            canRead = true,
+            canWrite = true
+          )
+        )
+      )
+    )
+    assertEquals(
+      false,
+      hasPersistedObsidianVaultPermission(
+        vaultTreeUri = "content://vault",
+        permissions = listOf(
+          ObsidianVaultPermissionSnapshot(
+            uri = "content://vault",
+            canRead = true,
+            canWrite = false
+          )
+        )
+      )
+    )
+  }
 
   @Test
   fun findSpanById_returnsMatchingAssistantSpan() {

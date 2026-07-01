@@ -4,6 +4,9 @@ import com.studysuit.aiqa.data.MistakeRecognitionDraft
 import com.studysuit.aiqa.data.MistakeRecognitionStatus
 import com.studysuit.aiqa.data.MistakeAnswerJudgement
 import com.studysuit.aiqa.data.MistakeBookItem
+import com.studysuit.aiqa.data.MistakeBookRepository
+import com.studysuit.aiqa.data.MistakeBookRepositorySelection
+import com.studysuit.aiqa.data.MistakeBookStorageLocation
 import com.studysuit.aiqa.data.MistakeReviewJudgementSource
 import com.studysuit.aiqa.data.MistakeStatus
 import com.studysuit.aiqa.data.MistakeType
@@ -15,12 +18,413 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class StudyChatViewModelMistakeBookTest {
 
   @get:Rule
   val mainDispatcherRule = MainDispatcherRule()
+
+  @Test
+  fun defaultObsidianWithoutVaultPersistsToPendingRepositoryAndPrompts() {
+    val pendingRepository = RecordingMistakeBookRepository()
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = { settings ->
+        MistakeBookRepositorySelection(
+          repository = pendingRepository,
+          key = "pending",
+          isPendingObsidianAuthorization = settings.mistakeBookStorageLocation == MistakeBookStorageLocation.OBSIDIAN &&
+            settings.obsidianVaultTreeUri.isBlank()
+        )
+      }
+    )
+
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-1",
+        question = "默认 Obsidian 未授权",
+        correctAnswer = "先暂存",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+
+    assertTrue(pendingRepository.awaitSave())
+    assertEquals(1, pendingRepository.savedItems.last().size)
+    assertEquals("请在设置中选择 Obsidian 仓库以同步", viewModel.uiState.value.toastMessage)
+  }
+
+  @Test
+  fun recognizeMistakeFromImagesStopsWhenImagePersistenceFails() {
+    val failingRepository = RecordingMistakeBookRepository().apply {
+      imageSaveFailure = IllegalStateException("vault full")
+    }
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = {
+        MistakeBookRepositorySelection(
+          repository = failingRepository,
+          key = "obsidian",
+          isPendingObsidianAuthorization = false
+        )
+      }
+    )
+
+    viewModel.recognizeMistakeFromImages(listOf(byteArrayOf(1, 2, 3)))
+
+    assertEquals("错题图片保存失败：vault full", viewModel.uiState.value.toastMessage)
+    assertTrue(viewModel.uiState.value.mistakeRecognitionDrafts.isEmpty())
+  }
+
+  @Test
+  fun saveSettingsSyncsPendingMistakesAfterObsidianVaultAuthorized() {
+    val pendingRepository = RecordingMistakeBookRepository()
+    val obsidianRepository = RecordingMistakeBookRepository()
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = { settings ->
+        if (settings.obsidianVaultTreeUri.isBlank()) {
+          MistakeBookRepositorySelection(
+            repository = pendingRepository,
+            key = "pending",
+            isPendingObsidianAuthorization = true
+          )
+        } else {
+          MistakeBookRepositorySelection(
+            repository = obsidianRepository,
+            key = "obsidian:${settings.obsidianVaultTreeUri}",
+            isPendingObsidianAuthorization = false
+          )
+        }
+      }
+    )
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-1",
+        question = "需要同步的错题",
+        correctAnswer = "授权后写入 Obsidian",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+    assertTrue(pendingRepository.awaitSave())
+
+    viewModel.openSettings()
+    viewModel.setObsidianVaultTreeUri("content://vault")
+    viewModel.saveSettings(migrateMistakeBook = true)
+
+    assertTrue(obsidianRepository.awaitSave())
+    assertEquals(listOf("需要同步的错题"), obsidianRepository.savedItems.last().map { it.question })
+    assertEquals("Obsidian 仓库已授权并同步错题", viewModel.uiState.value.toastMessage)
+  }
+
+  @Test
+  fun saveSettingsDoesNotSyncPendingMistakesWhenObsidianVaultAuthorizedWithoutMigration() {
+    val pendingRepository = RecordingMistakeBookRepository()
+    val obsidianRepository = RecordingMistakeBookRepository()
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = { settings ->
+        if (settings.obsidianVaultTreeUri.isBlank()) {
+          MistakeBookRepositorySelection(
+            repository = pendingRepository,
+            key = "pending",
+            isPendingObsidianAuthorization = true
+          )
+        } else {
+          MistakeBookRepositorySelection(
+            repository = obsidianRepository,
+            key = "obsidian:${settings.obsidianVaultTreeUri}",
+            isPendingObsidianAuthorization = false
+          )
+        }
+      }
+    )
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-1",
+        question = "仅保留在暂存区的错题",
+        correctAnswer = "不自动迁移",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+    assertTrue(pendingRepository.awaitSave())
+
+    viewModel.openSettings()
+    viewModel.setObsidianVaultTreeUri("content://vault")
+    viewModel.saveSettings(migrateMistakeBook = false)
+
+    assertTrue(obsidianRepository.savedItems.isEmpty())
+    assertEquals(MistakeBookStorageLocation.OBSIDIAN, viewModel.uiState.value.settings.mistakeBookStorageLocation)
+    assertEquals("content://vault", viewModel.uiState.value.settings.obsidianVaultTreeUri)
+    assertEquals("Obsidian 仓库已授权", viewModel.uiState.value.toastMessage)
+  }
+
+  @Test
+  fun switchingToLocalWithMigrationCopiesVisibleMistakesToLocalRepository() {
+    val pendingRepository = RecordingMistakeBookRepository()
+    val localRepository = RecordingMistakeBookRepository()
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = { settings ->
+        when (settings.mistakeBookStorageLocation) {
+          MistakeBookStorageLocation.LOCAL -> MistakeBookRepositorySelection(
+            repository = localRepository,
+            key = "local",
+            isPendingObsidianAuthorization = false
+          )
+          MistakeBookStorageLocation.OBSIDIAN -> MistakeBookRepositorySelection(
+            repository = pendingRepository,
+            key = "pending",
+            isPendingObsidianAuthorization = true
+          )
+        }
+      }
+    )
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-1",
+        question = "迁移到本软件",
+        correctAnswer = "复制当前错题",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+    assertTrue(pendingRepository.awaitSave())
+
+    viewModel.openSettings()
+    viewModel.setSettingsDraft(
+      viewModel.uiState.value.settingsDraft.copy(mistakeBookStorageLocation = MistakeBookStorageLocation.LOCAL)
+    )
+    viewModel.saveSettings(migrateMistakeBook = true)
+
+    assertTrue(localRepository.awaitSave())
+    assertEquals(MistakeBookStorageLocation.LOCAL, viewModel.uiState.value.settings.mistakeBookStorageLocation)
+    assertEquals(listOf("迁移到本软件"), localRepository.savedItems.last().map { it.question })
+  }
+
+  @Test
+  fun switchingToObsidianWithMigrationCopiesVisibleMistakesToVaultRepository() {
+    val localRepository = RecordingMistakeBookRepository()
+    val obsidianRepository = RecordingMistakeBookRepository()
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = { settings ->
+        when (settings.mistakeBookStorageLocation) {
+          MistakeBookStorageLocation.LOCAL -> MistakeBookRepositorySelection(
+            repository = localRepository,
+            key = "local",
+            isPendingObsidianAuthorization = false
+          )
+          MistakeBookStorageLocation.OBSIDIAN -> MistakeBookRepositorySelection(
+            repository = obsidianRepository,
+            key = "obsidian:${settings.obsidianVaultTreeUri}",
+            isPendingObsidianAuthorization = settings.obsidianVaultTreeUri.isBlank()
+          )
+        }
+      }
+    )
+    viewModel.openSettings()
+    viewModel.setSettingsDraft(
+      viewModel.uiState.value.settingsDraft.copy(mistakeBookStorageLocation = MistakeBookStorageLocation.LOCAL)
+    )
+    viewModel.saveSettings()
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-1",
+        question = "迁移到 Obsidian",
+        correctAnswer = "写成 Markdown",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+    assertTrue(localRepository.awaitSave())
+
+    viewModel.openSettings()
+    viewModel.setSettingsDraft(
+      viewModel.uiState.value.settingsDraft.copy(
+        mistakeBookStorageLocation = MistakeBookStorageLocation.OBSIDIAN,
+        obsidianVaultTreeUri = "content://vault"
+      )
+    )
+    viewModel.saveSettings(migrateMistakeBook = true)
+
+    assertTrue(obsidianRepository.awaitSave())
+    assertEquals(MistakeBookStorageLocation.OBSIDIAN, viewModel.uiState.value.settings.mistakeBookStorageLocation)
+    assertEquals(listOf("迁移到 Obsidian"), obsidianRepository.savedItems.last().map { it.question })
+  }
+
+  @Test
+  fun switchingToObsidianWithMigrationCopiesLocalImagesIntoVaultAssets() {
+    val localRepository = RecordingMistakeBookRepository(imageRefPrefix = "mistake_images")
+    val obsidianRepository = RecordingMistakeBookRepository(imageRefPrefix = "assets")
+    localRepository.savedImageBytes["mistake_images/local-capture.jpg"] = byteArrayOf(1, 9, 8)
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = { settings ->
+        when (settings.mistakeBookStorageLocation) {
+          MistakeBookStorageLocation.LOCAL -> MistakeBookRepositorySelection(
+            repository = localRepository,
+            key = "local",
+            isPendingObsidianAuthorization = false
+          )
+          MistakeBookStorageLocation.OBSIDIAN -> MistakeBookRepositorySelection(
+            repository = obsidianRepository,
+            key = "obsidian:${settings.obsidianVaultTreeUri}",
+            isPendingObsidianAuthorization = settings.obsidianVaultTreeUri.isBlank()
+          )
+        }
+      }
+    )
+    viewModel.openSettings()
+    viewModel.setSettingsDraft(
+      viewModel.uiState.value.settingsDraft.copy(mistakeBookStorageLocation = MistakeBookStorageLocation.LOCAL)
+    )
+    viewModel.saveSettings()
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-with-image",
+        imageRefs = listOf("mistake_images/local-capture.jpg"),
+        question = "带图片迁移到 Obsidian",
+        correctAnswer = "图片也要复制",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+    assertTrue(localRepository.awaitSave())
+
+    viewModel.openSettings()
+    viewModel.setSettingsDraft(
+      viewModel.uiState.value.settingsDraft.copy(
+        mistakeBookStorageLocation = MistakeBookStorageLocation.OBSIDIAN,
+        obsidianVaultTreeUri = "content://vault"
+      )
+    )
+    viewModel.saveSettings(migrateMistakeBook = true)
+
+    assertTrue(obsidianRepository.awaitSave())
+    assertEquals(byteArrayOf(1, 9, 8).toList(), obsidianRepository.savedImageBytes["assets/local-capture.jpg"]?.toList())
+    assertEquals(listOf("assets/local-capture.jpg"), obsidianRepository.savedItems.last().first().imageRefs)
+    assertEquals(MistakeBookStorageLocation.OBSIDIAN, viewModel.uiState.value.settings.mistakeBookStorageLocation)
+  }
+
+  @Test
+  fun switchingToObsidianWithMigrationKeepsExistingVaultMistakes() {
+    val localRepository = RecordingMistakeBookRepository()
+    val obsidianRepository = RecordingMistakeBookRepository().apply {
+      loadedItems = listOf(
+        MistakeBookItem.create(
+          id = "mistake-existing",
+          question = "Vault 已有错题",
+          correctAnswer = "保留",
+          createdAt = 5L
+        )
+      )
+    }
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = { settings ->
+        when (settings.mistakeBookStorageLocation) {
+          MistakeBookStorageLocation.LOCAL -> MistakeBookRepositorySelection(
+            repository = localRepository,
+            key = "local",
+            isPendingObsidianAuthorization = false
+          )
+          MistakeBookStorageLocation.OBSIDIAN -> MistakeBookRepositorySelection(
+            repository = obsidianRepository,
+            key = "obsidian:${settings.obsidianVaultTreeUri}",
+            isPendingObsidianAuthorization = settings.obsidianVaultTreeUri.isBlank()
+          )
+        }
+      }
+    )
+    viewModel.openSettings()
+    viewModel.setSettingsDraft(
+      viewModel.uiState.value.settingsDraft.copy(mistakeBookStorageLocation = MistakeBookStorageLocation.LOCAL)
+    )
+    viewModel.saveSettings()
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-new",
+        question = "本地待迁移错题",
+        correctAnswer = "复制到 vault",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+    assertTrue(localRepository.awaitSave())
+
+    viewModel.openSettings()
+    viewModel.setSettingsDraft(
+      viewModel.uiState.value.settingsDraft.copy(
+        mistakeBookStorageLocation = MistakeBookStorageLocation.OBSIDIAN,
+        obsidianVaultTreeUri = "content://vault"
+      )
+    )
+    viewModel.saveSettings(migrateMistakeBook = true)
+
+    assertTrue(obsidianRepository.awaitSave())
+    assertEquals(
+      listOf("本地待迁移错题", "Vault 已有错题"),
+      obsidianRepository.savedItems.last().map { item -> item.question }
+    )
+  }
+
+  @Test
+  fun migrationFailureKeepsPreviousStorageSettingsAndReportsReason() {
+    val localRepository = RecordingMistakeBookRepository()
+    val obsidianRepository = RecordingMistakeBookRepository().apply {
+      saveFailure = IllegalStateException("vault read only")
+    }
+    val viewModel = StudyChatViewModel(
+      mistakeBookRepositorySelector = { settings ->
+        when (settings.mistakeBookStorageLocation) {
+          MistakeBookStorageLocation.LOCAL -> MistakeBookRepositorySelection(
+            repository = localRepository,
+            key = "local",
+            isPendingObsidianAuthorization = false
+          )
+          MistakeBookStorageLocation.OBSIDIAN -> MistakeBookRepositorySelection(
+            repository = obsidianRepository,
+            key = "obsidian:${settings.obsidianVaultTreeUri}",
+            isPendingObsidianAuthorization = settings.obsidianVaultTreeUri.isBlank()
+          )
+        }
+      }
+    )
+    viewModel.openSettings()
+    viewModel.setSettingsDraft(
+      viewModel.uiState.value.settingsDraft.copy(mistakeBookStorageLocation = MistakeBookStorageLocation.LOCAL)
+    )
+    viewModel.saveSettings()
+    viewModel.confirmMistakeDraft(
+      MistakeRecognitionDraft(
+        id = "draft-new",
+        question = "迁移失败时仍留在本软件",
+        correctAnswer = "不能切换配置",
+        status = MistakeRecognitionStatus.AI_READY,
+        createdAt = 1L,
+        updatedAt = 1L
+      )
+    )
+    assertTrue(localRepository.awaitSave())
+
+    viewModel.openSettings()
+    viewModel.setSettingsDraft(
+      viewModel.uiState.value.settingsDraft.copy(
+        mistakeBookStorageLocation = MistakeBookStorageLocation.OBSIDIAN,
+        obsidianVaultTreeUri = "content://vault"
+      )
+    )
+    viewModel.saveSettings(migrateMistakeBook = true)
+
+    assertEquals(MistakeBookStorageLocation.LOCAL, viewModel.uiState.value.settings.mistakeBookStorageLocation)
+    assertEquals("", viewModel.uiState.value.settings.obsidianVaultTreeUri)
+    assertEquals("错题本迁移失败：vault read only", viewModel.uiState.value.toastMessage)
+  }
 
   @Test
   fun confirmMistakeDraftCreatesDueMistakeItem() {
@@ -291,5 +695,52 @@ class StudyChatViewModelMistakeBookTest {
     assertEquals("函数与图像是当前核心短板", analysis?.summary)
     assertEquals(listOf("函数与图像"), analysis?.weaknesses)
     assertTrue(viewModel.uiState.value.toastMessage?.contains("AI") == true)
+  }
+
+  private class RecordingMistakeBookRepository(
+    private val imageRefPrefix: String = "assets"
+  ) : MistakeBookRepository {
+    private val saveLatch = CountDownLatch(1)
+    val savedItems = mutableListOf<List<MistakeBookItem>>()
+    val savedImageBytes = mutableMapOf<String, ByteArray>()
+    var loadedItems: List<MistakeBookItem> = emptyList()
+    var saveFailure: Throwable? = null
+    var imageSaveFailure: Throwable? = null
+
+    override fun load(): List<MistakeBookItem> = loadedItems
+
+    override fun save(items: List<MistakeBookItem>): Result<Unit> {
+      saveFailure?.let { error -> return Result.failure(error) }
+      savedItems += items
+      loadedItems = items
+      saveLatch.countDown()
+      return Result.success(Unit)
+    }
+
+    override fun upsert(item: MistakeBookItem): Result<List<MistakeBookItem>> {
+      val next = listOf(item) + loadedItems.filterNot { existing -> existing.id == item.id }
+      save(next)
+      return Result.success(next)
+    }
+
+    override fun delete(itemId: String): Result<List<MistakeBookItem>> {
+      val next = loadedItems.filterNot { item -> item.id == itemId }
+      save(next)
+      return Result.success(next)
+    }
+
+    override fun saveImageBytes(bytes: ByteArray, fileNameHint: String): Result<String> {
+      imageSaveFailure?.let { error -> return Result.failure(error) }
+      val ref = "$imageRefPrefix/${fileNameHint.substringAfterLast('/')}"
+      savedImageBytes[ref] = bytes
+      return Result.success(ref)
+    }
+
+    override fun loadImageBytes(ref: String): Result<ByteArray> {
+      val bytes = savedImageBytes[ref] ?: return Result.failure(IllegalArgumentException("missing image: $ref"))
+      return Result.success(bytes)
+    }
+
+    fun awaitSave(): Boolean = saveLatch.await(2, TimeUnit.SECONDS)
   }
 }

@@ -7,11 +7,15 @@ import com.studysuit.aiqa.AiGenerationForegroundService
 import com.studysuit.aiqa.data.ArkApiClient
 import com.studysuit.aiqa.data.ArkMistakeFusionClient
 import com.studysuit.aiqa.data.ArkMistakeVisionClient
+import com.studysuit.aiqa.data.AndroidObsidianMistakeBookStorage
 import com.studysuit.aiqa.data.FlowStudySyncClient
 import com.studysuit.aiqa.data.MistakeAnswerJudgement
 import com.studysuit.aiqa.data.MistakeRecognitionCoordinator
 import com.studysuit.aiqa.data.MistakeBookItem
+import com.studysuit.aiqa.data.MistakeBookRepository
+import com.studysuit.aiqa.data.MistakeBookRepositorySelection
 import com.studysuit.aiqa.data.MistakeBookStorage
+import com.studysuit.aiqa.data.MistakeBookStorageLocation
 import com.studysuit.aiqa.data.MistakeRecognitionDraft
 import com.studysuit.aiqa.data.MistakeRecognitionStatus
 import com.studysuit.aiqa.data.MistakeReviewJudgementSource
@@ -23,6 +27,7 @@ import com.studysuit.aiqa.data.UnavailableMistakeOcrClient
 import com.studysuit.aiqa.data.exportMistakeBookText
 import com.studysuit.aiqa.data.importMistakeBookText
 import com.studysuit.aiqa.data.mergeImportedMistakeBookItems
+import com.studysuit.aiqa.data.selectMistakeBookRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -63,7 +68,11 @@ class StudyChatViewModel() : ViewModel() {
   private val mistakeFusionClient = ArkMistakeFusionClient()
   private val flowStudySyncClient = FlowStudySyncClient()
   private var sessionStorage: SessionStorage? = null
-  private var mistakeBookStorage: MistakeBookStorage? = null
+  private var localMistakeBookStorage: MistakeBookStorage? = null
+  private var mistakeBookRepository: MistakeBookRepository? = null
+  private var mistakeBookStorageKey: String = ""
+  private var mistakeBookStorageIsPendingObsidianAuthorization: Boolean = false
+  private var mistakeBookRepositorySelectorOverride: ((RuntimeSettings) -> MistakeBookRepositorySelection?)? = null
   private val sessionRegistry = SessionRegistry()
   private val persistMutex = Mutex()
   private val latestPersistRequestId = AtomicLong(0L)
@@ -86,22 +95,31 @@ class StudyChatViewModel() : ViewModel() {
     this.mistakeBookAnalysisRequester = mistakeBookAnalysisRequester
   }
 
+  internal constructor(
+    mistakeBookRepositorySelector: (RuntimeSettings) -> MistakeBookRepositorySelection?
+  ) : this() {
+    mistakeBookRepositorySelectorOverride = mistakeBookRepositorySelector
+    configureMistakeBookStorage(_uiState.value.settings)
+  }
+
   fun ensureStorage(context: Context) {
     val applicationContext = context.applicationContext
     appContext = applicationContext
-    if (mistakeBookStorage == null) {
-      mistakeBookStorage = MistakeBookStorage(applicationContext)
+    if (localMistakeBookStorage == null) {
+      localMistakeBookStorage = MistakeBookStorage(applicationContext)
     }
     if (sessionStorage != null) {
       if (inFlightRequests > 0) {
         syncBackgroundRequestService(status = _uiState.value.toastMessage)
       }
+      configureMistakeBookStorage(_uiState.value.settings)
       restoreMistakeBookItems()
       return
     }
 
     sessionStorage = SessionStorage(applicationContext)
     restoreSessionsFromStorage()
+    configureMistakeBookStorage(_uiState.value.settings)
     restoreMistakeBookItems()
   }
 
@@ -894,7 +912,10 @@ class StudyChatViewModel() : ViewModel() {
     }
 
     val draftId = "draft-${System.currentTimeMillis()}"
-    val imageRefs = saveMistakeImages(imageBytesList = normalizedImages, idPrefix = draftId)
+    val imageRefs = saveMistakeImages(imageBytesList = normalizedImages, idPrefix = draftId).getOrElse { error ->
+      postToast("错题图片保存失败：${error.message ?: "未知错误"}")
+      return
+    }
     val settings = _uiState.value.settings
     val pipelineConfig = settings.toMistakeRecognitionPipelineConfig()
     val promptNote = listOf(source.trim(), note.trim())
@@ -995,7 +1016,10 @@ class StudyChatViewModel() : ViewModel() {
     }
 
     val itemId = state.mistakeItems.firstOrNull { item -> item.sourceSavedQuestionId == saved.id }?.id ?: nextMistakeItemId()
-    val imageRefs = saveSavedQuestionImages(saved = saved, itemId = itemId)
+    val imageRefs = saveSavedQuestionImages(saved = saved, itemId = itemId).getOrElse { error ->
+      postToast("错题图片保存失败：${error.message ?: "未知错误"}")
+      return
+    }
     updateMistakeItems(persistMistakes = true) { current ->
       addSavedQuestionToMistakeBookState(
         current = current,
@@ -1540,7 +1564,18 @@ class StudyChatViewModel() : ViewModel() {
 
   fun setSettingsDraft(newSettings: RuntimeSettings) {
     updateUiState { current ->
-      current.copy(settingsDraft = newSettings)
+      current.copy(settingsDraft = normalizeMistakeBookSettings(newSettings))
+    }
+  }
+
+  fun setObsidianVaultTreeUri(treeUri: String) {
+    val normalizedUri = treeUri.trim()
+    updateUiState { current ->
+      current.copy(
+        settingsDraft = normalizeMistakeBookSettings(
+          current.settingsDraft.copy(obsidianVaultTreeUri = normalizedUri)
+        )
+      )
     }
   }
 
@@ -1551,13 +1586,83 @@ class StudyChatViewModel() : ViewModel() {
   }
 
   fun saveSettings() {
+    saveSettings(migrateMistakeBook = false)
+  }
+
+  fun saveSettings(migrateMistakeBook: Boolean) {
+    val state = _uiState.value
+    val previousSettings = state.settings
+    val targetSettings = normalizeMistakeBookSettingsForStorage(state.settingsDraft)
+    val targetSelection = selectMistakeBookRepositoryForSettings(targetSettings)
+    if (targetSelection == null) {
+      postToast("错题本存储不可用，设置未保存")
+      return
+    }
+
+    val obsidianVaultJustAuthorized = previousSettings.mistakeBookStorageLocation == MistakeBookStorageLocation.OBSIDIAN &&
+      previousSettings.obsidianVaultTreeUri.isBlank() &&
+      targetSettings.mistakeBookStorageLocation == MistakeBookStorageLocation.OBSIDIAN &&
+      targetSettings.obsidianVaultTreeUri.isNotBlank()
+    val storageConfigChanged = targetSettings.hasMistakeBookStorageConfigChangeFrom(previousSettings)
+    val shouldCopyVisibleMistakes = migrateMistakeBook
+    var nextMistakes = state.mistakeItems
+
+    if (shouldCopyVisibleMistakes) {
+      val migratedMistakesResult = copyMistakeImagesForMigration(
+        items = state.mistakeItems,
+        sourceRepository = mistakeBookRepository,
+        targetRepository = targetSelection.repository
+      )
+      if (migratedMistakesResult.isFailure) {
+        val message = migratedMistakesResult.exceptionOrNull()?.message.orEmpty().ifBlank { "未知错误" }
+        postToast("错题本迁移失败：$message")
+        return
+      }
+
+      val migratedMistakes = migratedMistakesResult.getOrThrow()
+      val mergedMistakes = mergeMistakeBookMigrationItems(
+        migratedItems = migratedMistakes,
+        targetItems = targetSelection.repository.load()
+      )
+      val migrationResult = targetSelection.repository.save(mergedMistakes)
+      if (migrationResult.isFailure) {
+        val message = migrationResult.exceptionOrNull()?.message.orEmpty().ifBlank { "未知错误" }
+        postToast("错题本迁移失败：$message")
+        return
+      }
+      nextMistakes = refreshMistakeDueStatuses(targetSelection.repository.load(), now = System.currentTimeMillis())
+    }
+
+    if (storageConfigChanged && !shouldCopyVisibleMistakes) {
+      refreshMistakeDueStatuses(targetSelection.repository.load(), now = System.currentTimeMillis())
+    } else {
+      nextMistakes
+    }.also { refreshed ->
+      nextMistakes = refreshed
+    }
+    configureMistakeBookStorage(targetSettings, preselected = targetSelection)
+    mistakeSeed = deriveMistakeSeed(nextMistakes)
+
+    val toast = when {
+      obsidianVaultJustAuthorized && migrateMistakeBook -> "Obsidian 仓库已授权并同步错题"
+      obsidianVaultJustAuthorized -> "Obsidian 仓库已授权"
+      migrateMistakeBook -> "设置已保存，错题已迁移"
+      targetSelection.isPendingObsidianAuthorization -> PENDING_OBSIDIAN_VAULT_MESSAGE
+      else -> "设置已保存"
+    }
     updateUiState(persistSession = true) { current ->
       current.copy(
-        settings = current.settingsDraft,
+        settings = targetSettings,
+        settingsDraft = targetSettings,
         isSettingsOpen = false,
-        toastMessage = "设置已保存"
+        mistakeItems = nextMistakes,
+        activeMistakeReviewId = current.activeMistakeReviewId?.takeIf { itemId -> nextMistakes.any { item -> item.id == itemId } },
+        activeMistakeDraftId = current.activeMistakeDraftId,
+        isMistakeDueReviewMode = current.isMistakeDueReviewMode && nextMistakes.isNotEmpty(),
+        toastMessage = toast
       )
     }
+    rescheduleMistakeReviewReminder(nextMistakes)
   }
 
   fun updateAnkiCard(cardId: String, front: String, back: String, tags: List<String>) {
@@ -3130,12 +3235,17 @@ class StudyChatViewModel() : ViewModel() {
     updateUiState(persistSession = false, transform = transform)
     rescheduleMistakeReviewReminder(_uiState.value.mistakeItems)
     if (persistMistakes) {
+      if (mistakeBookStorageIsPendingObsidianAuthorization) {
+        updateUiState(persistSession = false) { current ->
+          current.copy(toastMessage = PENDING_OBSIDIAN_VAULT_MESSAGE)
+        }
+      }
       persistMistakeBookAsync(_uiState.value.mistakeItems)
     }
   }
 
   private fun restoreMistakeBookItems() {
-    val store = mistakeBookStorage ?: return
+    val store = mistakeBookRepository ?: return
     val restored = refreshMistakeDueStatuses(store.load(), now = System.currentTimeMillis())
     mistakeSeed = deriveMistakeSeed(restored)
     _uiState.update { current ->
@@ -3150,10 +3260,15 @@ class StudyChatViewModel() : ViewModel() {
   }
 
   private fun persistMistakeBookAsync(items: List<MistakeBookItem>) {
-    val store = mistakeBookStorage ?: return
+    val store = mistakeBookRepository ?: return
+    val isPendingObsidian = mistakeBookStorageIsPendingObsidianAuthorization
     viewModelScope.launch(Dispatchers.IO) {
       val result = store.save(items)
-      if (result.isFailure) {
+      if (result.isSuccess && isPendingObsidian) {
+        launch {
+          postToast(PENDING_OBSIDIAN_VAULT_MESSAGE)
+        }
+      } else if (result.isFailure) {
         val message = result.exceptionOrNull()?.message.orEmpty().ifBlank { "未知错误" }
         launch {
           postToast("错题本保存失败：$message")
@@ -3162,22 +3277,140 @@ class StudyChatViewModel() : ViewModel() {
     }
   }
 
-  private fun saveSavedQuestionImages(saved: SavedQuestion, itemId: String): List<String> {
-    val store = mistakeBookStorage ?: return emptyList()
+  private fun saveSavedQuestionImages(saved: SavedQuestion, itemId: String): Result<List<String>> {
+    val store = mistakeBookRepository ?: return Result.success(emptyList())
     val images = if (saved.imagePreviewList.isNotEmpty()) {
       saved.imagePreviewList
     } else {
       saved.imagePreviewBytes?.let(::listOf).orEmpty()
     }
-    return images.mapIndexedNotNull { index, bytes ->
-      store.saveImageBytes(bytes, "$itemId-$index.jpg").getOrNull()
+    return runCatching {
+      images.mapIndexed { index, bytes ->
+        store.saveImageBytes(bytes, "$itemId-$index.jpg").getOrThrow()
+      }
     }
   }
 
-  private fun saveMistakeImages(imageBytesList: List<ByteArray>, idPrefix: String): List<String> {
-    val store = mistakeBookStorage ?: return emptyList()
-    return imageBytesList.mapIndexedNotNull { index, bytes ->
-      store.saveImageBytes(bytes, "$idPrefix-$index.jpg").getOrNull()
+  private fun saveMistakeImages(imageBytesList: List<ByteArray>, idPrefix: String): Result<List<String>> {
+    val store = mistakeBookRepository ?: return Result.success(emptyList())
+    return runCatching {
+      imageBytesList.mapIndexed { index, bytes ->
+        store.saveImageBytes(bytes, "$idPrefix-$index.jpg").getOrThrow()
+      }
+    }
+  }
+
+  private fun copyMistakeImagesForMigration(
+    items: List<MistakeBookItem>,
+    sourceRepository: MistakeBookRepository?,
+    targetRepository: MistakeBookRepository
+  ): Result<List<MistakeBookItem>> {
+    if (sourceRepository === targetRepository) {
+      return Result.success(items)
+    }
+
+    return runCatching {
+      items.map { item ->
+        val copiedRefs = item.imageRefs.mapNotNull imageRefLoop@{ ref ->
+          val normalizedRef = ref.trim()
+          if (normalizedRef.isBlank()) {
+            return@imageRefLoop null
+          }
+          val source = sourceRepository ?: error("无法读取原错题图片：$normalizedRef")
+          val bytes = source.loadImageBytes(normalizedRef).getOrElse { error ->
+            throw IllegalStateException("无法读取原错题图片：$normalizedRef", error)
+          }
+          targetRepository.saveImageBytes(bytes, normalizedRef.toMigrationImageFileName()).getOrElse { error ->
+            throw IllegalStateException("无法写入错题图片：$normalizedRef", error)
+          }
+        }
+        item.copy(imageRefs = copiedRefs)
+      }
+    }
+  }
+
+  private fun mergeMistakeBookMigrationItems(
+    migratedItems: List<MistakeBookItem>,
+    targetItems: List<MistakeBookItem>
+  ): List<MistakeBookItem> {
+    val migratedIds = migratedItems.map { item -> item.id }.toSet()
+    return migratedItems + targetItems.filterNot { item -> item.id in migratedIds }
+  }
+
+  private fun configureMistakeBookStorage(
+    settings: RuntimeSettings,
+    preselected: MistakeBookRepositorySelection? = null
+  ): MistakeBookRepositorySelection? {
+    val selection = preselected ?: selectMistakeBookRepositoryForSettings(settings)
+    mistakeBookRepository = selection?.repository
+    mistakeBookStorageKey = selection?.key.orEmpty()
+    mistakeBookStorageIsPendingObsidianAuthorization = selection?.isPendingObsidianAuthorization == true
+    return selection
+  }
+
+  private fun selectMistakeBookRepositoryForSettings(settings: RuntimeSettings): MistakeBookRepositorySelection? {
+    val override = mistakeBookRepositorySelectorOverride
+    if (override != null) {
+      return override(settings)
+    }
+
+    val normalizedSettings = normalizeMistakeBookSettingsForStorage(settings)
+    val localStore = localMistakeBookStorage ?: appContext?.let { context ->
+      MistakeBookStorage(context).also { store -> localMistakeBookStorage = store }
+    } ?: return null
+
+    return selectMistakeBookRepository(
+      localRepository = localStore,
+      storageLocation = normalizedSettings.mistakeBookStorageLocation,
+      obsidianVaultTreeUri = normalizedSettings.obsidianVaultTreeUri,
+      obsidianMistakeFolder = normalizedSettings.obsidianMistakeFolder,
+      createObsidianRepository = { vaultUri, folder ->
+        val context = appContext ?: error("应用存储未初始化")
+        AndroidObsidianMistakeBookStorage(
+          context = context,
+          vaultTreeUri = vaultUri,
+          folder = folder
+        )
+      }
+    ).getOrNull()
+  }
+
+  private fun String.toMigrationImageFileName(): String {
+    val path = trim()
+      .substringBefore('?')
+      .substringBefore('#')
+      .replace('\\', '/')
+      .trimEnd('/')
+    return path.substringAfterLast('/').ifBlank { "mistake-image.jpg" }
+  }
+
+  private fun normalizeMistakeBookSettings(settings: RuntimeSettings): RuntimeSettings {
+    return settings.copy(
+      obsidianVaultTreeUri = settings.obsidianVaultTreeUri.trim(),
+      obsidianMistakeFolder = normalizeObsidianMistakeFolder(settings.obsidianMistakeFolder)
+    )
+  }
+
+  private fun normalizeMistakeBookSettingsForStorage(settings: RuntimeSettings): RuntimeSettings {
+    val normalized = normalizeMistakeBookSettings(settings)
+    val context = appContext ?: return normalized
+    if (mistakeBookRepositorySelectorOverride != null ||
+      normalized.mistakeBookStorageLocation != MistakeBookStorageLocation.OBSIDIAN ||
+      normalized.obsidianVaultTreeUri.isBlank()
+    ) {
+      return normalized
+    }
+    val permissions = context.contentResolver.persistedUriPermissions.map { permission ->
+      ObsidianVaultPermissionSnapshot(
+        uri = permission.uri.toString(),
+        canRead = permission.isReadPermission,
+        canWrite = permission.isWritePermission
+      )
+    }
+    return if (hasPersistedObsidianVaultPermission(normalized.obsidianVaultTreeUri, permissions)) {
+      normalized
+    } else {
+      normalized.copy(obsidianVaultTreeUri = "")
     }
   }
 
@@ -3272,11 +3505,12 @@ class StudyChatViewModel() : ViewModel() {
     val sanitized = sanitizePersistedSessions(restored)
 
     if (sanitized.sessions.isEmpty()) {
+      val settings = normalizeMistakeBookSettingsForStorage(sanitized.settings)
       sessionRegistry.clear()
       _uiState.update { current ->
         current.copy(
-          settings = sanitized.settings,
-          settingsDraft = sanitized.settings
+          settings = settings,
+          settingsDraft = settings
         )
       }
       resetConversation()
@@ -3295,7 +3529,7 @@ class StudyChatViewModel() : ViewModel() {
       sanitized.activeSessionId != preferredSession.id ||
       sanitized.sessions.size != 1
 
-    val settings = sanitized.settings
+    val settings = normalizeMistakeBookSettingsForStorage(sanitized.settings)
     val sharedAnkiCards = mergeGlobalAnkiCards(sanitized.sessions)
     sessionRegistry.replaceAll(listOf(preferredSession))
     activateSession(
@@ -3805,6 +4039,7 @@ class StudyChatViewModel() : ViewModel() {
   }
 
   private companion object {
+    private const val PENDING_OBSIDIAN_VAULT_MESSAGE = "请在设置中选择 Obsidian 仓库以同步"
     private const val BACKGROUND_PROGRESS_PUSH_INTERVAL_MS = 1200L
     private const val BACKGROUND_PROGRESS_MIN_CHARS = 48
     private const val IN_FLIGHT_PERSIST_INTERVAL_MS = 3000L

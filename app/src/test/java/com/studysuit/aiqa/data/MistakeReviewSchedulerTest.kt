@@ -2,6 +2,8 @@ package com.studysuit.aiqa.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MistakeReviewSchedulerTest {
@@ -151,5 +153,73 @@ class MistakeReviewSchedulerTest {
       MistakeReviewScheduleDecision.Cancel,
       MistakeReviewScheduler.scheduleDecision(emptyList(), now = 2_000L)
     )
+  }
+
+  @Test
+  fun repositorySelectionUsesObsidianRepositoryWhenVaultIsAuthorized() {
+    val local = RecordingMistakeBookRepository()
+    val obsidian = RecordingMistakeBookRepository()
+
+    val selection = selectMistakeBookRepository(
+      localRepository = local,
+      storageLocation = MistakeBookStorageLocation.OBSIDIAN,
+      obsidianVaultTreeUri = "content://vault",
+      obsidianMistakeFolder = "School/错题",
+      createObsidianRepository = { vaultUri, folder ->
+        assertEquals("content://vault", vaultUri)
+        assertEquals("School/错题", folder)
+        obsidian
+      }
+    ).getOrThrow()
+
+    assertSame(obsidian, selection.repository)
+    assertEquals("obsidian:content://vault:School/错题", selection.key)
+    assertEquals(false, selection.isPendingObsidianAuthorization)
+  }
+
+  @Test
+  fun repositorySelectionUsesPendingLocalOnlyWhenObsidianVaultIsMissing() {
+    val local = RecordingMistakeBookRepository()
+
+    val selection = selectMistakeBookRepository(
+      localRepository = local,
+      storageLocation = MistakeBookStorageLocation.OBSIDIAN,
+      obsidianVaultTreeUri = " ",
+      obsidianMistakeFolder = DEFAULT_OBSIDIAN_MISTAKE_FOLDER,
+      createObsidianRepository = { _, _ -> error("vault should not be opened before authorization") }
+    ).getOrThrow()
+
+    assertSame(local, selection.repository)
+    assertEquals("obsidian-pending-local", selection.key)
+    assertEquals(true, selection.isPendingObsidianAuthorization)
+  }
+
+  @Test
+  fun repositorySelectionFailsWhenAuthorizedObsidianVaultCannotOpen() {
+    val selection = selectMistakeBookRepository(
+      localRepository = RecordingMistakeBookRepository(),
+      storageLocation = MistakeBookStorageLocation.OBSIDIAN,
+      obsidianVaultTreeUri = "content://bad-vault",
+      obsidianMistakeFolder = DEFAULT_OBSIDIAN_MISTAKE_FOLDER,
+      createObsidianRepository = { _, _ -> error("无法访问 Obsidian 仓库目录") }
+    )
+
+    assertTrue(selection.isFailure)
+  }
+
+  private class RecordingMistakeBookRepository : MistakeBookRepository {
+    override fun load(): List<MistakeBookItem> = emptyList()
+
+    override fun save(items: List<MistakeBookItem>): Result<Unit> = Result.success(Unit)
+
+    override fun upsert(item: MistakeBookItem): Result<List<MistakeBookItem>> = Result.success(listOf(item))
+
+    override fun delete(itemId: String): Result<List<MistakeBookItem>> = Result.success(emptyList())
+
+    override fun saveImageBytes(bytes: ByteArray, fileNameHint: String): Result<String> {
+      return Result.success("assets/$fileNameHint")
+    }
+
+    override fun loadImageBytes(ref: String): Result<ByteArray> = Result.success(ByteArray(0))
   }
 }

@@ -2,6 +2,8 @@ package com.studysuit.aiqa.ui
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -44,7 +46,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.studysuit.aiqa.data.DEFAULT_OBSIDIAN_MISTAKE_FOLDER
 import com.studysuit.aiqa.data.MistakeBookItem
+import com.studysuit.aiqa.data.MistakeBookStorageLocation
 import com.studysuit.aiqa.data.MistakeRecognitionDraft
 import com.studysuit.aiqa.data.MistakeRecognitionStatus
 import com.studysuit.aiqa.data.MistakeSrsEngine
@@ -58,6 +62,7 @@ import java.io.File
 internal fun MistakeBookWorkspace(
   items: List<MistakeBookItem>,
   drafts: List<MistakeRecognitionDraft>,
+  settings: RuntimeSettings,
   activeDraftId: String?,
   activeReviewId: String?,
   activeReviewSuggestion: MistakeReviewSuggestion?,
@@ -168,7 +173,7 @@ internal fun MistakeBookWorkspace(
       MistakeBookTab.DRAFTS -> {
         if (activeDraft != null) {
           item(key = "active-draft-${activeDraft.id}", contentType = "draft-editor") {
-            MistakeDraftEditor(draft = activeDraft, onConfirmDraft = onConfirmDraft)
+            MistakeDraftEditor(draft = activeDraft, settings = settings, onConfirmDraft = onConfirmDraft)
           }
         }
         val remainingDrafts = drafts.filterNot { draft -> draft.id == activeDraft?.id }
@@ -192,6 +197,7 @@ internal fun MistakeBookWorkspace(
         ) { item ->
           MistakeItemCard(
             item = item,
+            settings = settings,
             onAddToAnki = onAddToAnki,
             onDeleteItem = onDeleteItem,
             onReopenItem = onReopenItem
@@ -204,6 +210,7 @@ internal fun MistakeBookWorkspace(
           item(key = "review-${activeReviewItem.id}", contentType = "review") {
             MistakeReviewCard(
               item = activeReviewItem,
+              settings = settings,
               suggestion = activeReviewSuggestion?.takeIf { suggestion -> suggestion.itemId == activeReviewItem.id },
               onRecordReview = onRecordReview,
               onRequestJudgement = onRequestJudgement,
@@ -232,6 +239,7 @@ internal fun MistakeBookWorkspace(
           ) { item ->
             MistakeItemCard(
               item = item,
+              settings = settings,
               onAddToAnki = onAddToAnki,
               onDeleteItem = onDeleteItem,
               onReopenItem = onReopenItem
@@ -479,6 +487,7 @@ private fun MistakeBookTabs(
 @Composable
 private fun MistakeDraftEditor(
   draft: MistakeRecognitionDraft,
+  settings: RuntimeSettings,
   onConfirmDraft: (MistakeRecognitionDraft) -> Unit
 ) {
   var question by remember(draft.id, draft.updatedAt) { mutableStateOf(draft.question.ifBlank { draft.ocrText }) }
@@ -507,7 +516,7 @@ private fun MistakeDraftEditor(
         style = MaterialTheme.typography.labelMedium,
         color = Color(0xFF6B5C2E)
       )
-      MistakeImagePreview(imageRefs = draft.imageRefs)
+      MistakeImagePreview(imageRefs = draft.imageRefs, settings = settings)
       OutlinedTextField(
         value = question,
         onValueChange = { question = it },
@@ -648,6 +657,7 @@ private fun MistakeDraftSummary(
 @Composable
 private fun MistakeReviewCard(
   item: MistakeBookItem,
+  settings: RuntimeSettings,
   suggestion: MistakeReviewSuggestion?,
   onRecordReview: (itemId: String, isCorrect: Boolean, userAnswer: String) -> Unit,
   onRequestJudgement: (itemId: String, userAnswer: String) -> Unit,
@@ -675,7 +685,7 @@ private fun MistakeReviewCard(
         style = MaterialTheme.typography.labelMedium,
         color = Color(0xFF2C6756)
       )
-      MistakeImagePreview(imageRefs = item.imageRefs)
+      MistakeImagePreview(imageRefs = item.imageRefs, settings = settings)
       Text(
         text = item.question,
         style = MaterialTheme.typography.bodyMedium,
@@ -793,6 +803,7 @@ private fun MistakeReviewSuggestionPanel(
 @Composable
 private fun MistakeItemCard(
   item: MistakeBookItem,
+  settings: RuntimeSettings,
   onAddToAnki: (String) -> Unit,
   onDeleteItem: (String) -> Unit,
   onReopenItem: (String) -> Unit
@@ -810,7 +821,7 @@ private fun MistakeItemCard(
       modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
       verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
-      MistakeImagePreview(imageRefs = item.imageRefs)
+      MistakeImagePreview(imageRefs = item.imageRefs, settings = settings)
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1109,11 +1120,11 @@ private fun MistakeTypeChip(
 }
 
 @Composable
-private fun MistakeImagePreview(imageRefs: List<String>) {
+private fun MistakeImagePreview(imageRefs: List<String>, settings: RuntimeSettings) {
   val context = LocalContext.current
-  val bitmaps by produceState(initialValue = emptyList(), context, imageRefs) {
+  val bitmaps by produceState(initialValue = emptyList(), context, imageRefs, settings) {
     value = withContext(Dispatchers.Default) {
-      loadMistakeBitmaps(context, imageRefs)
+      loadMistakeBitmaps(context, imageRefs, settings)
     }
   }
   if (bitmaps.isEmpty()) {
@@ -1154,11 +1165,169 @@ private fun MistakeEmptyState(text: String) {
   }
 }
 
-private fun loadMistakeBitmaps(context: Context, imageRefs: List<String>) =
-  imageRefs.mapNotNull { ref ->
-    val file = File(context.filesDir, ref)
-    BitmapFactory.decodeFile(file.absolutePath)
+private fun loadMistakeBitmaps(context: Context, imageRefs: List<String>, settings: RuntimeSettings) =
+  imageRefs.mapNotNull { ref -> loadMistakeBitmap(context, ref, settings) }
+
+private fun loadMistakeBitmap(context: Context, ref: String, settings: RuntimeSettings) =
+  ref.trim().takeIf(String::isNotBlank)?.let { normalizedRef ->
+    runCatching {
+      when {
+        normalizedRef.startsWith("content://", ignoreCase = true) ->
+          context.applicationContext.contentResolver.openInputStream(Uri.parse(normalizedRef))
+            ?.use { input -> BitmapFactory.decodeStream(input) }
+
+        settings.mistakeBookStorageLocation != MistakeBookStorageLocation.OBSIDIAN ||
+          settings.obsidianVaultTreeUri.isBlank() ->
+          BitmapFactory.decodeFile(File(context.filesDir, normalizedRef).absolutePath)
+
+        else -> decodeObsidianMistakeBitmap(
+          context = context,
+          imageRef = normalizedRef,
+          vaultTreeUri = settings.obsidianVaultTreeUri.trim(),
+          mistakeFolder = settings.obsidianMistakeFolder
+        )
+      }
+    }.getOrNull()
   }
+
+private fun decodeObsidianMistakeBitmap(
+  context: Context,
+  imageRef: String,
+  vaultTreeUri: String,
+  mistakeFolder: String
+) = runCatching {
+  val resolver = context.applicationContext.contentResolver
+  val treeUri = Uri.parse(vaultTreeUri)
+  val rootDocumentId = DocumentsContract.getTreeDocumentId(treeUri)
+  val mistakeRoot = findPreviewObsidianRoot(
+    context = context,
+    treeUri = treeUri,
+    rootDocumentId = rootDocumentId,
+    mistakeFolder = mistakeFolder
+  ) ?: return@runCatching null
+  val imageSegments = imageRef.toPreviewObsidianImageSegments()
+  if (imageSegments.isEmpty()) {
+    return@runCatching null
+  }
+  val imageDocument = findPreviewObsidianPath(
+    context = context,
+    treeUri = treeUri,
+    parentDocumentId = mistakeRoot.documentId,
+    segments = imageSegments
+  )?.takeUnless { document -> document.isDirectory } ?: return@runCatching null
+  resolver.openInputStream(imageDocument.uri)?.use { input -> BitmapFactory.decodeStream(input) }
+}.getOrNull()
+
+private fun findPreviewObsidianRoot(
+  context: Context,
+  treeUri: Uri,
+  rootDocumentId: String,
+  mistakeFolder: String
+): PreviewObsidianDocument? {
+  var current = PreviewObsidianDocument(
+    name = "",
+    documentId = rootDocumentId,
+    uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocumentId),
+    isDirectory = true
+  )
+  for (segment in mistakeFolder.toPreviewObsidianFolderSegments()) {
+    current = findPreviewObsidianChild(context, treeUri, current.documentId, segment)
+      ?.takeIf { child -> child.isDirectory }
+      ?: return null
+  }
+  return current
+}
+
+private fun findPreviewObsidianPath(
+  context: Context,
+  treeUri: Uri,
+  parentDocumentId: String,
+  segments: List<String>
+): PreviewObsidianDocument? {
+  var currentDocumentId = parentDocumentId
+  var current: PreviewObsidianDocument? = null
+  for ((index, segment) in segments.withIndex()) {
+    val child = findPreviewObsidianChild(context, treeUri, currentDocumentId, segment) ?: return null
+    if (index < segments.lastIndex && !child.isDirectory) {
+      return null
+    }
+    current = child
+    currentDocumentId = child.documentId
+  }
+  return current
+}
+
+private fun findPreviewObsidianChild(
+  context: Context,
+  treeUri: Uri,
+  parentDocumentId: String,
+  displayName: String
+): PreviewObsidianDocument? {
+  return listPreviewObsidianChildren(context, treeUri, parentDocumentId)
+    .firstOrNull { child -> child.name == displayName }
+}
+
+private fun listPreviewObsidianChildren(
+  context: Context,
+  treeUri: Uri,
+  parentDocumentId: String
+): List<PreviewObsidianDocument> {
+  val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocumentId)
+  val projection = arrayOf(
+    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+    DocumentsContract.Document.COLUMN_MIME_TYPE
+  )
+  return context.applicationContext.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+    val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+    val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+    val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+    if (idIndex < 0 || nameIndex < 0 || mimeIndex < 0) {
+      return@use emptyList()
+    }
+    buildList {
+      while (cursor.moveToNext()) {
+        val documentId = cursor.getString(idIndex).orEmpty()
+        if (documentId.isBlank()) {
+          continue
+        }
+        val name = cursor.getString(nameIndex).orEmpty()
+        val mimeType = cursor.getString(mimeIndex).orEmpty()
+        add(
+          PreviewObsidianDocument(
+            name = name,
+            documentId = documentId,
+            uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId),
+            isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+          )
+        )
+      }
+    }
+  }.orEmpty()
+}
+
+private fun String.toPreviewObsidianFolderSegments(): List<String> {
+  return split('/', '\\')
+    .map { segment -> segment.trim() }
+    .filter { segment -> segment.isNotBlank() && segment != "." && segment != ".." }
+    .ifEmpty { DEFAULT_OBSIDIAN_MISTAKE_FOLDER.split('/') }
+}
+
+private fun String.toPreviewObsidianImageSegments(): List<String> {
+  return trim()
+    .replace('\\', '/')
+    .trimStart('/')
+    .split('/')
+    .map { segment -> segment.trim() }
+    .filter { segment -> segment.isNotBlank() && segment != "." && segment != ".." }
+}
+
+private data class PreviewObsidianDocument(
+  val name: String,
+  val documentId: String,
+  val uri: Uri,
+  val isDirectory: Boolean
+)
 
 private fun parseMistakeTags(raw: String): List<String> {
   return raw

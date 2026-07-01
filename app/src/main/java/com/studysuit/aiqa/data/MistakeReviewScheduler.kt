@@ -17,6 +17,10 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.studysuit.aiqa.MainActivity
+import com.studysuit.aiqa.ui.ObsidianVaultPermissionSnapshot
+import com.studysuit.aiqa.ui.RuntimeSettings
+import com.studysuit.aiqa.ui.SessionStorage
+import com.studysuit.aiqa.ui.hasPersistedObsidianVaultPermission
 import java.util.concurrent.TimeUnit
 
 sealed interface MistakeReviewScheduleDecision {
@@ -78,7 +82,39 @@ class MistakeReviewWorker(
 ) : CoroutineWorker(appContext, params) {
 
   override suspend fun doWork(): Result {
-    val storage = MistakeBookStorage(applicationContext)
+    val localStorage = MistakeBookStorage(applicationContext)
+    val loadedSettings = SessionStorage(applicationContext).load()?.settings ?: RuntimeSettings.defaults()
+    val settings = if (
+      loadedSettings.mistakeBookStorageLocation == MistakeBookStorageLocation.OBSIDIAN &&
+      loadedSettings.obsidianVaultTreeUri.isNotBlank() &&
+      !hasPersistedObsidianVaultPermission(
+        vaultTreeUri = loadedSettings.obsidianVaultTreeUri,
+        permissions = applicationContext.contentResolver.persistedUriPermissions.map { permission ->
+          ObsidianVaultPermissionSnapshot(
+            uri = permission.uri.toString(),
+            canRead = permission.isReadPermission,
+            canWrite = permission.isWritePermission
+          )
+        }
+      )
+    ) {
+      loadedSettings.copy(obsidianVaultTreeUri = "")
+    } else {
+      loadedSettings
+    }
+    val storage = selectMistakeBookRepository(
+      localRepository = localStorage,
+      storageLocation = settings.mistakeBookStorageLocation,
+      obsidianVaultTreeUri = settings.obsidianVaultTreeUri,
+      obsidianMistakeFolder = settings.obsidianMistakeFolder,
+      createObsidianRepository = { vaultUri, folder ->
+        AndroidObsidianMistakeBookStorage(
+          context = applicationContext,
+          vaultTreeUri = vaultUri,
+          folder = folder
+        )
+      }
+    ).getOrNull()?.repository ?: localStorage
     val items = storage.load()
     val dueItems = MistakeSrsEngine.dueMistakes(items, now = System.currentTimeMillis())
     if (dueItems.isNotEmpty()) {

@@ -9,10 +9,13 @@ import com.studysuit.aiqa.DEFAULT_OPENSPEECH_RESOURCE_ID
 import com.studysuit.aiqa.DEFAULT_OPENSPEECH_SUBMIT_URL
 import com.studysuit.aiqa.DEFAULT_OPENSPEECH_UID
 import com.studysuit.aiqa.data.ArkRuntimeConfig
+import com.studysuit.aiqa.data.DEFAULT_OBSIDIAN_MISTAKE_FOLDER
 import com.studysuit.aiqa.data.MistakeBookItem
+import com.studysuit.aiqa.data.MistakeBookStorageLocation
 import com.studysuit.aiqa.data.MistakeRecognitionPipelineConfig
 import com.studysuit.aiqa.data.MistakeRecognitionDraft
 import com.studysuit.aiqa.data.OpenSpeechRuntimeConfig
+import com.studysuit.aiqa.data.toSafeObsidianFolderSegments
 import java.util.Locale
 
 internal fun findSpanById(messages: List<ChatMessage>, spanId: String?): SpanData? {
@@ -199,7 +202,10 @@ data class RuntimeSettings(
   val mistakeSecondModelName: String = "",
   val mistakeFusionModelBaseUrl: String = "",
   val mistakeFusionModelApiKey: String = "",
-  val mistakeFusionModelName: String = ""
+  val mistakeFusionModelName: String = "",
+  val mistakeBookStorageLocation: MistakeBookStorageLocation = MistakeBookStorageLocation.OBSIDIAN,
+  val obsidianVaultTreeUri: String = "",
+  val obsidianMistakeFolder: String = DEFAULT_OBSIDIAN_MISTAKE_FOLDER
 ) {
   companion object {
     fun defaults(): RuntimeSettings {
@@ -410,8 +416,58 @@ internal fun RuntimeSettings.toArkRuntimeConfig(): ArkRuntimeConfig {
 internal fun RuntimeSettings.defaultResetSettings(): RuntimeSettings {
   return RuntimeSettings.defaults().copy(
     flowStudyDeviceId = flowStudyDeviceId,
-    flowStudyDeviceToken = flowStudyDeviceToken
+    flowStudyDeviceToken = flowStudyDeviceToken,
+    mistakeBookStorageLocation = mistakeBookStorageLocation,
+    obsidianVaultTreeUri = obsidianVaultTreeUri,
+    obsidianMistakeFolder = obsidianMistakeFolder
   )
+}
+
+internal fun RuntimeSettings.hasMistakeBookStorageConfigChangeFrom(current: RuntimeSettings): Boolean {
+  return mistakeBookStorageLocation != current.mistakeBookStorageLocation ||
+    obsidianVaultTreeUri.trim() != current.obsidianVaultTreeUri.trim() ||
+    normalizeObsidianMistakeFolder(obsidianMistakeFolder) != normalizeObsidianMistakeFolder(current.obsidianMistakeFolder)
+}
+
+internal fun RuntimeSettings.requiresMistakeBookMigrationChoiceFrom(current: RuntimeSettings): Boolean {
+  if (mistakeBookStorageLocation != current.mistakeBookStorageLocation) {
+    return true
+  }
+  if (mistakeBookStorageLocation != MistakeBookStorageLocation.OBSIDIAN) {
+    return false
+  }
+  val nextVaultUri = obsidianVaultTreeUri.trim()
+  val currentVaultUri = current.obsidianVaultTreeUri.trim()
+  if (nextVaultUri != currentVaultUri) {
+    return true
+  }
+  if (nextVaultUri.isBlank()) {
+    return false
+  }
+  return normalizeObsidianMistakeFolder(obsidianMistakeFolder) != normalizeObsidianMistakeFolder(current.obsidianMistakeFolder)
+}
+
+internal fun normalizeObsidianMistakeFolder(folder: String): String {
+  return folder.toSafeObsidianFolderSegments().joinToString("/")
+}
+
+internal data class ObsidianVaultPermissionSnapshot(
+  val uri: String,
+  val canRead: Boolean,
+  val canWrite: Boolean
+)
+
+internal fun hasPersistedObsidianVaultPermission(
+  vaultTreeUri: String,
+  permissions: List<ObsidianVaultPermissionSnapshot>
+): Boolean {
+  val normalizedUri = vaultTreeUri.trim()
+  if (normalizedUri.isBlank()) {
+    return false
+  }
+  return permissions.any { permission ->
+    permission.uri.trim() == normalizedUri && permission.canRead && permission.canWrite
+  }
 }
 
 internal fun RuntimeSettings.toMistakeRecognitionPipelineConfig(): MistakeRecognitionPipelineConfig {

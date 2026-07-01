@@ -6,34 +6,34 @@ import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
-class MistakeBookStorage(private val baseDir: File) {
+class MistakeBookStorage(private val baseDir: File) : MistakeBookRepository {
   constructor(context: Context) : this(context.filesDir)
 
   private val storageFile = File(baseDir, STORAGE_FILE_NAME)
   private val imageDir = File(baseDir, IMAGE_DIR_NAME)
 
-  fun load(): List<MistakeBookItem> {
+  override fun load(): List<MistakeBookItem> {
     if (!storageFile.exists()) {
       return emptyList()
     }
     val raw = runCatching { storageFile.readText(Charsets.UTF_8) }
-      .onFailure { error -> Log.w(TAG, "Failed to read mistake book", error) }
+      .onFailure { error -> safeLogWarning(TAG, "Failed to read mistake book", error) }
       .getOrNull()
       ?: return emptyList()
 
     return parseMistakeBookJson(raw)
-      .onFailure { error -> Log.w(TAG, "Failed to parse mistake book", error) }
+      .onFailure { error -> safeLogWarning(TAG, "Failed to parse mistake book", error) }
       .getOrDefault(emptyList())
   }
 
-  fun save(items: List<MistakeBookItem>): Result<Unit> {
+  override fun save(items: List<MistakeBookItem>): Result<Unit> {
     return runCatching {
       storageFile.parentFile?.mkdirs()
       storageFile.writeText(buildMistakeBookJson(items).toString(), Charsets.UTF_8)
-    }.onFailure { error -> Log.w(TAG, "Failed to persist mistake book", error) }
+    }.onFailure { error -> safeLogWarning(TAG, "Failed to persist mistake book", error) }
   }
 
-  fun upsert(item: MistakeBookItem): Result<List<MistakeBookItem>> {
+  override fun upsert(item: MistakeBookItem): Result<List<MistakeBookItem>> {
     val current = load()
     val exists = current.any { existing -> existing.id == item.id }
     val next = if (exists) {
@@ -44,12 +44,12 @@ class MistakeBookStorage(private val baseDir: File) {
     return save(next).map { next }
   }
 
-  fun delete(itemId: String): Result<List<MistakeBookItem>> {
+  override fun delete(itemId: String): Result<List<MistakeBookItem>> {
     val next = load().filterNot { item -> item.id == itemId }
     return save(next).map { next }
   }
 
-  fun saveImageBytes(bytes: ByteArray, fileNameHint: String): Result<String> {
+  override fun saveImageBytes(bytes: ByteArray, fileNameHint: String): Result<String> {
     return runCatching {
       require(bytes.isNotEmpty()) { "图片数据为空" }
       imageDir.mkdirs()
@@ -66,13 +66,27 @@ class MistakeBookStorage(private val baseDir: File) {
       }
       candidate.writeBytes(bytes)
       "$IMAGE_DIR_NAME/${candidate.name}"
-    }.onFailure { error -> Log.w(TAG, "Failed to persist mistake image", error) }
+    }.onFailure { error -> safeLogWarning(TAG, "Failed to persist mistake image", error) }
+  }
+
+  override fun loadImageBytes(ref: String): Result<ByteArray> {
+    return runCatching {
+      val file = resolveLocalStoredFile(baseDir = baseDir, ref = ref)
+      require(file.isFile) { "图片不存在：$ref" }
+      file.readBytes()
+    }.onFailure { error -> safeLogWarning(TAG, "Failed to read mistake image: $ref", error) }
   }
 
   private companion object {
     private const val TAG = "MistakeBookStorage"
     private const val STORAGE_FILE_NAME = "mistake_book_v1.json"
     private const val IMAGE_DIR_NAME = "mistake_images"
+  }
+}
+
+internal fun safeLogWarning(tag: String, message: String, error: Throwable) {
+  runCatching {
+    Log.w(tag, message, error)
   }
 }
 
@@ -334,4 +348,26 @@ private fun sanitizeImageFileName(raw: String): String {
   val hasExtension = normalized.substringAfterLast('.', missingDelimiterValue = "").isNotBlank() &&
     normalized.substringAfterLast('.').length in 2..5
   return if (hasExtension) normalized else "$normalized.jpg"
+}
+
+private fun resolveLocalStoredFile(baseDir: File, ref: String): File {
+  val normalized = ref.trim().replace('\\', '/').trimStart('/')
+  require(normalized.isNotBlank() && !normalized.startsWith("data:", ignoreCase = true)) { "图片路径无效" }
+  val segments = normalized
+    .split('/')
+    .map(String::trim)
+    .filter(String::isNotBlank)
+  require(
+    segments.size == 2 &&
+      segments.first() == "mistake_images" &&
+      segments.none { segment -> segment == "." || segment == ".." }
+  ) {
+    "图片路径无效"
+  }
+
+  val root = baseDir.canonicalFile
+  val file = segments.fold(root) { current, segment -> File(current, segment) }.canonicalFile
+  val rootPath = root.path
+  require(file.path == rootPath || file.path.startsWith(rootPath + File.separator)) { "图片路径越界" }
+  return file
 }

@@ -108,6 +108,7 @@ class MistakeBookWorkspaceInstrumentedTest {
         MistakeBookWorkspace(
           items = listOf(functionItem, physicsItem),
           drafts = emptyList(),
+          settings = RuntimeSettings.defaults(),
           activeDraftId = null,
           activeReviewId = null,
           activeReviewSuggestion = null,
@@ -157,6 +158,7 @@ class MistakeBookWorkspaceInstrumentedTest {
         MistakeBookWorkspace(
           items = items,
           drafts = emptyList(),
+          settings = RuntimeSettings.defaults(),
           activeDraftId = null,
           activeReviewId = null,
           activeReviewSuggestion = null,
@@ -270,13 +272,15 @@ class MistakeBookWorkspaceInstrumentedTest {
     onConfirmJudgement: (itemId: String, isCorrect: Boolean) -> Unit = { _, _ -> },
     onAddToAnki: (String) -> Unit = {},
     onDeleteItem: (String) -> Unit = {},
-    onReopenItem: (String) -> Unit = {}
+    onReopenItem: (String) -> Unit = {},
+    settings: RuntimeSettings = RuntimeSettings.defaults()
   ) {
     composeRule.setContent {
       StudySuitTheme {
         MistakeBookWorkspace(
           items = items,
           drafts = drafts,
+          settings = settings,
           activeDraftId = activeDraftId,
           activeReviewId = activeReviewId,
           activeReviewSuggestion = activeReviewSuggestion,

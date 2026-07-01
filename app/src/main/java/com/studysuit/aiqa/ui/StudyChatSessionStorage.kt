@@ -2,6 +2,7 @@ package com.studysuit.aiqa.ui
 
 import android.content.Context
 import android.util.Log
+import com.studysuit.aiqa.data.MistakeBookStorageLocation
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -179,6 +180,9 @@ private fun RuntimeSettings.toJson(): JSONObject {
     .put("mistakeFusionModelBaseUrl", mistakeFusionModelBaseUrl)
     .put("mistakeFusionModelApiKey", mistakeFusionModelApiKey)
     .put("mistakeFusionModelName", mistakeFusionModelName)
+    .put("mistakeBookStorageLocation", mistakeBookStorageLocation.name)
+    .put("obsidianVaultTreeUri", obsidianVaultTreeUri)
+    .put("obsidianMistakeFolder", obsidianMistakeFolder)
     .put(
       "customModelPresets",
       JSONArray().apply {
@@ -225,8 +229,20 @@ private fun JSONObject.toRuntimeSettings(): RuntimeSettings {
     mistakeSecondModelName = optString("mistakeSecondModelName", defaults.mistakeSecondModelName),
     mistakeFusionModelBaseUrl = optString("mistakeFusionModelBaseUrl", defaults.mistakeFusionModelBaseUrl),
     mistakeFusionModelApiKey = optString("mistakeFusionModelApiKey", defaults.mistakeFusionModelApiKey),
-    mistakeFusionModelName = optString("mistakeFusionModelName", defaults.mistakeFusionModelName)
+    mistakeFusionModelName = optString("mistakeFusionModelName", defaults.mistakeFusionModelName),
+    mistakeBookStorageLocation = optString(
+      "mistakeBookStorageLocation",
+      defaults.mistakeBookStorageLocation.name
+    ).toMistakeBookStorageLocationOrDefault(defaults.mistakeBookStorageLocation),
+    obsidianVaultTreeUri = optString("obsidianVaultTreeUri", defaults.obsidianVaultTreeUri),
+    obsidianMistakeFolder = normalizeObsidianMistakeFolder(
+      optString("obsidianMistakeFolder", defaults.obsidianMistakeFolder)
+    )
   )
+}
+
+private fun String.toMistakeBookStorageLocationOrDefault(default: MistakeBookStorageLocation): MistakeBookStorageLocation {
+  return runCatching { MistakeBookStorageLocation.valueOf(trim()) }.getOrDefault(default)
 }
 
 private fun ModelPreset.toJson(): JSONObject {

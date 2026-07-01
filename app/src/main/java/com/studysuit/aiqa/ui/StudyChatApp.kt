@@ -3,6 +3,7 @@ package com.studysuit.aiqa.ui
 import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.content.pm.PackageManager
@@ -366,6 +367,27 @@ fun StudyChatApp(
       Toast.makeText(context, "错题本读取失败", Toast.LENGTH_SHORT).show()
     } else {
       viewModel.importMistakeBookJson(raw)
+    }
+  }
+
+  val obsidianVaultTreeLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.OpenDocumentTree()
+  ) { uri ->
+    if (uri == null) {
+      Toast.makeText(context, "已取消选择 Obsidian 仓库", Toast.LENGTH_SHORT).show()
+      return@rememberLauncherForActivityResult
+    }
+
+    val permissionFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+    val authorized = runCatching {
+      context.contentResolver.takePersistableUriPermission(uri, permissionFlags)
+    }.isSuccess
+
+    if (authorized) {
+      viewModel.setObsidianVaultTreeUri(uri.toString())
+      Toast.makeText(context, "Obsidian 仓库已选择，请保存设置以同步", Toast.LENGTH_SHORT).show()
+    } else {
+      Toast.makeText(context, "Obsidian 仓库授权失败，请重试", Toast.LENGTH_SHORT).show()
     }
   }
 
@@ -1180,6 +1202,7 @@ fun StudyChatApp(
                   MistakeBookWorkspace(
                     items = uiState.mistakeItems,
                     drafts = uiState.mistakeRecognitionDrafts,
+                    settings = uiState.settings,
                     activeDraftId = uiState.activeMistakeDraftId,
                     activeReviewId = uiState.activeMistakeReviewId,
                     activeReviewSuggestion = uiState.activeMistakeReviewSuggestion,
@@ -1366,12 +1389,21 @@ fun StudyChatApp(
   if (uiState.isSettingsOpen) {
     SettingsDialog(
       settings = uiState.settingsDraft,
+      currentSettings = uiState.settings,
       isFollowupTreeExportEnabled = followupTreeScopes.isNotEmpty(),
       onDismiss = viewModel::closeSettings,
       onSave = viewModel::saveSettings,
+      onSaveWithMigrationChoice = { migrateMistakeBook -> viewModel.saveSettings(migrateMistakeBook) },
       onReset = viewModel::resetSettingsDraft,
       onResetMainThread = viewModel::startNewChat,
       onExportFollowupTree = triggerFollowupTreeExport,
+      onChooseObsidianVault = {
+        runCatching {
+          obsidianVaultTreeLauncher.launch(null)
+        }.onFailure {
+          Toast.makeText(context, "Obsidian 仓库选择入口不可用", Toast.LENGTH_SHORT).show()
+        }
+      },
       onPairFlowStudy = viewModel::pairFlowStudy,
       onPushSessionsToFlowStudy = viewModel::pushSessionsToFlowStudy,
       onSettingsChanged = viewModel::setSettingsDraft

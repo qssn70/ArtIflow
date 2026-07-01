@@ -1,5 +1,6 @@
 package com.studysuit.aiqa.ui
 
+import com.studysuit.aiqa.data.MistakeBookStorageLocation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNotEquals
@@ -103,6 +104,51 @@ class StudyChatSessionStorageParsingTest {
     assertEquals("https://api.fusion.example/v1", parsed.settings.mistakeFusionModelBaseUrl)
     assertEquals("fusion-key", parsed.settings.mistakeFusionModelApiKey)
     assertEquals("fusion-judge", parsed.settings.mistakeFusionModelName)
+  }
+
+  @Test
+  fun parsePersistedSessionsJsonRestoresMistakeBookStorageSettings() {
+    val raw = """
+      {
+        "version": 1,
+        "activeSessionId": "",
+        "settings": {
+          "mistakeBookStorageLocation": "LOCAL",
+          "obsidianVaultTreeUri": "content://com.android.externalstorage.documents/tree/primary%3AStudyVault",
+          "obsidianMistakeFolder": "School/错题"
+        },
+        "sessions": []
+      }
+    """.trimIndent()
+
+    val parsed = parsePersistedSessionsJson(raw).getOrThrow()
+
+    assertEquals(MistakeBookStorageLocation.LOCAL, parsed.settings.mistakeBookStorageLocation)
+    assertEquals(
+      "content://com.android.externalstorage.documents/tree/primary%3AStudyVault",
+      parsed.settings.obsidianVaultTreeUri
+    )
+    assertEquals("School/错题", parsed.settings.obsidianMistakeFolder)
+  }
+
+  @Test
+  fun exportPersistedSessionsJsonStoresMistakeBookStorageSettings() {
+    val payload = PersistedSessions(
+      activeSessionId = "",
+      settings = RuntimeSettings.defaults().copy(
+        mistakeBookStorageLocation = MistakeBookStorageLocation.LOCAL,
+        obsidianVaultTreeUri = "content://vault",
+        obsidianMistakeFolder = "ArtIflow/Mistakes"
+      ),
+      sessions = emptyList()
+    )
+
+    val raw = exportPortablePersistedSessionsJson(payload)
+    val settings = JSONObject(raw).getJSONObject("settings")
+
+    assertEquals("LOCAL", settings.getString("mistakeBookStorageLocation"))
+    assertEquals("content://vault", settings.getString("obsidianVaultTreeUri"))
+    assertEquals("ArtIflow/Mistakes", settings.getString("obsidianMistakeFolder"))
   }
 
   @Test

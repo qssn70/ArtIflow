@@ -57,6 +57,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.studysuit.aiqa.data.DEFAULT_OBSIDIAN_MISTAKE_FOLDER
+import com.studysuit.aiqa.data.MistakeBookStorageLocation
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -66,12 +68,15 @@ import kotlin.math.roundToInt
 @Composable
 internal fun SettingsDialog(
   settings: RuntimeSettings,
+  currentSettings: RuntimeSettings,
   isFollowupTreeExportEnabled: Boolean,
   onDismiss: () -> Unit,
   onSave: () -> Unit,
+  onSaveWithMigrationChoice: (Boolean) -> Unit,
   onReset: () -> Unit,
   onResetMainThread: () -> Unit,
   onExportFollowupTree: () -> Unit,
+  onChooseObsidianVault: () -> Unit,
   onPairFlowStudy: (String) -> Unit,
   onPushSessionsToFlowStudy: (Int?) -> Unit,
   onSettingsChanged: (RuntimeSettings) -> Unit
@@ -79,6 +84,9 @@ internal fun SettingsDialog(
   val scrollState = rememberScrollState()
   var flowStudyPairCode by remember { mutableStateOf("") }
   var modelPresetName by remember { mutableStateOf("") }
+  var isMistakeBookMigrationChoiceOpen by remember { mutableStateOf(false) }
+  val isObsidianVaultAuthorized = settings.obsidianVaultTreeUri.isNotBlank()
+  val needsMistakeBookMigrationChoice = settings.requiresMistakeBookMigrationChoiceFrom(currentSettings)
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -252,6 +260,68 @@ internal fun SettingsDialog(
 
         HorizontalDivider(color = Color(0x1633564B))
 
+        Text(text = "错题本存储", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
+        MistakeBookStorageLocationSelector(
+          selected = settings.mistakeBookStorageLocation,
+          onSelected = { location -> onSettingsChanged(settings.copy(mistakeBookStorageLocation = location)) }
+        )
+        Text(
+          text = "默认保存到 Obsidian；未授权仓库前会先保存在本软件。",
+          style = MaterialTheme.typography.labelSmall,
+          color = Color(0xFF728880)
+        )
+        Surface(
+          color = Color(0xFFF0F7F3),
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color(0x1433564B), RoundedCornerShape(12.dp))
+        ) {
+          Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+              ) {
+                Text(
+                  text = if (isObsidianVaultAuthorized) "Obsidian 仓库已授权" else "Obsidian 仓库未授权",
+                  style = MaterialTheme.typography.labelMedium,
+                  color = if (isObsidianVaultAuthorized) Color(0xFF2C6251) else Color(0xFF8A5A24)
+                )
+                Text(
+                  text = settings.obsidianVaultTreeUri.ifBlank { "还没有选择仓库目录" },
+                  style = MaterialTheme.typography.labelSmall,
+                  color = Color(0xFF6D8079),
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+              TextButton(onClick = onChooseObsidianVault) {
+                Text(text = "选择 Obsidian 仓库")
+              }
+            }
+            Text(
+              text = "Obsidian 错题目录：${settings.obsidianMistakeFolder.ifBlank { DEFAULT_OBSIDIAN_MISTAKE_FOLDER }}",
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFF4C635B)
+            )
+          }
+        }
+        SettingsTextField(
+          label = "Obsidian 错题目录",
+          value = settings.obsidianMistakeFolder,
+          onValueChange = { value -> onSettingsChanged(settings.copy(obsidianMistakeFolder = value)) }
+        )
+
+        HorizontalDivider(color = Color(0x1633564B))
+
         Text(text = "Ark（豆包）", style = MaterialTheme.typography.labelMedium, color = Color(0xFF4C635B))
         Text(
           text = "首次安装后请在这里填写运行参数，保存后立即生效。",
@@ -416,7 +486,16 @@ internal fun SettingsDialog(
         TextButton(onClick = onReset) {
           Text(text = "恢复默认", color = Color(0xFF4A665C))
         }
-        Button(onClick = onSave, shape = RoundedCornerShape(10.dp)) {
+        Button(
+          onClick = {
+            if (needsMistakeBookMigrationChoice) {
+              isMistakeBookMigrationChoiceOpen = true
+            } else {
+              onSave()
+            }
+          },
+          shape = RoundedCornerShape(10.dp)
+        ) {
           Text(text = "保存")
         }
       }
@@ -427,8 +506,117 @@ internal fun SettingsDialog(
       }
     }
   )
+
+  if (isMistakeBookMigrationChoiceOpen) {
+    AlertDialog(
+      onDismissRequest = { isMistakeBookMigrationChoiceOpen = false },
+      containerColor = Color(0xFFF6FBF7),
+      shape = RoundedCornerShape(18.dp),
+      title = {
+        Text(
+          text = mistakeBookMigrationChoiceTitle(settings, currentSettings),
+          style = MaterialTheme.typography.titleMedium,
+          color = Color(0xFF255E4D)
+        )
+      },
+      text = {
+        Text(
+          text = mistakeBookMigrationChoiceMessage(settings, currentSettings),
+          style = MaterialTheme.typography.bodySmall,
+          color = Color(0xFF4C635B)
+        )
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            isMistakeBookMigrationChoiceOpen = false
+            onSaveWithMigrationChoice(true)
+          },
+          shape = RoundedCornerShape(10.dp)
+        ) {
+          Text(text = "迁移已有错题")
+        }
+      },
+      dismissButton = {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          TextButton(
+            onClick = {
+              isMistakeBookMigrationChoiceOpen = false
+              onSaveWithMigrationChoice(false)
+            }
+          ) {
+            Text(text = "仅切换新错题", color = Color(0xFF4A665C))
+          }
+          TextButton(onClick = { isMistakeBookMigrationChoiceOpen = false }) {
+            Text(text = "取消", color = Color(0xFF4A665C))
+          }
+        }
+      }
+    )
+  }
 }
 
+
+@Composable
+private fun MistakeBookStorageLocationSelector(
+  selected: MistakeBookStorageLocation,
+  onSelected: (MistakeBookStorageLocation) -> Unit
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(8.dp)
+  ) {
+    listOf(
+      MistakeBookStorageLocation.OBSIDIAN to "Obsidian",
+      MistakeBookStorageLocation.LOCAL to "本软件"
+    ).forEach { (location, label) ->
+      val isSelected = selected == location
+      Surface(
+        color = if (isSelected) Color(0xFFDCEFE6) else Color(0xFFF8FCF9),
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+          .weight(1f)
+          .border(
+            width = 1.dp,
+            color = if (isSelected) Color(0xFF6A9B86) else Color(0x1F3A5A4F),
+            shape = RoundedCornerShape(10.dp)
+          )
+          .clickable { onSelected(location) }
+      ) {
+        Text(
+          text = label,
+          style = MaterialTheme.typography.labelMedium,
+          color = if (isSelected) Color(0xFF255E4D) else Color(0xFF60766E),
+          textAlign = TextAlign.Center,
+          modifier = Modifier.padding(vertical = 8.dp)
+        )
+      }
+    }
+  }
+}
+
+private fun mistakeBookStorageLocationLabel(location: MistakeBookStorageLocation): String {
+  return when (location) {
+    MistakeBookStorageLocation.OBSIDIAN -> "Obsidian"
+    MistakeBookStorageLocation.LOCAL -> "本软件"
+  }
+}
+
+private fun mistakeBookMigrationChoiceTitle(settings: RuntimeSettings, currentSettings: RuntimeSettings): String {
+  return if (settings.mistakeBookStorageLocation != currentSettings.mistakeBookStorageLocation) {
+    "切换错题本存储"
+  } else {
+    "更新 Obsidian 存储"
+  }
+}
+
+private fun mistakeBookMigrationChoiceMessage(settings: RuntimeSettings, currentSettings: RuntimeSettings): String {
+  return if (settings.mistakeBookStorageLocation != currentSettings.mistakeBookStorageLocation) {
+    "将错题本从 ${mistakeBookStorageLocationLabel(currentSettings.mistakeBookStorageLocation)} 切换到 ${mistakeBookStorageLocationLabel(settings.mistakeBookStorageLocation)}。要把已有错题迁移到新位置吗？"
+  } else {
+    "将 Obsidian 错题位置更新为 ${normalizeObsidianMistakeFolder(settings.obsidianMistakeFolder)}。要把当前可见错题同步到新位置吗？"
+  }
+}
 
 @Composable
 private fun MistakeRecognitionModelCountSelector(
